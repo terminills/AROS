@@ -14,7 +14,9 @@ steps:
   displayName: 'Run a one-line script'
 
 - script: |
-    bash configure
+    mkdir build
+    cd build
+    ../AROS/configure
     make
     echo See https://aka.ms/yaml
   displayName: 'Run a multi-line script'
