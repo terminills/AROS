@@ -4,13 +4,6 @@
 # https://aka.ms/yaml
 trigger:
 - master
-variables:
-  AROSBUILDGCCVERS: '9.1.0'
-  AROSBUILDTOOLCHAINDIR:  '$(AZBUILDPATH)/toolchain' # Location builds are done in
-  AROSPORTSSRCSDIR:  '$(AZBUILDPATH)/portssources' #
-  AROSBUILDSDIR:  '$(AZBUILDPATH)/builds' # Location builds are done in
-  AZBUILDPATH: '$(system.defaultWorkingDirectory)' # workspace path
-  #modulePath: '$(AZBUILDPATH)/src/github.com/$(build.repository.name)' # Path to the module's code
 pool:
   vmImage: 'ubuntu-latest'
 
@@ -20,7 +13,7 @@ steps:
 
 - script: |
     sudo apt-key adv --keyserver packages.microsoft.com --recv-keys B02C46DF417A0893
-    sudo apt-get install bison flex libpng-dev zlib1g-dev netpbm
+    sudo apt-get install bison flex libpng-dev zlib1g-dev netpbm xserver-xorg-dev
     mkdir build
     cd build
     ../AROS/configure
