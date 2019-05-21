@@ -2,7 +2,8 @@
 # Start with a minimal pipeline that you can customize to build and deploy your code.
 # Add steps that build, run tests, deploy, and more:
 # https://aka.ms/yaml
-
+setup:
+sudo apt-key adv --keyserver packages.microsoft.com --recv-keys B02C46DF417A0893
 trigger:
 - master
 
