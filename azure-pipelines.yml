@@ -14,7 +14,7 @@ steps:
 
 - script: |
     sudo apt-key adv --keyserver packages.microsoft.com --recv-keys B02C46DF417A0893
-    sudo apt-get install bison flex libpng-dev zlib1g-dev
+    sudo apt-get install bison flex libpng-dev zlib1g-dev libpng
     mkdir build
     cd build
     ../AROS/configure
