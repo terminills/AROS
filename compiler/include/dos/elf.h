@@ -82,6 +82,7 @@
 #define R_X86_64_GOT64          27      /* 64-bit GOT entry offset */
 #define R_X86_64_GOTPC64        29      /* 64-bit PC relative offset to GOT */
 #define R_X86_64_GOTPLT64       30      /* like GOT64, says PLT entry needed */
+#define R_X86_64_PLTOFF64       31      /* Function address relative to GOT */
 #define R_X86_64_GOTPCREL       26      /* 32-bit signed PC relative offset to GOT */
 #define R_X86_64_GOTPCRELX      41      /* Load from 32 bit signed pc relative GOT with relaxation */
 #define R_X86_64_REX_GOTPCRELX  42      /* Load from 32 bit signed pc relative GOT with REX prefix */
