@@ -24,21 +24,45 @@ static void setfunc(bfd *exe, asection *sect, void *setlist_ptr)
     parse_secname(sect->name, (setnode **)setlist_ptr);
 }
 
+static int collect_object_sets(bfd *abfd, setnode **setlist_ptr)
+{
+    if (!bfd_check_format(abfd, bfd_object))
+        return 0;
+
+    parse_format(abfd->xvec->name);
+    bfd_map_over_sections(abfd, setfunc, setlist_ptr);
+    return 1;
+}
+
 void collect_sets(const char *file, setnode **setlist_ptr)
 {
     bfd *abfd;
 
-    if
-    (
-        (abfd = bfd_openr(file, "default")) == NULL ||
-        !bfd_check_format(abfd, bfd_object)
-    )
+    if ((abfd = bfd_openr(file, "default")) == NULL)
+        bfd_fatal(file);
+
+    if (bfd_check_format(abfd, bfd_archive))
+    {
+        bfd *member = NULL;
+
+        for (;;)
+        {
+            bfd *next = bfd_openr_next_archived_file(abfd, member);
+
+            if (member != NULL)
+                bfd_close(member);
+            member = next;
+
+            if (member == NULL)
+                break;
+            if (!collect_object_sets(member, setlist_ptr))
+                bfd_fatal(file);
+        }
+    }
+    else if (!collect_object_sets(abfd, setlist_ptr))
     {
         bfd_fatal(file);
     }
-
-    parse_format(abfd->xvec->name);
-    bfd_map_over_sections(abfd, setfunc, setlist_ptr);
 
     bfd_close(abfd);
 }

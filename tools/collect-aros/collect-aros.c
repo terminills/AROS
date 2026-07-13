@@ -330,6 +330,19 @@ int main(int argc, char *argv[])
     backend_init(ldargs[0]);
     collect_sets(tempoutput, &setlist);
     collect_extra(tempoutput, &extralist);
+    if (extralist)
+    {
+        struct setnode *n;
+
+        /*
+         * Extra objects and archives are added after the relocatable link, so
+         * their symbol-set sections are absent from tempoutput. Discover them
+         * before emitting the final linker script or their INIT/EXIT hooks are
+         * left as orphan sections and never called.
+         */
+        for (n = extralist; n; n = n->next)
+            collect_sets(n->secname, &setlist);
+    }
     collect_libs(tempoutput, &liblist);
 
     if (linkAddress != NULL)
