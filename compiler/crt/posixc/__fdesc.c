@@ -70,6 +70,24 @@ static struct PosixCIntBase *__fd_owner(struct PosixCIntBase *PosixCBase)
 #define FD_LOCK(base)   ObtainSemaphore(&__fd_owner(base)->fd_sem)
 #define FD_UNLOCK(base) ReleaseSemaphore(&__fd_owner(base)->fd_sem)
 
+static int __path_volume_exists(const char *path)
+{
+    char volume[32];
+    struct DosList *entry;
+
+    if (SplitName(path, ':', volume, 0, sizeof(volume) - 1) == -1)
+        return 1;
+
+    if (strcmp(volume, "PROGDIR") == 0)
+        return 1;
+
+    entry = LockDosList(LDF_ALL | LDF_READ);
+    entry = FindDosEntry(entry, volume, LDF_ALL);
+    UnLockDosList(LDF_ALL | LDF_READ);
+
+    return entry != NULL;
+}
+
 /* TODO: Add locking to make filedesc usage thread safe
    Using vfork()+exec*() filedescriptors may be shared between different
    tasks. Only one DOS file handle is used between shared file descriptors.
@@ -363,6 +381,17 @@ int __open(int wanted_fd, const char *pathname, int flags, int mode)
     pathname = __path_u2a(pathname);
     if (!pathname) return -1;
 
+    /*
+     * DOS may display an insert-volume requester when a translated absolute
+     * POSIX path names a volume that is not mounted. POSIX open() must instead
+     * fail with ENOENT and leave requester policy to native DOS callers.
+     */
+    if (!__path_volume_exists(pathname))
+    {
+        __set_errno(PosixCBase, ENOENT);
+        return -1;
+    }
+    
     D(bug("__open: entering, wanted fd = %d, path = %s, flags = %d, mode = %d\n", wanted_fd, pathname, flags, mode));
 
     if (openmode == -1)

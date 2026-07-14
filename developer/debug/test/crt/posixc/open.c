@@ -3,6 +3,7 @@
 */
 
 #include <sys/types.h>
+#include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -17,6 +18,11 @@ int f2filedesc[2];
 int main()
 {
     int tmpfd;
+
+    errno = 0;
+    tmpfd = open("/__aros_posix_missing_volume__/file", O_RDONLY);
+    TEST(tmpfd == -1);
+    TEST(errno == ENOENT);
 
     f1filedesc[0] = f1filedesc[1] = -1;
 
