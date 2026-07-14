@@ -70,6 +70,14 @@
     ASSERT_VALID_PTR_OR_NULL(BADDR(lock));
     ASSERT_VALID_FILELOCK(lock);
 
+    if (fl == NULL)
+    {
+        bug("[DOS:ExNext] rejected null lock task=%p fib=%p caller=%p\n",
+            FindTask(NULL), fileInfoBlock, __builtin_return_address(0));
+        SetIoErr(ERROR_INVALID_LOCK);
+        return DOSFALSE;
+    }
+
     D(bug("[ExNext] lock=%x fib=%x\n", fl, fileInfoBlock));
     ret = dopacket2(DOSBase, NULL,  fl->fl_Task, ACTION_EXAMINE_NEXT, lock, MKBADDR(fileInfoBlock));
     if (ret) {
