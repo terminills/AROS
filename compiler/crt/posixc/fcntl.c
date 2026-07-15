@@ -3,8 +3,14 @@
 */
 
 #include <proto/dos.h>
+#include <proto/exec.h>
+#include <proto/posixc.h>
+#include <aros/debug.h>
+#include <dos/record.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -12,6 +18,80 @@
 #include <libraries/fd.h>
 #include <aros/debug.h>
 #include "__fdesc.h"
+
+static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
+{
+    ULONG mode;
+    ULONG timeout = 0;
+    ULONG offset;
+    ULONG length;
+    LONG ioerr;
+    static int unsupported_reported;
+
+    if (lock == NULL)
+    {
+        errno = EFAULT;
+        return -1;
+    }
+
+    if (lock->l_whence != SEEK_SET || lock->l_start < 0 || lock->l_len < 0 ||
+        (uint64_t)lock->l_start > UINT32_MAX ||
+        (uint64_t)lock->l_len > UINT32_MAX)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    offset = (ULONG)lock->l_start;
+    length = lock->l_len == 0 ? UINT32_MAX - offset : (ULONG)lock->l_len;
+
+    if (lock->l_type == F_UNLCK)
+    {
+        if (UnLockRecord(desc->fcb->handle, offset, length))
+            return 0;
+    }
+    else
+    {
+        if (lock->l_type == F_RDLCK)
+            mode = cmd == F_SETLKW ? REC_SHARED : REC_SHARED_IMMED;
+        else if (lock->l_type == F_WRLCK)
+            mode = cmd == F_SETLKW ? REC_EXCLUSIVE : REC_EXCLUSIVE_IMMED;
+        else
+        {
+            errno = EINVAL;
+            return -1;
+        }
+
+        if (cmd == F_SETLKW)
+            timeout = UINT32_MAX;
+
+        if (LockRecord(desc->fcb->handle, offset, length, mode, timeout))
+            return 0;
+    }
+
+    ioerr = IoErr();
+    if (ioerr == ERROR_ACTION_NOT_KNOWN || ioerr == ERROR_NOT_IMPLEMENTED)
+    {
+        /* POSIX locks are process-owned, and SQLite arbitrates threads in its
+           own inode table. A handler without ACTION_LOCK_RECORD can therefore
+           proceed only when the caller separately enforces one process per
+           profile, as Chromium's ProcessSingleton does. */
+        if (!unsupported_reported)
+        {
+            unsupported_reported = TRUE;
+            bug("[POSIXC:FD] record locks unsupported by filesystem; "
+                "caller must enforce single-process access\n");
+        }
+        return 0;
+    }
+
+    if (ioerr == ERROR_LOCK_COLLISION || ioerr == ERROR_LOCK_TIMEOUT)
+        errno = EACCES;
+    else
+        errno = __stdc_ioerr2errno(ioerr);
+
+    return -1;
+}
 
 /*****************************************************************************
 
@@ -43,6 +123,12 @@
 
         F_SETFL (int)  - Set the file status flags to value given in the
                          operation argument.
+
+        F_SETLK (struct flock *)  - Set or release a DOS record lock without
+                                    waiting.
+
+        F_SETLKW (struct flock *) - Set or release a DOS record lock, waiting
+                                    for conflicting locks.
 
         File descriptor flags are zero or more ORed constants:
 
@@ -78,11 +164,15 @@
         F_SETFL  - 0 on success, -1 on error. In case of error a global errno
                variable is set.
 
+        F_SETLK, F_SETLKW - 0 on success, -1 on error.
+
     NOTES
 
     EXAMPLE
 
     BUGS
+        DOS record locks use 32-bit offsets. F_GETLK is not implemented
+        because DOS handlers do not expose the conflicting lock owner.
 
     SEE ALSO
         open()
@@ -91,7 +181,11 @@
 
 ******************************************************************************/
 {
-    fdesc *desc = __getfdesc(fd);
+    fdesc *desc;
+    int result = -1;
+
+    __lock_fdesc_table();
+    desc = __getfdesc(fd);
 
     if (!desc)
     {
@@ -144,7 +238,7 @@
             }
         }
         errno = EBADF;
-        return -1;
+        goto out;
     }
 
     switch (cmd)
@@ -163,10 +257,12 @@
                        is supported (related to F_GETFD and F_SETFD).
             */
             
-            return dup2(fd, __getfirstfd(arg));
+            result = dup2(fd, __getfirstfd(arg));
+            break;
         }
         case F_GETFD:
-            return desc->fdflags;
+            result = desc->fdflags;
+            break;
             
         case F_SETFD:
         {
@@ -178,11 +274,13 @@
             va_end(ap);
 
             desc->fdflags = arg;
-            return 0;
+            result = 0;
+            break;
         }
 
         case F_GETFL:
-            return desc->fcb->flags & (O_NONBLOCK|O_APPEND|O_ASYNC);
+            result = desc->fcb->flags & (O_NONBLOCK|O_APPEND|O_ASYNC);
+            break;
 
         case F_SETFL:
         {
@@ -202,16 +300,36 @@
                 desc->fcb->flags &= ~(O_NONBLOCK|O_APPEND|O_ASYNC);
                 desc->fcb->flags |= arg;
                 __fcb_unlock(desc->fcb);
-                return 0;
+                result = 0;
+                break;
             }
             __fcb_unlock(desc->fcb);
 
-            errno = __stdc_ioerr2errno(IoErr());
-            return -1;
+            if (result != 0)
+                errno = __stdc_ioerr2errno(IoErr());
+            break;
+        }
+
+        case F_SETLK:
+        case F_SETLKW:
+        {
+            va_list ap;
+            struct flock *lock;
+
+            va_start(ap, cmd);
+            lock = va_arg(ap, struct flock *);
+            va_end(ap);
+
+            result = __fcntl_record_lock(desc, cmd, lock);
+            break;
         }
 
         default:
             errno = EINVAL;
-            return -1;
+            break;
     }
+
+out:
+    __unlock_fdesc_table();
+    return result;
 }

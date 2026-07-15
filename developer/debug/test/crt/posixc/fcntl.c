@@ -13,6 +13,8 @@ int fd2 = -1;
 
 int main()
 {
+    struct flock lock;
+
     fd = mkstemp("T:lseekXXXXXX");
     TEST((fd != -1));
 
@@ -34,6 +36,24 @@ int main()
     TEST((fcntl(fd, F_SETFD, FD_CLOEXEC) == 0));
     TEST((fcntl(fd2, F_SETFD, 0) == 0));
     TEST((fcntl(fd, F_GETFD) == FD_CLOEXEC));
+
+    /* Exercise DOS record locking and the caller-coordinated fallback used
+       when a filesystem handler does not implement ACTION_LOCK_RECORD. */
+    lock.l_type = F_WRLCK;
+    lock.l_whence = SEEK_SET;
+    lock.l_start = 0;
+    lock.l_len = 1;
+    lock.l_pid = 0;
+    TEST((fcntl(fd, F_SETLK, &lock) == 0));
+
+    lock.l_type = F_UNLCK;
+    TEST((fcntl(fd, F_SETLK, &lock) == 0));
+
+    lock.l_type = F_WRLCK;
+    TEST((fcntl(fd, F_SETLKW, &lock) == 0));
+
+    lock.l_type = F_UNLCK;
+    TEST((fcntl(fd, F_SETLK, &lock) == 0));
     
     cleanup();
     return OK;
