@@ -42,7 +42,19 @@
 {
     fdesc *fdesc = __getfdesc(fd);
 
-    if (!fdesc || !(fdesc->fcb->flags & O_WRITE))
+    if (!fdesc)
+    {
+        errno = EBADF;
+        return -1;
+    }
+
+    /* Directory descriptors are DOS locks rather than writable handles.
+       Metadata operations are committed by the filesystem packets that
+       perform them, so there is no additional handle to flush here. */
+    if (fdesc->fcb->privflags & _FCB_ISDIR)
+        return 0;
+
+    if (!(fdesc->fcb->flags & O_WRITE))
     {
         errno = EBADF;
         return -1;
@@ -59,4 +71,3 @@
     
     return 0;
 } /* fsync */
-
