@@ -957,18 +957,15 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
     if (once_control == NULL || init_routine == NULL)
         return EINVAL;
 
-    if (__sync_val_compare_and_swap(&once_control->started, FALSE, TRUE))
+    pthread_spin_lock(&once_control->lock);
+    if (!once_control->done)
     {
-        pthread_spin_lock(&once_control->lock);
-        if (!once_control->done)
-        {
-            pthread_cleanup_push(OnceCleanup, once_control);
-            (*init_routine)();
-            pthread_cleanup_pop(0);
-            once_control->done = TRUE;
-        }
-        pthread_spin_unlock(&once_control->lock);
+        pthread_cleanup_push(OnceCleanup, once_control);
+        (*init_routine)();
+        pthread_cleanup_pop(0);
+        once_control->done = TRUE;
     }
+    pthread_spin_unlock(&once_control->lock);
 
     return 0;
 }
