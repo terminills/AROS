@@ -279,7 +279,8 @@ static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
         }
 
         case F_GETFL:
-            result = desc->fcb->flags & (O_NONBLOCK|O_APPEND|O_ASYNC);
+            result = desc->fcb->flags &
+                (O_ACCMODE|O_NONBLOCK|O_APPEND|O_ASYNC);
             break;
 
         case F_SETFL:

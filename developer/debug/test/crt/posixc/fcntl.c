@@ -10,13 +10,22 @@
 
 int fd = -1;
 int fd2 = -1;
+int rofd = -1;
+char path[] = "T:fcntlXXXXXX";
 
 int main()
 {
     struct flock lock;
 
-    fd = mkstemp("T:lseekXXXXXX");
+    fd = mkstemp(path);
     TEST((fd != -1));
+
+    /* F_GETFL returns the access mode as well as mutable status flags. */
+    TEST(((fcntl(fd, F_GETFL) & O_ACCMODE) == O_RDWR));
+
+    rofd = open(path, O_RDONLY);
+    TEST((rofd != -1));
+    TEST(((fcntl(rofd, F_GETFL) & O_ACCMODE) == O_RDONLY));
 
     /* Check if F_GETFD and F_SETFD is working */
     TEST((fcntl(fd, F_GETFD) == 0));
@@ -65,4 +74,7 @@ void cleanup()
         close(fd);
     if(fd2 != -1)
         close(fd2);
+    if(rofd != -1)
+        close(rofd);
+    unlink(path);
 }
