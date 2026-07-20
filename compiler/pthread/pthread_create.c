@@ -277,6 +277,13 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
         NP_Name, (IPTR)name,
         TAG_DONE);
 
+    if (inf->task)
+    {
+#ifdef __AROS__
+        inf->taskid = GetETaskID(inf->task);
+#endif
+    }
+
     ReleaseSemaphore(&thread_sem);
 
     if (!inf->task)

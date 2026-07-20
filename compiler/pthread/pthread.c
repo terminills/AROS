@@ -86,13 +86,89 @@ pthread_t GetThreadId(struct Task *task)
     // 0 is main task, First thread id will be 1 so that it is different than default value of pthread_t
     for (i = 0; i < PTHREAD_THREADS_MAX; i++)
     {
-        // be sure not to select existing, "not joined" thread slot with the exec task pointer same as
-        // this one (if a new exec task structure get allocated exactly at the same addres as the old one)
+        // A task allocation can be reused after an abnormal RemTask(). On
+        // AROS pthreads pass their ThreadInfo through NP_UserData, so require
+        // that identity as well as the recycled task address before using a
+        // still-live slot.
         if (threads[i].task == task && !threads[i].finished)
+        {
+#if defined(__AROS__)
+            if (task != NULL && task->tc_UserData != &threads[i])
+                continue;
+#endif
             break;
+        }
     }
 
     return i;
+}
+
+/*
+ * Unattended alerts can terminate a raw pthread task with RemTask(NULL),
+ * bypassing StarterFunc.  Keep a joinable slot until its joiner consumes it,
+ * but never retain a dead Task pointer as if it were still live.
+ */
+BOOL ReapAbnormalThread(ThreadInfo *inf)
+{
+#ifdef __AROS__
+    ULONG taskid;
+    BOOL reaped = FALSE;
+
+    if (inf == NULL)
+        return FALSE;
+
+    ObtainSemaphore(&thread_sem);
+    if (inf->parent == NULL || inf->finished || inf->task == NULL || inf->taskid == 0)
+    {
+        ReleaseSemaphore(&thread_sem);
+        return FALSE;
+    }
+    taskid = inf->taskid;
+    ReleaseSemaphore(&thread_sem);
+
+    /* Do not retain or dereference this pointer: it is only a liveness test. */
+    if (FindTaskByPID(taskid) != NULL)
+        return FALSE;
+
+    ObtainSemaphore(&thread_sem);
+    if (inf->parent != NULL && !inf->finished && inf->task != NULL && inf->taskid == taskid)
+    {
+        if (inf->detached)
+            memset(inf, 0, sizeof(ThreadInfo));
+        else
+        {
+            inf->task = NULL;
+            inf->finished = TRUE;
+            inf->ret = NULL;
+        }
+        reaped = TRUE;
+    }
+    ReleaseSemaphore(&thread_sem);
+
+    return reaped;
+#else
+    (void)inf;
+    return FALSE;
+#endif
+}
+
+struct Task *GetLiveThreadTask(ThreadInfo *inf)
+{
+#ifdef __AROS__
+    ULONG taskid;
+
+    if (inf == NULL)
+        return NULL;
+
+    ReapAbnormalThread(inf);
+    if (inf->task == NULL || inf->finished || inf->taskid == 0)
+        return NULL;
+
+    taskid = inf->taskid;
+    return FindTaskByPID(taskid);
+#else
+    return inf ? inf->task : NULL;
+#endif
 }
 
 #if defined __mc68000__
@@ -913,11 +989,29 @@ int pthread_detach(pthread_t thread)
 
     inf = GetThreadInfo(thread);
 
-    if (inf == NULL || inf->task == NULL)
+    if (inf == NULL)
+        return ESRCH;
+
+    ReapAbnormalThread(inf);
+
+    if (thread != 0 && inf->parent == NULL)
         return ESRCH;
 
     if (inf->detached)
         return EINVAL;
+
+    /* Detaching an already completed joinable thread releases its slot. */
+    if (inf->finished)
+    {
+        ObtainSemaphore(&thread_sem);
+        if (inf->parent != NULL && !inf->detached && inf->finished)
+            memset(inf, 0, sizeof(ThreadInfo));
+        ReleaseSemaphore(&thread_sem);
+        return 0;
+    }
+
+    if (GetLiveThreadTask(inf) == NULL)
+        return ESRCH;
 
     inf->detached = TRUE;
 
@@ -977,6 +1071,7 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
 int pthread_setschedprio(pthread_t thread, int prio)
 {
     ThreadInfo *inf;
+    struct Task *task;
 
     D(bug("%s(%u, %d)\n", __FUNCTION__, thread, prio));
 
@@ -988,7 +1083,11 @@ int pthread_setschedprio(pthread_t thread, int prio)
     if (inf == NULL)
         return ESRCH;
 
-    SetTaskPri(inf->task, prio);
+    task = GetLiveThreadTask(inf);
+    if (task == NULL)
+        return ESRCH;
+
+    SetTaskPri(task, prio);
 
     return 0;
 }
@@ -996,6 +1095,7 @@ int pthread_setschedprio(pthread_t thread, int prio)
 int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param *param)
 {
     ThreadInfo *inf;
+    struct Task *task;
 
     D(bug("%s(%u, %d, %p)\n", __FUNCTION__, thread, policy, param));
 
@@ -1007,7 +1107,11 @@ int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param
     if (inf == NULL)
         return ESRCH;
 
-    SetTaskPri(inf->task, param->sched_priority);
+    task = GetLiveThreadTask(inf);
+    if (task == NULL)
+        return ESRCH;
+
+    SetTaskPri(task, param->sched_priority);
 
     return 0;
 }
@@ -1015,6 +1119,7 @@ int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param
 int pthread_getschedparam(pthread_t thread, int *policy, struct sched_param *param)
 {
     ThreadInfo *inf;
+    struct Task *task;
 
     D(bug("%s(%u, %d, %p)\n", __FUNCTION__, thread, policy, param));
 
@@ -1026,7 +1131,11 @@ int pthread_getschedparam(pthread_t thread, int *policy, struct sched_param *par
     if (inf == NULL)
         return ESRCH;
 
-    param->sched_priority = inf->task->tc_Node.ln_Pri;
+    task = GetLiveThreadTask(inf);
+    if (task == NULL)
+        return ESRCH;
+
+    param->sched_priority = task->tc_Node.ln_Pri;
     *policy = SCHED_NORMAL;
 
     return 0;
@@ -1038,6 +1147,7 @@ int pthread_getschedparam(pthread_t thread, int *policy, struct sched_param *par
 int pthread_setname_np(pthread_t thread, const char *name)
 {
     ThreadInfo *inf;
+    struct Task *task;
     char *currentname;
     size_t namelen;
 
@@ -1051,7 +1161,11 @@ int pthread_setname_np(pthread_t thread, const char *name)
     if (inf == NULL)
         return ERANGE;
 
-    currentname = inf->task->tc_Node.ln_Name;
+    task = GetLiveThreadTask(inf);
+    if (task == NULL)
+        return ESRCH;
+
+    currentname = task->tc_Node.ln_Name;
 
     if (inf->parent == NULL)
         namelen = strlen(currentname) + 1;
@@ -1069,6 +1183,7 @@ int pthread_setname_np(pthread_t thread, const char *name)
 int pthread_getname_np(pthread_t thread, char *name, size_t len)
 {
     ThreadInfo *inf;
+    struct Task *task;
     char *currentname;
 
     D(bug("%s(%u, %p, %u)\n", __FUNCTION__, thread, name, len));
@@ -1081,7 +1196,11 @@ int pthread_getname_np(pthread_t thread, char *name, size_t len)
     if (inf == NULL)
         return ERANGE;
 
-    currentname = inf->task->tc_Node.ln_Name;
+    task = GetLiveThreadTask(inf);
+    if (task == NULL)
+        return ESRCH;
+
+    currentname = task->tc_Node.ln_Name;
 
     if (strlen(currentname) + 1 > len)
         return ERANGE;
@@ -1095,6 +1214,7 @@ int pthread_getname_np(pthread_t thread, char *name, size_t len)
 int pthread_getattr_np(pthread_t thread, pthread_attr_t *attr)
 {
     ThreadInfo *inf;
+    struct Task *task;
 
     D(bug("%s(%u, %p)\n", __FUNCTION__, thread, attr));
 
@@ -1106,12 +1226,16 @@ int pthread_getattr_np(pthread_t thread, pthread_attr_t *attr)
     if (inf == NULL)
         return ESRCH; // TODO
 
+    task = GetLiveThreadTask(inf);
+    if (task == NULL)
+        return ESRCH;
+
     *attr = inf->attr; // Copy information at creation time
 
     // Add current stack information
     // (can't cache this during creation, as the thread might have executed NewStackSwap afterwards)
-    attr->stackaddr = inf->task->tc_SPLower;
-    attr->stacksize = inf->task->tc_SPUpper - inf->task->tc_SPLower;
+    attr->stackaddr = task->tc_SPLower;
+    attr->stacksize = task->tc_SPUpper - task->tc_SPLower;
 
     return 0;
 }
@@ -1189,6 +1313,9 @@ int __pthread_Init_Func(void)
     ThreadInfo *inf = &threads[0];
 
     inf->task = GET_THIS_TASK;
+#ifdef __AROS__
+    inf->taskid = GetETaskID(inf->task);
+#endif
 
     NEWLIST((struct List *)&inf->cleanup);
     return TRUE;
@@ -1210,7 +1337,11 @@ void __pthread_Exit_Func(void)
             D(bug("waiting for detached thread %d\n", i));
             // TODO longer delay between retries?
             while (inf->task)
-                Delay(1);
+            {
+                ReapAbnormalThread(inf);
+                if (inf->task)
+                    Delay(1);
+            }
         }
         else
         {

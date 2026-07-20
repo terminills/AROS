@@ -26,12 +26,22 @@
 int pthread_cancel(pthread_t thread)
 {
     ThreadInfo *inf;
+    struct Task *target;
 
     D(bug("%s(%u)\n", __FUNCTION__, thread));
 
     inf = GetThreadInfo(thread);
 
-    if (inf == NULL || inf->parent == NULL || inf->canceled == TRUE)
+    if (inf == NULL || inf->parent == NULL)
+        return ESRCH;
+
+    ReapAbnormalThread(inf);
+
+    if (inf->parent == NULL || inf->canceled == TRUE)
+        return ESRCH;
+
+    target = GetLiveThreadTask(inf);
+    if (target == NULL)
         return ESRCH;
 
     inf->canceled = TRUE;
@@ -43,15 +53,15 @@ int pthread_cancel(pthread_t thread)
 
         task = GET_THIS_TASK;
 
-        if (inf->task == task)
+        if (target == task)
             pthread_testcancel(); // cancel ourselves
         else
-            Signal(inf->task, SIGBREAKF_CTRL_C); // trigger the exception handler 
+            Signal(target, SIGBREAKF_CTRL_C); // trigger the exception handler
     }
     else
     {
         // for the timed waits
-        Signal(inf->task, SIGBREAKF_CTRL_C);
+        Signal(target, SIGBREAKF_CTRL_C);
     }
 
     return 0;

@@ -36,6 +36,11 @@ int pthread_join(pthread_t thread, void **value_ptr)
     if (inf == NULL || inf->parent == NULL)
         return ESRCH;
 
+    ReapAbnormalThread(inf);
+
+    if (inf->parent == NULL)
+        return ESRCH;
+
     if (inf->detached)
         return EINVAL;
 
@@ -43,7 +48,14 @@ int pthread_join(pthread_t thread, void **value_ptr)
 
     inf->waiter = GET_THIS_TASK;
     while (!inf->finished)
-        Wait(SIGF_PARENT);
+    {
+        if (!ReapAbnormalThread(inf))
+            Delay(1);
+        pthread_testcancel();
+    }
+
+    /* Normal completion may have left its wake signal pending while polling. */
+    SetSignal(SIGF_PARENT, 0);
 
     if (value_ptr)
         *value_ptr = inf->ret;
