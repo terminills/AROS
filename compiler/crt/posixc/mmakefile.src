@@ -148,6 +148,7 @@ POSIXC := \
     lstat \
     lstat64 \
     mkdir \
+    mkdtemp \
     mknod \
     mkstemp \
     mktemp \
@@ -165,8 +166,10 @@ POSIXC := \
     pipe \
     popen \
     posix_memalign \
+    pread \
     printf \
     pselect \
+    pwrite \
     putchar \
     putenv \
     puts \
