@@ -93,6 +93,7 @@ POSIXC := \
     fstatat \
     fstatvfs \
     fstat64 \
+    fdatasync \
     fsync \
     ftell \
     ftello \

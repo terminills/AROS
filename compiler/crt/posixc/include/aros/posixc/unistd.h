@@ -492,6 +492,7 @@ int execl(const char *path, const char *arg, ...);
 int execv(const char *path, char *const argv[]);
 int execve(const char *path, char *const argv[], char *const envp[]);
 int fchdir(int fd);
+int fdatasync(int fd);
 int fsync(int fd);
 pid_t getpid(void);
 pid_t getppid(void);
