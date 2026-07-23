@@ -80,8 +80,17 @@ int rename (
 
     ret = __stdcio_rename(aoldpath, anewpath);
 
+    if (ret == -1 && errno == 0)
+    {
+        LONG ioerr = IoErr();
+
+        errno = ioerr ? __stdc_ioerr2errno(ioerr) : EIO;
+        bug("[POSIXC:rename] repaired missing errno old='%s' new='%s' "
+            "IoErr=%ld errno=%d\n",
+            aoldpath, anewpath, ioerr, errno);
+    }
+
     free(aoldpath);
 
     return ret;
 } /* rename */
-
