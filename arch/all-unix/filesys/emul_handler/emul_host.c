@@ -638,10 +638,11 @@ LONG DoWrite(struct emulbase *emulbase, struct filehandle *fh, CONST_APTR buff, 
 SIPTR DoSeek(struct emulbase *emulbase, struct filehandle *fh, SIPTR offset, ULONG mode, SIPTR *err)
 {
     off_t res;
-    LONG oldpos = 0, newpos;
+    off_t oldpos = 0, newpos;
     struct stat st;
 
-    DSEEK(bug("[emul] DoSeek(%d, %d, %d)\n", (int)fh->fd, offset, mode));
+    DSEEK(bug("[emul] DoSeek(%d, %lld, %d)\n",
+        (int)fh->fd, (long long)offset, mode));
 
     HostLib_Lock();
 
@@ -651,7 +652,7 @@ SIPTR DoSeek(struct emulbase *emulbase, struct filehandle *fh, SIPTR offset, ULO
         res = emulbase->pdata.SysIFace->fstat((int)(IPTR)fh->fd, &st);
     AROS_HOST_BARRIER
 
-    DSEEK(bug("[emul] Original position: %lu\n", (unsigned long)oldpos));
+    DSEEK(bug("[emul] Original position: %lld\n", (long long)oldpos));
 
     if (res != -1)
     {
@@ -662,7 +663,7 @@ SIPTR DoSeek(struct emulbase *emulbase, struct filehandle *fh, SIPTR offset, ULO
             break;
 
         case OFFSET_CURRENT:
-            newpos = offset + res;
+            newpos = offset + oldpos;
             mode = SEEK_CUR;
             break;
 
@@ -680,7 +681,7 @@ SIPTR DoSeek(struct emulbase *emulbase, struct filehandle *fh, SIPTR offset, ULO
         res = LSeek((IPTR)fh->fd, offset, mode);
         AROS_HOST_BARRIER
 
-        DSEEK(bug("[emul] New position: %lu\n", (unsigned long)res));
+        DSEEK(bug("[emul] New position: %lld\n", (long long)res));
     }
 
     if (res == -1)
@@ -688,7 +689,7 @@ SIPTR DoSeek(struct emulbase *emulbase, struct filehandle *fh, SIPTR offset, ULO
 
     HostLib_Unlock();
 
-    *err = ERROR_SEEK_ERROR;
+    *err = (res == -1) ? ERROR_SEEK_ERROR : 0;
     return oldpos;
 }
 

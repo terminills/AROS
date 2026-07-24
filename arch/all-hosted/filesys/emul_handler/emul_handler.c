@@ -31,6 +31,7 @@
 #include <utility/tagitem.h>
 #include <dos/exall.h>
 #include <dos/dosasl.h>
+#include <dos/dos64.h>
 #include <dos/notify.h>
 #include <proto/arossupport.h>
 #include <proto/dos.h>
@@ -882,8 +883,11 @@ static void handlePacket(struct emulbase *emulbase, struct filehandle *fhv, stru
         break;
 
     case ACTION_SEEK:
+    case ACTION_SEEK64:
         fh = FH_FROM(dp->dp_Arg1);
-        DCMD(bug("[emul] %p ACTION_SEEK %p, mode %ld, offset %lu\n", fhv, fh, dp->dp_Arg3, dp->dp_Arg2));
+        DCMD(bug("[emul] %p ACTION_SEEK%s %p, mode %ld, offset %lld\n",
+            fhv, dp->dp_Type == ACTION_SEEK64 ? "64" : "", fh,
+            dp->dp_Arg3, (long long)dp->dp_Arg2));
 
         if (fh->type == FHD_FILE)
             Res1 = DoSeek(emulbase, fh, dp->dp_Arg2, dp->dp_Arg3, &Res2);
@@ -894,9 +898,47 @@ static void handlePacket(struct emulbase *emulbase, struct filehandle *fhv, stru
 
         break;
 
-    case ACTION_SET_FILE_SIZE:
+    case ACTION_GET_FILE_POSITION64:
         fh = FH_FROM(dp->dp_Arg1);
-        DCMD(bug("[emul] %p ACTION_SET_FILE_SIZE: %p, mode %ld, offset %ld\n", fhv, fh, dp->dp_Arg3, dp->dp_Arg2));
+        DCMD(bug("[emul] %p ACTION_GET_FILE_POSITION64 %p\n", fhv, fh));
+
+        if (fh->type == FHD_FILE)
+            Res1 = DoSeek(emulbase, fh, 0, OFFSET_CURRENT, &Res2);
+        else {
+            Res1 = -1;
+            Res2 = ERROR_OBJECT_WRONG_TYPE;
+        }
+        break;
+
+    case ACTION_GET_FILE_SIZE64:
+        fh = FH_FROM(dp->dp_Arg1);
+        DCMD(bug("[emul] %p ACTION_GET_FILE_SIZE64 %p\n", fhv, fh));
+
+        if (fh->type == FHD_FILE) {
+            SIPTR saved;
+
+            saved = DoSeek(emulbase, fh, 0, OFFSET_CURRENT, &Res2);
+            if (saved != -1 &&
+                DoSeek(emulbase, fh, 0, OFFSET_END, &Res2) != -1) {
+                Res1 = DoSeek(emulbase, fh, 0, OFFSET_CURRENT, &Res2);
+                if (Res1 != -1 &&
+                    DoSeek(emulbase, fh, saved, OFFSET_BEGINNING, &Res2) == -1)
+                    Res1 = -1;
+            } else {
+                Res1 = -1;
+            }
+        } else {
+            Res1 = -1;
+            Res2 = ERROR_OBJECT_WRONG_TYPE;
+        }
+        break;
+
+    case ACTION_SET_FILE_SIZE:
+    case ACTION_SET_FILE_SIZE64:
+        fh = FH_FROM(dp->dp_Arg1);
+        DCMD(bug("[emul] %p ACTION_SET_FILE_SIZE%s: %p, mode %ld, offset %lld\n",
+            fhv, dp->dp_Type == ACTION_SET_FILE_SIZE64 ? "64" : "", fh,
+            dp->dp_Arg3, (long long)dp->dp_Arg2));
 
         Res1 = DoSetSize(emulbase, fh, dp->dp_Arg2, dp->dp_Arg3, &Res2);
         if (Res2 != 0) {
@@ -1499,4 +1541,3 @@ AROS_PROCH(EmulHandlerMain, argptr, argstr, SysBase)
 
     AROS_PROCFUNC_EXIT
 }
-
