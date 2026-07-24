@@ -20,7 +20,6 @@
 
 #include "pthread_intern.h"
 
-#include <aros/debug.h>
 #include <errno.h>
 
 /*****************************************************************************
@@ -37,27 +36,29 @@
 	sigset_t *oldset)
 
 /*  FUNCTION
+        Examine or change the signal mask of the calling thread.
 
     INPUTS
 
     RESULT
+        0 on success, or an error number on failure.
 
     NOTES
-        Not implemented.
+        AROS signal masks are maintained by posixc for the calling task.
 
     EXAMPLE
 
     BUGS
 
     SEE ALSO
+        sigprocmask()
 
     INTERNALS
 
 ******************************************************************************/
 {
-    /* TODO: Implement pthread_sigmask() */
-    AROS_FUNCTION_NOT_IMPLEMENTED("pthread");
-    errno = ENOSYS;
-    
-    return -1;
+    if (sigprocmask(how, set, oldset) == 0)
+        return 0;
+
+    return errno;
 } /* pthread_sigmask */

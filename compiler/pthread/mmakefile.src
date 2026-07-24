@@ -39,6 +39,7 @@ PTHREADFUNCS :=  \
     pthread_getspecific \
     pthread_setspecific \
     pthread_key_create \
+    pthread_sigmask \
     pthread_cond_broadcast \
     pthread_cond_wait \
     pthread_mutex_trylock

@@ -423,6 +423,7 @@ void pthread_cleanup_pop(int execute);
 //
 
 int pthread_kill(pthread_t thread, int sig);
+int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
 
 //
 // Wrap cancellation points
