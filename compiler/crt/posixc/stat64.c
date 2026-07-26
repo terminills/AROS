@@ -93,7 +93,9 @@
     lock = Lock(path, SHARED_LOCK);
     if (!lock)
     {
-        if  (IoErr() == ERROR_OBJECT_IN_USE)
+        LONG ioerr = IoErr();
+
+        if  (ioerr == ERROR_OBJECT_IN_USE)
         {
             /* the file is already locked exclusively, so the only way to get
                info about it is to find it in the parent directory with the ExNext() function
@@ -103,7 +105,12 @@
             return __stat64_from_path(path, sb);
         }
 
-        errno = __stdc_ioerr2errno(IoErr());
+        /*
+         * A failed Lock() must never escape as errno == 0.  Some handlers
+         * provide no IoErr() for a missing path; ENOENT is the only useful
+         * POSIX interpretation at this path-lookup boundary.
+         */
+        errno = ioerr ? __stdc_ioerr2errno(ioerr) : ENOENT;
         return -1;
     }
     else
@@ -113,4 +120,3 @@
 
     return res;
 }
-
