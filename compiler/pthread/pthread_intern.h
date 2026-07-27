@@ -88,6 +88,7 @@ typedef struct
     struct MinNode node;
     struct Task *task;
     UBYTE sigbit;
+    BOOL signaled;
 } CondWaiter;
 
 typedef struct

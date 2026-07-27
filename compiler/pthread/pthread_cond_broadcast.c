@@ -36,12 +36,16 @@ int _pthread_cond_broadcast(pthread_cond_t *cond, BOOL onlyfirst)
     if (SemaphoreIsInvalid(&cond->semaphore))
         pthread_cond_init(cond, NULL);
 
-    // signal the waiting threads 
+    // Dequeue each selected waiter before signalling it.  A signalled task
+    // may still be waiting to reacquire its mutex; leaving it at the head
+    // would make subsequent signals target the same task and coalesce.
     ObtainSemaphore(&cond->semaphore);
-    ForeachNode(&cond->waiters, waiter)
+    while ((waiter = (CondWaiter *)RemHead((struct List *)&cond->waiters)))
     {
+        waiter->signaled = TRUE;
         Signal(waiter->task, 1 << waiter->sigbit);
-        if (onlyfirst) break;
+        if (onlyfirst)
+            break;
     }
     ReleaseSemaphore(&cond->semaphore);
 

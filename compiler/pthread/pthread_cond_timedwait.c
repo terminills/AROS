@@ -85,9 +85,10 @@ int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const 
     if (signal == -1)
     {
         signal = SIGB_COND_FALLBACK;
-        SetSignal(SIGF_COND_FALLBACK, 0);
+        SetSignal(0, SIGF_COND_FALLBACK);
     }
     waiter.sigbit = signal;
+    waiter.signaled = FALSE;
     sigs |= 1 << waiter.sigbit;
 
     // add it to the end of the list
@@ -102,9 +103,12 @@ int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const 
     pthread_mutex_lock(mutex);
     mutex->incond--;
 
-    // remove the node from the list
+    // A signaler dequeues the selected waiter before waking it so repeated
+    // signals cannot be coalesced onto the same task.  Timeout and
+    // cancellation paths still have to dequeue themselves.
     ObtainSemaphore(&cond->semaphore);
-    Remove((struct Node *)&waiter);
+    if (!waiter.signaled)
+        Remove((struct Node *)&waiter);
     ReleaseSemaphore(&cond->semaphore);
 
     if (waiter.sigbit != SIGB_COND_FALLBACK)
