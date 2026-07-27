@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int failures;
+
 int filter(const struct dirent *de)
 {
     return !strcmp(de->d_name, "T");
@@ -26,6 +28,7 @@ void testscandir(const char *dir,
     if (res < 0)
     {
         perror("scandir");
+        failures++;
     }
     else
     {
@@ -41,7 +44,8 @@ void testscandir(const char *dir,
 int main(void)
 {
     testscandir("ram:", NULL, NULL);
+    testscandir("ram:/", NULL, NULL);
     testscandir("ram:", NULL, alphasort);
     testscandir("ram:", filter, NULL);
-    return 0;
+    return failures != 0;
 }

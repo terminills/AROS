@@ -53,22 +53,31 @@ static void  __path_normalstuff_u2a(const char *path, char *buf);
     struct PosixCIntBase *PosixCBase =
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
     const char *newpath;
+    const char *volume;
 
     D(bug("Entering __path_u2a(\"%s\")\n", upath));
-
-    /* Does the path really need to be converted?  */
-    if (!PosixCBase->doupath)
-    {
-        D(bug("__path_u2a: No conversion needed\n"));
-
-        return upath;
-    }
 
     /* Safety check.  */
     if (upath == NULL)
     {
         errno = EFAULT;
         return NULL;
+    }
+
+    /*
+     * POSIX path composition commonly produces "VOLUME:/path". AmigaDOS
+     * requires "VOLUME:path"; normalize that hybrid form even when full Unix
+     * path conversion is disabled for this PosixC base.
+     */
+    volume = strchr(upath, ':');
+
+    /* Does the path really need to be converted?  */
+    if (!PosixCBase->doupath &&
+        (volume == NULL || volume[1] != '/'))
+    {
+        D(bug("__path_u2a: No conversion needed\n"));
+
+        return upath;
     }
 
     /* Some scripts (config.guess) try to access /.attbin
