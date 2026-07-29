@@ -726,7 +726,19 @@ int __init_stdfiles(struct PosixCIntBase *PosixCBase)
     ));
 
     outfcb->handle = Output();
-    outfcb->flags = O_WRONLY | O_APPEND;
+    /*
+     * Output() is an inherited DOS handle whose position and redirection mode
+     * were selected by the parent shell.  It is not implicitly a POSIX
+     * O_APPEND file description: consoles and pipes cannot be seeked, and
+     * regular redirected files are already positioned by the shell.
+     *
+     * Historically write() ignored this fabricated O_APPEND bit.  Once
+     * write() began implementing real append semantics, retaining it made
+     * every stdout write attempt a size query + seek -- failing outright on
+     * CON:/KCON and inherited pipes.  Real open(..., O_APPEND) descriptors
+     * still carry O_APPEND and retain the atomic end-positioning path.
+     */
+    outfcb->flags = O_WRONLY;
     outfcb->opencount = 1;
     outfcb->privflags |= _FCB_DONTCLOSE_FH;
     outdesc->fcb = outfcb;
@@ -737,7 +749,7 @@ int __init_stdfiles(struct PosixCIntBase *PosixCBase)
 
     errfcb->privflags = 0;
     stderrlogic(me, errfcb);
-    errfcb->flags = O_WRONLY | O_APPEND;
+    errfcb->flags = O_WRONLY;
     errfcb->opencount = 1;
     errdesc->fcb = errfcb;
     errdesc->fdflags = 0;
