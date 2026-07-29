@@ -53,17 +53,19 @@ static int send_action_packet(struct MsgPort *port, BPTR arg)
     return ret;
 }
 
-static int fill_consize(APTR fd, struct winsize *ws)
+static int fill_consize(BPTR handle, struct winsize *ws)
 {
     struct ConUnit *console_unit = NULL;
     struct InfoData *info_data;
     BPTR action_disk_info_arg;
-    void *console = ((struct FileHandle *) BADDR(fd))->fh_Type;
+    struct FileHandle *file_handle = BADDR(handle);
+    struct MsgPort *console;
 
-    if(!console)
+    if(file_handle == NULL || file_handle->fh_Type == NULL)
     {
         return 0;
     }
+    console = file_handle->fh_Type;
 
     info_data = AllocMem(sizeof(*info_data), MEMF_PUBLIC);
     if(info_data == NULL)
@@ -73,7 +75,7 @@ static int fill_consize(APTR fd, struct winsize *ws)
     }
 
     action_disk_info_arg = MKBADDR(info_data);
-    if(send_action_packet((struct MsgPort *) console, action_disk_info_arg))
+    if(send_action_packet(console, action_disk_info_arg))
     {
         console_unit = (void *) ((struct IOStdReq *) info_data->id_InUse)->io_Unit;
     }
@@ -202,30 +204,28 @@ static int fill_consize(APTR fd, struct winsize *ws)
         return EFAULT;
     }
 
-    switch(fd)
-    {
-        case STDIN_FILENO:  desc=BADDR(Input());
-           break;
-        case STDOUT_FILENO: desc=BADDR(Output());
-           break;
-        default:
-           desc=__getfdesc(fd); /* FIXME: is this correct? why does it not work for STDOUT/STDIN? */
-    }
+    desc = __getfdesc(fd);
 
-    if(!desc || !IsInteractive(desc))
+    if(!desc)
     {
-        return EBADF;
+        errno = EBADF;
+        return -1;
+    }
+    if(!IsInteractive(desc->fcb->handle))
+    {
+        errno = ENOTTY;
+        return -1;
     }
 
     va_start(args, request);
     ws=(struct winsize *) va_arg(args, struct winsize *);
     va_end(args);
 
-    if(!ws || !fill_consize(desc, ws))
+    if(!ws || !fill_consize(desc->fcb->handle, ws))
     {
-        return EFAULT;
+        errno = EFAULT;
+        return -1;
     }
 
     return 0;
 }
-
