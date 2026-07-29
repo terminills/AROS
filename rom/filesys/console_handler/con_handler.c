@@ -1015,6 +1015,31 @@ LONG CONMain(struct ExecBase *SysBase)
                         replypkt(dp, (SIPTR) MKBADDR(fl));
                     }
                     break;
+                case ACTION_PARENT_FH:
+                    /*
+                     * A console handle is a character device endpoint, not a
+                     * child of a filesystem directory.  Say so explicitly so
+                     * NameFromFH() can apply its device-handle fallback.
+                     */
+                    DACTION(bug("[con:handler] ACTION_PARENT_FH\n"));
+                    replypkt2(dp, (SIPTR) BNULL, ERROR_OBJECT_NOT_FOUND);
+                    break;
+                case ACTION_EXAMINE_FH:
+                    {
+                        struct FileInfoBlock *fib = BADDR(dp->dp_Arg2);
+                        CONST_STRPTR name =
+                            (fh->flags & FHFLG_RAW) ? "RAW" : "CON";
+                        ULONG namelen = strlen(name);
+
+                        DACTION(bug("[con:handler] ACTION_EXAMINE_FH\n"));
+                        SetMem(fib, 0, sizeof(*fib));
+                        fib->fib_DirEntryType = ST_PIPEFILE;
+                        fib->fib_EntryType = ST_PIPEFILE;
+                        fib->fib_FileName[0] = namelen;
+                        CopyMem(name, &fib->fib_FileName[1], namelen);
+                        replypkt(dp, DOSTRUE);
+                    }
+                    break;
                 case ACTION_FREE_LOCK:
                     DACTION(bug("[con:handler] ACTION_FREE_LOCK\n"));
                     fl = BADDR(dp->dp_Arg1);
@@ -1146,6 +1171,20 @@ LONG CONMain(struct ExecBase *SysBase)
                         struct InfoData *id = BADDR(dp->dp_Arg1);
                         DACTION(bug("[con:handler] ACTION_DISK_INFO\n"));
                         SetMem(id, 0, sizeof(struct InfoData));
+                        id->id_BytesPerBlock = 1;
+                        id->id_DiskType =
+                                (fh->flags & FHFLG_RAW) ? AROS_MAKE_ID('R', 'A', 'W', 0) : AROS_MAKE_ID('C', 'O', 'N', 0);
+                        id->id_VolumeNode = (BPTR) fh->window;
+                        id->id_InUse = (IPTR) fh->conreadio;
+                        replypkt(dp, DOSTRUE);
+                    }
+                    break;
+                case ACTION_INFO:
+                    {
+                        struct InfoData *id = BADDR(dp->dp_Arg2);
+                        DACTION(bug("[con:handler] ACTION_INFO\n"));
+                        SetMem(id, 0, sizeof(struct InfoData));
+                        id->id_BytesPerBlock = 1;
                         id->id_DiskType =
                                 (fh->flags & FHFLG_RAW) ? AROS_MAKE_ID('R', 'A', 'W', 0) : AROS_MAKE_ID('C', 'O', 'N', 0);
                         /* The window we hang off, for whoever wants to put
