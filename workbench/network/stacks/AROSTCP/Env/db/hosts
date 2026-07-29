@@ -1,7 +1,7 @@
 ;
 ; hosts -- the hosts database file for AROSTCP
 ;
-; Copyright © 1993 AmiTCP/IP Group, <amitcp-group@hut.fi>
+; Copyright Â© 1993 AmiTCP/IP Group, <amitcp-group@hut.fi>
 ;                  Helsinki University of Technology, Finland.
 ;                  All rights reserved.
 ;
@@ -29,5 +29,7 @@
 ; + protects you from changes in address of computers.
 ; - if nameserver is down, you can access computers only with its IP
 ;  number if it is not in your hosts file.
+
+127.0.0.1 localhost.localdomain localhost loopback
 
 ; EOF
