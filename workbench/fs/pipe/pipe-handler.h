@@ -139,6 +139,7 @@ extern struct MsgPort     *TapReplyPort;
 
 extern void      handler   ( struct DosPacket *StartPkt );
 extern PIPEDATA  *FindPipe ( char *name );
+extern void      WaitPipeChar ( struct DosPacket *pkt );
 
 
 
@@ -187,5 +188,4 @@ extern struct Library     *AbsExecBase;
 #ifndef MODE_READONLY
 # define   MODE_READONLY    MODE_OLDFILE
 #endif /*  MODE_READONLY */
-
 

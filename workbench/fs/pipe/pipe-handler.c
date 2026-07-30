@@ -271,6 +271,13 @@ LOOP:
             StartPipeIO (pkt, PIPEWRITE);
             break;
 
+          case ACTION_WAIT_CHAR:
+#ifdef DEBUG
+  OS ("Wait-char packet received\n");
+#endif /* DEBUG */
+            WaitPipeChar (pkt);
+            break;
+
 #if PIPEDIR
           case ACTION_LOCATE_OBJECT:
 #  ifdef DEBUG
@@ -367,6 +374,39 @@ QUIT:
 
   if (DOSBase != NULL)
     CloseLibrary ((APTR)DOSBase);
+}
+
+/*
+ * ACTION_WAIT_CHAR historically carried only the timeout because CON: owns a
+ * handler process per console.  DOS now supplies the FileHandle key in Arg2,
+ * allowing the multi-stream PIPE: handler to identify the requested pipe.
+ *
+ * libuv uses the zero-timeout readiness form.  Answer that form exactly:
+ * readable data and EOF (the last writer closed) are both read-ready.
+ * Positive-timeout requests remain a non-blocking capability query; blocking
+ * them here would stall the single PIPE: handler and every unrelated pipe.
+ */
+void WaitPipeChar(struct DosPacket *pkt)
+{
+  PIPEKEY  *pipekey = (PIPEKEY *)pkt->dp_Arg2;
+  PIPEDATA *pipe;
+
+  pkt->dp_Res1 = DOSFALSE;
+  pkt->dp_Res2 = 0;
+
+  if (pipekey == NULL || pipekey->pipe == NULL ||
+      ((pipekey->iotype != PIPEREAD) && (pipekey->iotype != PIPERW)))
+    {
+      pkt->dp_Res2 = ERROR_INVALID_LOCK;
+      QuickReplyPkt(pkt);
+      return;
+    }
+
+  pipe = pipekey->pipe;
+  if (!PipebufEmpty(pipe->buf) || !(pipe->flags & OPEN_FOR_WRITE))
+    pkt->dp_Res1 = DOSTRUE;
+
+  QuickReplyPkt(pkt);
 }
 
 

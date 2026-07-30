@@ -59,7 +59,14 @@
     if(file == BNULL)
         return 0;
 
-    status = dopacket1(DOSBase, NULL, fh->fh_Type, ACTION_WAIT_CHAR, timeout);
+    /*
+     * Arg1 is the traditional timeout.  Pass the file-handle key as Arg2 as
+     * well so handlers which multiplex several streams in one process (PIPE:
+     * is the important example) can answer for the right stream.  Existing
+     * handlers only inspect Arg1, so this is backward compatible.
+     */
+    status = dopacket2(DOSBase, NULL, fh->fh_Type, ACTION_WAIT_CHAR,
+                       timeout, fh->fh_Arg1);
     return status;
 
     AROS_LIBFUNC_EXIT
