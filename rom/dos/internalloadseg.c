@@ -89,6 +89,7 @@
     };
   
     BPTR segs = 0;
+    BOOL recognized = FALSE;
 
     if (fh)
     {
@@ -102,6 +103,16 @@
             id = AROS_BE2LONG(id);
             for (i = 0; i < num_funcs; i++) {
                 if (funcs[i].id == id) {
+                    recognized = TRUE;
+                    /*
+                     * Supply the generic failure before calling the format
+                     * loader.  A loader that can identify a more useful
+                     * cause (for example ERROR_NO_FREE_STORE) may then
+                     * replace it without having that result overwritten
+                     * after it returns.
+                     */
+                    if (DOSBase != NULL)
+                        SetIoErr(ERROR_NOT_EXECUTABLE);
                     segs = (*funcs[i].func)(fh, BNULL, (SIPTR *)funcarray,
                         stack, DOSBase);
                     D(bug("[InternalLoadSeg] %s loading %p as an %s object.\n",
@@ -122,7 +133,7 @@
      * Luckily, we're not trying to read ELF, which has a
      * mess of SetIoErr() calls in it.
      */
-    if (DOSBase != NULL)
+    if (DOSBase != NULL && !recognized)
         SetIoErr(ERROR_NOT_EXECUTABLE);
 
     return BNULL;
