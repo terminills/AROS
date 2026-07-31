@@ -13,6 +13,7 @@ __BEGIN_DECLS
 
 const char * __path_u2a(const char *upath);
 const char * __path_a2u(const char *apath);
+int __path_volume_exists(const char *path);
 
 __END_DECLS
 

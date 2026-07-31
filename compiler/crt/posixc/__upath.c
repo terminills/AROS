@@ -6,6 +6,9 @@
 
 #include <aros/debug.h>
 
+#include <dos/dosextens.h>
+#include <proto/dos.h>
+#include <proto/exec.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -14,6 +17,24 @@
 
 static const char *__path_devstuff_u2a(const char *path);
 static void  __path_normalstuff_u2a(const char *path, char *buf);
+
+int __path_volume_exists(const char *path)
+{
+    char volume[32];
+    struct DosList *entry;
+
+    if (SplitName(path, ':', volume, 0, sizeof(volume) - 1) == -1)
+        return 1;
+
+    if (strcmp(volume, "PROGDIR") == 0)
+        return 1;
+
+    entry = LockDosList(LDF_ALL | LDF_READ);
+    entry = FindDosEntry(entry, volume, LDF_ALL);
+    UnLockDosList(LDF_ALL | LDF_READ);
+
+    return entry != NULL;
+}
 
 /*****************************************************************************
 

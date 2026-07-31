@@ -89,7 +89,13 @@
     path = __path_u2a(path);
     if (path == NULL)
         return -1;
-        
+
+    if (!__path_volume_exists(path))
+    {
+        errno = ENOENT;
+        return -1;
+    }
+
     lock = Lock(path, SHARED_LOCK);
     if (!lock)
     {

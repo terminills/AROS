@@ -70,24 +70,6 @@ static struct PosixCIntBase *__fd_owner(struct PosixCIntBase *PosixCBase)
 #define FD_LOCK(base)   ObtainSemaphore(&__fd_owner(base)->fd_sem)
 #define FD_UNLOCK(base) ReleaseSemaphore(&__fd_owner(base)->fd_sem)
 
-static int __path_volume_exists(const char *path)
-{
-    char volume[32];
-    struct DosList *entry;
-
-    if (SplitName(path, ':', volume, 0, sizeof(volume) - 1) == -1)
-        return 1;
-
-    if (strcmp(volume, "PROGDIR") == 0)
-        return 1;
-
-    entry = LockDosList(LDF_ALL | LDF_READ);
-    entry = FindDosEntry(entry, volume, LDF_ALL);
-    UnLockDosList(LDF_ALL | LDF_READ);
-
-    return entry != NULL;
-}
-
 /* TODO: Add locking to make filedesc usage thread safe
    Using vfork()+exec*() filedescriptors may be shared between different
    tasks. Only one DOS file handle is used between shared file descriptors.
