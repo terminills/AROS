@@ -2,7 +2,7 @@
 #define _POSIXC_FCNTL_H_
 
 /*
-    Copyright © 1995-2025, The AROS Development Team.
+    Copyright © 1995-2026, The AROS Development Team.
     All rights reserved.
     $Id$
 
@@ -135,7 +135,7 @@ int creat64(const char *filename, int mode);
 #endif
 
 int fcntl(int fd, int cmd, ...);
-int open(const char *filename, int flags, ...);
+POSIXCFUNC(int, open, (const char *filename, int flags, ...));
 int openat(int dirfd, const char *path, int flags, ...);
 
 /* NOTIMPL int posix_fadvise(int fd, off_t offset, size_t len, int advice); */

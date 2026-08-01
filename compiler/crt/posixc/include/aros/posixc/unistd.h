@@ -482,7 +482,7 @@ __BEGIN_DECLS
 /* POSIX.1-1990 (default with _POSIX_SOURCE or none) */
 int access(const char *path, int mode);
 int chdir(const char *path);
-int close(int fd);
+POSIXCFUNC(int, close, (int fd));
 int dup(int oldfd);
 int dup2(int oldfd, int newfd);
 /* posixc's _exit intercepts vfork() pretend-children; the asm rename routes
@@ -509,13 +509,13 @@ __off64_t lseek64(int filedes, __off64_t offset, int whence);
 int pipe(int filedes[2]);
 ssize_t pread(int d, void *buf, size_t nbytes, off_t offset);
 ssize_t pwrite(int d, const void *buf, size_t nbytes, off_t offset);
-ssize_t read(int d, void *buf, size_t nbytes);
+POSIXCFUNC(ssize_t, read, (int d, void *buf, size_t nbytes));
 int rmdir(const char *path);
 int setuid(uid_t uid);
 int setgid(gid_t gid);
 unsigned sleep(unsigned);
 int unlink(const char *path);
-ssize_t write(int fd, const void *buf, size_t nbytes);
+POSIXCFUNC(ssize_t, write, (int fd, const void *buf, size_t nbytes));
 
 /* POSIX.1-2001 and later */
 #if defined(__cplusplus) || !defined(__STRICT_ANSI__)
