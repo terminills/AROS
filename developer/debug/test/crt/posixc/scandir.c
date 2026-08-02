@@ -45,6 +45,7 @@ int main(void)
 {
     testscandir("ram:", NULL, NULL);
     testscandir("ram:/", NULL, NULL);
+    testscandir("/ram:", NULL, NULL);
     testscandir("ram:", NULL, alphasort);
     testscandir("ram:", filter, NULL);
     return failures != 0;

@@ -54,6 +54,7 @@ static void  __path_normalstuff_u2a(const char *path, char *buf);
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
     const char *newpath;
     const char *volume;
+    const char *separator;
 
     D(bug("Entering __path_u2a(\"%s\")\n", upath));
 
@@ -70,10 +71,14 @@ static void  __path_normalstuff_u2a(const char *path, char *buf);
      * path conversion is disabled for this PosixC base.
      */
     volume = strchr(upath, ':');
+    separator = strchr(upath + (upath[0] == '/' ? 1 : 0), '/');
 
     /* Does the path really need to be converted?  */
     if (!PosixCBase->doupath &&
-        (volume == NULL || volume[1] != '/'))
+        (volume == NULL ||
+         (volume[1] != '/' &&
+          !(upath[0] == '/' &&
+            (separator == NULL || volume < separator)))))
     {
         D(bug("__path_u2a: No conversion needed\n"));
 
