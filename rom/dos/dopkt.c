@@ -66,7 +66,10 @@ SIPTR dopacket(SIPTR *res2, struct MsgPort *port, LONG action, SIPTR arg1, SIPTR
     SIPTR res;
     struct Process   *me = (struct Process *)FindTask(NULL);
     struct DosPacket *dp;
+    struct DosPacket *reply;
     struct MsgPort   *replyPort;
+    struct List       deferredMsgs;
+    struct Message   *msg;
 
     ASSERT_VALID_PROCESS(me);
 
@@ -131,9 +134,39 @@ SIPTR dopacket(SIPTR *res2, struct MsgPort *port, LONG action, SIPTR arg1, SIPTR
 
     internal_SendPkt(dp, port, replyPort);
 
-    /* Did we get different packet back? System is in unstable state. */
-    if (internal_WaitPkt(replyPort) != dp)
-        Alert(AN_AsyncPkt);
+    NEWLIST(&deferredMsgs);
+
+    for (;;)
+    {
+        msg = NULL;
+
+        if (__is_process(me) && me->pr_PktWait)
+        {
+            msg = AROS_UFC3(struct Message *, me->pr_PktWait,
+                AROS_UFCA(APTR, me->pr_PktWait, A0),
+                AROS_UFCA(struct MsgPort *, replyPort, A1),
+                AROS_UFCA(struct ExecBase *, SysBase, A6));
+        }
+
+        if (!msg)
+        {
+            while ((msg = GetMsg(replyPort)) == NULL)
+            {
+                Wait(1 << replyPort->mp_SigBit);
+            }
+        }
+
+        reply = (struct DosPacket *)msg->mn_Node.ln_Name;
+        if (reply == dp)
+            break;
+
+        AddTail(&deferredMsgs, &msg->mn_Node);
+    }
+
+    while ((msg = (struct Message *)REMHEAD(&deferredMsgs)) != NULL)
+    {
+        PutMsg(replyPort, msg);
+    }
 
     D(bug("res1=%x res2=%x\n", dp->dp_Res1, dp->dp_Res2));
 
