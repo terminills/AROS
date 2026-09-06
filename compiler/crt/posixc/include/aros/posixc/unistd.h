@@ -44,7 +44,7 @@
 #define _POSIX_MEMLOCK_RANGE                -1
 #define _POSIX_MEMORY_PROTECTION            -1
 #define _POSIX_MESSAGE_PASSING              -1
-#define _POSIX_MONOTONIC_CLOCK              -1
+#define _POSIX_MONOTONIC_CLOCK              200809L
 #define _POSIX_NO_TRUNC                     1
 #define _POSIX_PRIORITIZED_IO               -1
 #define _POSIX_PRIORITY_SCHEDULING          -1
