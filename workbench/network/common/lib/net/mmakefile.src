@@ -17,6 +17,7 @@ NETLIBSRC = strerror \
            lineread \
            printfault \
            stubs \
+           in6addr \
            herror \
            syslog \
            getpid \
