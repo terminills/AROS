@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2021, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <ctype.h>
@@ -46,7 +46,8 @@
 
 #define D(x)
 
-#define LOWMEMSIZE    (512 * 1024 * 1024)
+#define MEGABYTE      ((size_t)1024 * (size_t)1024)
+#define LOWMEMSIZE    ((size_t)512 * MEGABYTE)
 
 /* These macros are defined in both UNIX and AROS headers. Get rid of warnings. */
 #undef __pure
@@ -137,6 +138,45 @@ static char *GetConfigArg(char *str, char *option)
     return str;
 }
 
+static int ParseMemorySize(const char *value, size_t *size)
+{
+    const size_t max_megabytes = (size_t)-1 / MEGABYTE;
+    const char *cursor;
+    size_t parsed = 0;
+
+    if (!value || !*value)
+        return 0;
+
+    cursor = value;
+    while (isspace((unsigned char)*cursor))
+        cursor++;
+    if (*cursor == '+')
+        cursor++;
+    if (!isdigit((unsigned char)*cursor))
+        return 0;
+
+    while (isdigit((unsigned char)*cursor))
+    {
+        size_t digit = (size_t)(*cursor - '0');
+
+        if ((parsed > max_megabytes / 10) ||
+            ((parsed == max_megabytes / 10) &&
+             (digit > max_megabytes % 10)))
+            return 0;
+
+        parsed = parsed * 10 + digit;
+        cursor++;
+    }
+
+    while (isspace((unsigned char)*cursor))
+        cursor++;
+    if (*cursor || !parsed)
+        return 0;
+
+    *size = parsed * MEGABYTE;
+    return 1;
+}
+
 char *join_string(int argc, char **argv)
 {
     char *str, *s;
@@ -163,7 +203,11 @@ char *join_string(int argc, char **argv)
 int bootstrap(int argc, char ** argv)
 {
     int i = 1;
-    unsigned int memSize = 256;
+    size_t memoryBytes = (size_t)256 * MEGABYTE;
+    size_t lowMemoryBytes;
+#if (__WORDSIZE == 64)
+    size_t highMemoryBytes;
+#endif
     int def_memSize = 1;
     char *config = DefaultConfig;
     FILE *file;
@@ -192,7 +236,7 @@ int bootstrap(int argc, char ** argv)
                     "Available options:\n"
                     " -h                 show this page\n"
                     " -m <size>          allocate <size> Megabytes of memory for AROS\n"
-                    "                    (default is 64MB)\n"
+                    "                    (default is 256MB)\n"
                     " -c <file>          read configuration from <file>\n"
                     "                    (default is %s)\n"
                     " --help             same as '-h'\n"
@@ -202,7 +246,14 @@ int bootstrap(int argc, char ** argv)
                     "Please report bugs to the AROS development team. http://www.aros.org/\n", argv[0], DefaultConfig);
             return 0;
         } else if (!strcmp(argv[i], "--memsize") || !strcmp(argv[i], "-m")) {
-            memSize = atoi(argv[++i]);
+            const char *value = (++i < argc) ? argv[i] : NULL;
+
+            if (!ParseMemorySize(value, &memoryBytes))
+            {
+                DisplayError("Invalid AROS memory size: %s",
+                             value ? value : "<missing>");
+                return -1;
+            }
             def_memSize = 0;
             i++;
         } else if (!strcmp(argv[i], "--config") || !strcmp(argv[i], "-c")) {
@@ -254,7 +305,12 @@ int bootstrap(int argc, char ** argv)
         if (def_memSize) {
             c = GetConfigArg(buf, "memory");
             if (c) {
-                memSize = atoi(c);
+                if (!ParseMemorySize(c, &memoryBytes))
+                {
+                    DisplayError("Invalid AROS memory size: %s", c);
+                    fclose(file);
+                    return -1;
+                }
                 continue;
             }
         }
@@ -301,40 +357,47 @@ int bootstrap(int argc, char ** argv)
     }
     fclose(file);
 
-    D(fprintf(stderr, "[Bootstrap] Allocating %iMB of RAM for AROS\n",memSize));
+    lowMemoryBytes = memoryBytes;
+
+    D(fprintf(stderr, "[Bootstrap] Allocating %zuMB of RAM for AROS\n",
+              memoryBytes / MEGABYTE));
 
 #if (__WORDSIZE == 64)
-    if ((memSize << 20) > LOWMEMSIZE)
+    if (memoryBytes > LOWMEMSIZE)
     {
-        MemoryMap[1].len = (memSize << 20) - LOWMEMSIZE;
-        MemoryMap[1].addr = (IPTR)AllocateRAM((size_t)MemoryMap[1].len);
+        highMemoryBytes = memoryBytes - LOWMEMSIZE;
+        MemoryMap[1].len = highMemoryBytes;
+        MemoryMap[1].addr = (IPTR)AllocateRAM(highMemoryBytes);
         if (!MemoryMap[1].addr) {
             int err = errno;
-            DisplayError("[Bootstrap] Failed to allocate %iMB of 'High' RAM for AROS: %08x %s\n", memSize, err, strerror(err));
+            DisplayError("[Bootstrap] Failed to allocate %zuMB of 'High' RAM for AROS: %08x %s\n",
+                         highMemoryBytes / MEGABYTE,
+                         err, strerror(err));
             return -1;
         }
-        fprintf(stderr, "[Bootstrap] RAM memory block allocated: %p - %p (%llu bytes)\n",
-              (void *)(IPTR)MemoryMap[1].addr, (void *)(IPTR)MemoryMap[1].addr + MemoryMap[1].len, (unsigned long long)MemoryMap[1].len);
+        fprintf(stderr, "[Bootstrap] RAM memory block allocated: %p - %p (%zu bytes)\n",
+              (void *)(IPTR)MemoryMap[1].addr,
+              (char *)(IPTR)MemoryMap[1].addr + highMemoryBytes,
+              highMemoryBytes);
 
-        memSize = (LOWMEMSIZE >> 20);
+        lowMemoryBytes = LOWMEMSIZE;
         km[7].ti_Data += sizeof(struct mb_mmap);
     }
 #endif
-    MemoryMap[0].len = memSize << 20;
-    MemoryMap[0].addr = (IPTR)AllocateRAM32((size_t)MemoryMap[0].len);
+    MemoryMap[0].len = lowMemoryBytes;
+    MemoryMap[0].addr = (IPTR)AllocateRAM32(lowMemoryBytes);
 
     if (!MemoryMap[0].addr) {
         int err = errno;
-        DisplayError("[Bootstrap] Failed to allocate %iMB of RAM for AROS: %08x %s\n", memSize, err, strerror(err));
+        DisplayError("[Bootstrap] Failed to allocate %zuMB of RAM for AROS: %08x %s\n",
+                     lowMemoryBytes / MEGABYTE,
+                     err, strerror(err));
         return -1;
     }
-    fprintf(stderr, "[Bootstrap] RAM memory block allocated: %p - %p (",
-              (void *)(IPTR)MemoryMap[0].addr, (void *)(IPTR)MemoryMap[0].addr + MemoryMap[0].len);
-#if (__WORDSIZE == 64)
-    fprintf(stderr, "%llu bytes)\n", (unsigned long long)MemoryMap[0].len);
-#else
-    fprintf(stderr, "%u bytes)\n", MemoryMap[0].len);
-#endif
+    fprintf(stderr, "[Bootstrap] RAM memory block allocated: %p - %p (%zu bytes)\n",
+              (void *)(IPTR)MemoryMap[0].addr,
+              (char *)(IPTR)MemoryMap[0].addr + lowMemoryBytes,
+              lowMemoryBytes);
 
     if (!GetKernelSize(FirstELF, &ro_size, &rw_size, &bss_size))
         return -1;
