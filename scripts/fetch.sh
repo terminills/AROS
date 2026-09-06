@@ -445,10 +445,14 @@ fetchlock()
             local lockfile="${location}/${archive}.fetch"
             if ! test -f "$lockfile"; then
                 trap "fetchunlock $location $archive" INT
-                echo "$$" > "$lockfile"
+                # Record the host as well as the PID: the sources directory
+                # may be shared (--with-portssources on NFS), and a PID is
+                # only meaningful on the host that created the lock.
+                echo "$(hostname):$$" > "$lockfile"
                 break
             else
-                local pid=$(tr -d '\0' < "$lockfile")
+                local owner=$(tr -d '\0' < "$lockfile")
+                local host="${owner%%:*}" pid="${owner##*:}"
                 case "$pid" in
                     ""|*[!0-9]*)
                         # No valid PID recorded (empty or corrupt lockfile):
@@ -458,7 +462,12 @@ fetchlock()
                         continue
                         ;;
                 esac
-                if [ -n "$localbuild" ]; then
+                # A lock left behind by a dead process (aborted build, host
+                # reboot) would otherwise be waited on forever.  Reclaim it
+                # when the PID is verifiably gone: either the lock was taken
+                # on this host, or it carries no host (older format) and the
+                # caller told us the build is local.
+                if [ "$host" = "$(hostname)" ] || { [ "$host" = "$owner" ] && [ -n "$localbuild" ]; }; then
                     if ! kill -0 "$pid" 2>/dev/null; then
                         echo "fetch.sh: removing stale lockfile (no process with PID: $pid)"
                         fetchunlock "$location" "$archive"
