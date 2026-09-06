@@ -10,6 +10,7 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include "__fdesc.h"
+#include "__dos64.h"
 
 /*****************************************************************************
 
@@ -80,18 +81,24 @@
         return -1;
     }
 
-    /* Save the current offset; pwrite() must leave it unchanged. */
-    if (!__fcb_get_position(fdesc->fcb, &saved))
+    /* Save the current offset; pwrite() must leave it unchanged.  Hold
+       the fcb's io_lock across the whole seek/transfer/seek sequence so a
+       concurrent read()/write() on the same handle cannot interleave. */
+    __fcb_lock(fdesc->fcb);
+
+    saved = __dos64_getpos(fdesc->fcb);
+    if (saved == -1)
         goto error;
 
-    if (!__fcb_set_position(fdesc->fcb, (QUAD)offset))
+    if (__dos64_seek(fdesc->fcb, (QUAD)offset, OFFSET_BEGINNING) == -1)
         goto error;
 
-    cnt = Write(fdesc->fcb->handle, (APTR)buf, nbytes);
+    cnt = __dos64_write(fdesc->fcb, (APTR)buf, nbytes);
     ioerr = IoErr();
 
-    /* Restore the original offset regardless of the write outcome. */
-    __fcb_set_position(fdesc->fcb, saved);
+    /* Restore the original offset regardless of the transfer outcome. */
+    __dos64_seek(fdesc->fcb, saved, OFFSET_BEGINNING);
+    __fcb_unlock(fdesc->fcb);
 
     if (cnt == -1)
     {
@@ -102,6 +109,8 @@
     return cnt;
 
 error:
-    errno = __stdc_ioerr2errno(IoErr());
+    ioerr = IoErr();
+    __fcb_unlock(fdesc->fcb);
+    errno = __stdc_ioerr2errno(ioerr);
     return -1;
 } /* pwrite */
