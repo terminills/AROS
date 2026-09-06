@@ -55,6 +55,11 @@ char *realpath(const char * restrict, char * restrict);
 #if defined(_GNU_SOURCE) || defined(_XOPEN_SOURCE)
 int mkstemp(char *);
 #endif
+/* mkdtemp() is POSIX.1-2008 (XSI in POSIX.1-2001) */
+#if defined(_GNU_SOURCE) || defined(_XOPEN_SOURCE) || (_POSIX_C_SOURCE >= 200809L) \
+    || defined(__USE_XOPEN_EXTENDED) || defined(__USE_XOPEN2K8)
+char *mkdtemp(char *);
+#endif
 
 /* BSD / GNU extensions */
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
@@ -67,7 +72,6 @@ int getloadavg(double loadavg[], int n);
 /* NOTIMPL int getsubopt(char **, char *const *, char **); */
 /* NOTIMPL int grantpt(int); */
 /* NOTIMPL char *l64a(long); */
-/* NOTIMPL char *mkdtemp(char *); */
 /* NOTIMPL int posix_openpt(int); */
 /* NOTIMPL char *ptsname(int); */
 int rand_r(unsigned int *);
