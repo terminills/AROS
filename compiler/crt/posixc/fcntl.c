@@ -181,11 +181,8 @@ static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
 
 ******************************************************************************/
 {
-    fdesc *desc;
+    fdesc *desc = __getfdesc(fd);
     int result = -1;
-
-    __lock_fdesc_table();
-    desc = __getfdesc(fd);
 
     if (!desc)
     {
@@ -238,7 +235,7 @@ static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
             }
         }
         errno = EBADF;
-        goto out;
+        return -1;
     }
 
     switch (cmd)
@@ -306,8 +303,7 @@ static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
             }
             __fcb_unlock(desc->fcb);
 
-            if (result != 0)
-                errno = __stdc_ioerr2errno(IoErr());
+            errno = __stdc_ioerr2errno(IoErr());
             break;
         }
 
@@ -321,7 +317,11 @@ static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
             lock = va_arg(ap, struct flock *);
             va_end(ap);
 
+            /* LockRecord/UnLockRecord talk to the handle's DOS handler;
+               serialise against concurrent I/O on the same fcb. */
+            __fcb_lock(desc->fcb);
             result = __fcntl_record_lock(desc, cmd, lock);
+            __fcb_unlock(desc->fcb);
             break;
         }
 
@@ -330,7 +330,5 @@ static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
             break;
     }
 
-out:
-    __unlock_fdesc_table();
     return result;
 }
