@@ -38,12 +38,28 @@ struct rlimit {
 
 #include <aros/types/timeval_s.h>
 
-/* POSIX.1-2008 requires only the two time fields. Note: posixc.library
-   does not implement getrusage(); the structure and constants are
-   provided for code (e.g. gnulib) that supplies its own fallback. */
+/* POSIX.1-2008 requires only the two time fields. The BSD extension
+   counters are part of the de-facto Unix structure shape used by libuv
+   and other portability layers. Note: posixc.library does not implement
+   getrusage(); the structure and constants are provided for code that
+   supplies its own fallback. */
 struct rusage {
     struct timeval ru_utime; /* User time used */
     struct timeval ru_stime; /* System time used */
+    long ru_maxrss;          /* Maximum resident set size */
+    long ru_ixrss;           /* Integral shared memory size */
+    long ru_idrss;           /* Integral unshared data size */
+    long ru_isrss;           /* Integral unshared stack size */
+    long ru_minflt;          /* Page reclaims */
+    long ru_majflt;          /* Page faults */
+    long ru_nswap;           /* Swaps */
+    long ru_inblock;         /* Block input operations */
+    long ru_oublock;         /* Block output operations */
+    long ru_msgsnd;          /* IPC messages sent */
+    long ru_msgrcv;          /* IPC messages received */
+    long ru_nsignals;        /* Signals received */
+    long ru_nvcsw;           /* Voluntary context switches */
+    long ru_nivcsw;          /* Involuntary context switches */
 };
 
 #define RLIMIT_CORE     0	/* Limit on size of core file */
