@@ -1,0 +1,48 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+# CrashReporter: SYS:WBStartup/CrashReporter (Zune commodity that hooks the
+# alert path and reports crashes to the distribution) plus the CrashTest
+# tool.  See DESIGN.md.  Reuses libpkg from SoftwareCenter for HTTP/file
+# helpers and the package-source list.
+
+include $(SRCDIR)/config/aros.cfg
+
+CRDIR     := $(SRCDIR)/$(CURDIR)
+PKGDIR    := $(SRCDIR)/workbench/system/SoftwareCenter
+
+#MM- workbench-system : workbench-system-crashreporter
+#MM- workbench-system-crashreporter : \
+#MM    workbench-system-crashreporter-prog \
+#MM    workbench-system-crashreporter-icon \
+#MM    workbench-system-crashreporter-test
+
+#MM workbench-system-crashreporter-prog : includes linklibs linklibs-pkg workbench-directories
+
+WBSTARTUPDIR := $(AROSDIR)/WBStartup
+
+CR_FILES := $(CRDIR)/CrashReporter $(CRDIR)/crashhook $(CRDIR)/report
+
+USER_CPPFLAGS := -I$(PKGDIR)/libpkg -I$(PKGDIR)/libpkg/core
+# the Alert() thunk and the trap observer walk frames by %rbp
+USER_CFLAGS   := -fno-omit-frame-pointer
+
+%build_prog mmake=workbench-system-crashreporter-prog \
+    progname=CrashReporter targetdir=$(WBSTARTUPDIR) \
+    files="$(CR_FILES)" \
+    objdir=$(GENDIR)/$(CURDIR) \
+    uselibs="pkg z.static debug"
+
+%build_icons mmake=workbench-system-crashreporter-icon \
+    icons=CrashReporter dir=$(WBSTARTUPDIR) \
+    srcdir=$(CRDIR)/icons
+
+# -- C:CrashTest --------------------------------------------------------------
+
+#MM workbench-system-crashreporter-test : includes linklibs
+
+%build_prog mmake=workbench-system-crashreporter-test \
+    progname=CrashTest targetdir=$(AROS_C) \
+    files=$(CRDIR)/tests/CrashTest \
+    objdir=$(GENDIR)/$(CURDIR)/tests
+
+%common
