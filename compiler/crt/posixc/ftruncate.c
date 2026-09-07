@@ -78,6 +78,17 @@
     oldpos = __fcb_getpos(fdesc->fcb);
     size   = __dos64_getsize(fdesc->fcb);
 
+    /*
+     * A DOS handle must never sit beyond EOF (a handler may then refuse
+     * even to report its position - emul.handler does), so when shrinking
+     * underneath the current position move the handle inside the new
+     * size first; the logical POSIX offset is restored, parked past EOF
+     * if need be, by the __fcb_seek() below.
+     */
+    if (oldpos != -1 && oldpos > length)
+        __dos64_seek(fdesc->fcb, (size != -1 && size < length) ? size : length,
+                     OFFSET_BEGINNING);
+
     if (__dos64_setfilesize(fdesc->fcb, length, OFFSET_BEGINNING) == -1)
     {
         LONG ioerr = IoErr();
