@@ -48,6 +48,8 @@
 #include <dos/dosextens.h>
 #include <defines/exec_LVO.h>
 
+#include <crashreporter/annotations.h>
+
 #include "crashrec.h"
 
 /* ------------------------------------------------------------------------ */
@@ -97,7 +99,93 @@ static struct CrashRecord *cr_claim(struct CrashRing *ring)
     rec->rec_ErrorCode    = 0;
     rec->rec_TaskName[0]  = 0;
     rec->rec_Program[0]   = 0;
+    rec->rec_Product[0]   = 0;
+    rec->rec_Annot[0]     = 0;
     return rec;
+}
+
+/* ------------------------------------------------------------------------ */
+/* program annotations (crashreporter/annotations.h)                         */
+
+static BOOL cr_streq(CONST_STRPTR a, CONST_STRPTR b)
+{
+    if (!a || !b) return FALSE;
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+/* The block registered by the failing task or by one of its ancestors
+   (pthreads and helper processes are children of the task that created
+   them: ETask et_Parent).  Caller holds Forbid(): the port list and the
+   owner's ETask must not move under us. */
+static struct CrashAnnotationBlock *cr_find_block(struct Task *me)
+{
+    struct Node *n;
+
+    ForeachNode(&SysBase->PortList, n)
+    {
+        struct CrashAnnotationBlock *b = (struct CrashAnnotationBlock *)n;
+        struct Task *t = me;
+        ULONG hops = 0;
+
+        if (!cr_streq(n->ln_Name, CRA_PORTNAME))
+            continue;
+        if (b->cab_Magic != CRA_MAGIC || b->cab_Version < 1 ||
+            b->cab_KeySize != CRA_KEYSIZE || b->cab_ValueSize != CRA_VALUESIZE ||
+            b->cab_Size < CRA_BLOCKSIZE(b->cab_Entries))
+            continue;
+
+        while (t && hops++ < 64)
+        {
+            if (t == b->cab_Owner)
+                return b;
+            t = (t->tc_Flags & TF_ETASK) && t->tc_UnionETask.tc_ETask
+                ? (struct Task *)t->tc_UnionETask.tc_ETask->et_Parent : NULL;
+        }
+    }
+    return NULL;
+}
+
+/* Render the live entries as "key: value\n" lines into rec_Annot.  Values
+   are rewritten by the program's other tasks while we copy: bounded byte
+   loops, control characters turned into spaces, never a dependency on a
+   terminator being where it was a moment ago. */
+static void cr_annotate(struct CrashRecord *rec, struct Task *me)
+{
+    struct CrashAnnotationBlock *b;
+    volatile TEXT *out = rec->rec_Annot;
+    ULONG pos = 0, i;
+
+    Forbid();
+    b = cr_find_block(me);
+    if (b)
+    {
+        cr_copystr(rec->rec_Product, b->cab_Product, sizeof rec->rec_Product);
+        for (i = 0; i < b->cab_Entries; i++)
+        {
+            const volatile TEXT *k = b->cab_Entry[i].cae_Key;
+            const volatile TEXT *v = b->cab_Entry[i].cae_Value;
+            ULONG j, start = pos;
+
+            if (!k[0])
+                continue;
+            for (j = 0; j < CRA_KEYSIZE - 1 && k[j]; j++)
+                if (pos < CR_ANNOTLEN - 1) out[pos++] = (k[j] < ' ') ? ' ' : k[j];
+            if (pos < CR_ANNOTLEN - 2) { out[pos++] = ':'; out[pos++] = ' '; }
+            for (j = 0; j < CRA_VALUESIZE - 1 && v[j]; j++)
+                if (pos < CR_ANNOTLEN - 1) out[pos++] = (v[j] < ' ') ? ' ' : v[j];
+            if (pos < CR_ANNOTLEN - 1)
+                out[pos++] = '\n';
+            else
+            {
+                pos = start;                            /* drop a partial line  */
+                break;
+            }
+        }
+        rec->rec_Flags |= CRF_ANNOT;
+    }
+    Permit();
+    out[pos] = 0;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -199,6 +287,7 @@ void cr_alert_record(ULONG alertNum, struct ExecBase *SysBaseArg, APTR caller, A
             (void)cli;
 #endif
         }
+        cr_annotate(rec, me);
     }
 
     if (KernelBase)

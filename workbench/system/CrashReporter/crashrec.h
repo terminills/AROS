@@ -21,6 +21,7 @@
 #define CR_RING         8           /* concurrent crashes kept before reuse */
 #define CR_NAMELEN      64
 #define CR_PROGLEN      128
+#define CR_ANNOTLEN     4096        /* rendered "key: value\n" lines          */
 
 /* record states (rec_State) */
 #define CRS_FREE        0
@@ -34,6 +35,8 @@
 #define CRF_ERRORCODE   (1 << 2)
 #define CRF_DEADEND     (1 << 3)    /* alert had AT_DeadEnd set              */
 #define CRF_SUPERVISOR  (1 << 4)    /* Alert() called from supervisor mode   */
+#define CRF_ANNOT       (1 << 5)    /* rec_Product/rec_Annot were filled from
+                                       the program's CrashAnnotationBlock    */
 
 struct CrashRecord
 {
@@ -53,6 +56,8 @@ struct CrashRecord
     TEXT    rec_Program[CR_PROGLEN];/* CLI command name, "" for WB/tasks     */
     TEXT    rec_TaskType;           /* NT_TASK / NT_PROCESS                  */
     UBYTE   rec_Pad[7];
+    TEXT    rec_Product[96];        /* cab_Product (CRA_PRODUCTLEN)          */
+    TEXT    rec_Annot[CR_ANNOTLEN]; /* [Annotations] body, "" when none      */
 };
 
 struct CrashRing

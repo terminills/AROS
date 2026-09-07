@@ -451,6 +451,8 @@ LONG report_build(const struct CrashRecord *rec, struct CrashReport *rep)
     tb_printf(&tb, "Task-Type: %s\n", rec->rec_TaskType == NT_PROCESS ? "Process" : "Task");
     if (rec->rec_Program[0])
         tb_printf(&tb, "Program: %s\n", rec->rec_Program);
+    if ((rec->rec_Flags & CRF_ANNOT) && rec->rec_Product[0])
+        tb_printf(&tb, "Product: %s\n", rec->rec_Product);
     tb_printf(&tb, "Alert: %08lx\n", (unsigned long)rec->rec_AlertNum);
     tb_printf(&tb, "Alert-Kind: %s\n", rep->DeadEnd ? "DeadEnd" : "Recoverable");
     tb_printf(&tb, "Alert-Subsystem: %s\n", alert_subsystem(rec->rec_AlertNum));
@@ -491,6 +493,12 @@ LONG report_build(const struct CrashRecord *rec, struct CrashReport *rep)
     section_backtrace(&tb, rec);
     section_modules(&tb);
     section_log(&tb);
+    if ((rec->rec_Flags & CRF_ANNOT) && rec->rec_Annot[0])
+    {
+        /* the program's own state (crashreporter/annotations.h), already
+           rendered as "key: value" lines by the Alert() hook */
+        tb_printf(&tb, "[Annotations]\n%s\n", rec->rec_Annot);
+    }
 
     if (tb.failed || !tb.s)
     {

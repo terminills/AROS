@@ -16,7 +16,12 @@ PKGDIR    := $(SRCDIR)/workbench/system/SoftwareCenter
 #MM    workbench-system-crashreporter-icon \
 #MM    workbench-system-crashreporter-test
 
-#MM workbench-system-crashreporter-prog : includes linklibs linklibs-pkg workbench-directories
+# the annotations contract (crashreporter/annotations.h) is a public include
+#MM- includes-copy : workbench-system-crashreporter-includes
+INCLUDE_FILES := annotations.h
+%copy_includes mmake=workbench-system-crashreporter-includes path=crashreporter dir=include/crashreporter
+
+#MM workbench-system-crashreporter-prog : includes linklibs linklibs-pkg workbench-directories workbench-system-crashreporter-includes
 
 WBSTARTUPDIR := $(AROSDIR)/WBStartup
 
