@@ -24,6 +24,19 @@
 
     The registry contract below is duplicated in compiler/pthread/pthread_create.c
     and must be kept in sync.
+
+    Which base the worker's CRT calls actually reach depends on how the program
+    is linked.  A program linked against the *_rel linklibs (relbases.o) fetches
+    its posixc base per Task and so uses the base opened here.  A program linked
+    against the absolute linklib jumps through its single, process-wide
+    PosixCBase, and the library-side stack-call thunk stores that base in the
+    calling Task's offset-table slot on EVERY call (AROS_GM_STACKCALL in
+    aros/genmodule.h).  So after a worker's first CRT call its slot names the
+    creator's base, not the one opened here.  The leave hook must therefore
+    close the base it recorded at enter, never "whatever the slot holds now":
+    closing the creator's base from a worker drops the creator's
+    taskopencount to zero and tears down its descriptor table, stdio and
+    internal pool while the creator is still running.
 */
 
 #include <aros/debug.h>
@@ -31,6 +44,7 @@
 #include LC_LIBDEFS_FILE
 
 #include <proto/exec.h>
+#include <proto/task.h>
 #include <proto/stdc.h>
 #include <proto/stdcio.h>
 #include <exec/semaphores.h>
@@ -56,17 +70,33 @@ struct CRTThreadHooks
 
 static struct CRTThreadHook __posixc_threadhook;
 
+/* Per-Task record of the base posixc_thread_enter() opened, kept in a slot of
+   our own: the offset-table slot is rewritten by every stack-call thunk. */
+static LONG __posixc_threadslot;
+
 static void posixc_thread_enter(void)
 {
     /* Runs in a freshly-created pthread worker: give it its own per-task
-       posixc base (inherited from the creator, descriptors routed there). */
-    OpenLibrary((STRPTR)"posixc.library", 0);
+       posixc base (inherited from the creator, descriptors routed there) and
+       remember which base that was. */
+    struct Library *base = OpenLibrary((STRPTR)"posixc.library", 0);
+
+    if (base && __posixc_threadslot)
+        SetTaskStorageSlot(__posixc_threadslot, (IPTR)base);
 }
 
 static void posixc_thread_leave(void)
 {
-    /* Runs in the worker at thread exit: release the base opened above. */
-    struct Library *base = (struct Library *)__aros_getbase_PosixCBase();
+    /* Runs in the worker at thread exit: release exactly the base opened
+       above.  Do not consult __aros_getbase_PosixCBase(): for an absolute
+       linked program it names the creator's base by now (see the header). */
+    struct Library *base = NULL;
+
+    if (__posixc_threadslot)
+    {
+        base = (struct Library *)GetTaskStorageSlot(__posixc_threadslot);
+        SetTaskStorageSlot(__posixc_threadslot, (IPTR)NULL);
+    }
     if (base)
         CloseLibrary(base);
 }
@@ -111,6 +141,9 @@ static int __posixc_threadhook_init(struct PosixCIntBase *PosixCBase)
     if (!reg)
         return TRUE;  /* Non-fatal: workers simply won't get a CRT base. */
 
+    if (!__posixc_threadslot)
+        __posixc_threadslot = AllocTaskStorageSlot();
+
     ObtainSemaphore(&reg->th_Sem);
     /* posixc.library is a single system-wide library; register exactly once
        even if this init runs again. */
@@ -140,6 +173,12 @@ static void __posixc_threadhook_expunge(struct PosixCIntBase *PosixCBase)
         __posixc_threadhook.th_Node.mln_Succ = NULL;
     }
     ReleaseSemaphore(&reg->th_Sem);
+
+    if (__posixc_threadslot)
+    {
+        FreeTaskStorageSlot(__posixc_threadslot);
+        __posixc_threadslot = 0;
+    }
 }
 
 ADD2INITLIB(__posixc_threadhook_init, 0);
