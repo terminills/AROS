@@ -149,6 +149,32 @@ Zune commodity, one `MUIC_Process` worker for network I/O.
 * **Upload**: `pkg_http_post()` with `text/plain; charset=utf-8`; 201/202
   count as sent.  Failures stay on disk and are retried by `Send all`.
 
+### 3.1 Program annotations (crashreporter/annotations.h)
+
+A program that wants its own state in the report keeps a
+`CrashAnnotationBlock` in `MEMF_PUBLIC` memory and `AddPort()`s the
+embedded `MsgPort` under `CRA_PORTNAME` (`CrashReporter.annotations`,
+`PA_IGNORE`, never messaged).  The block is a header (magic `CRA1`,
+version, sizes, `cab_Owner` = registering task, a product string) and a
+fixed table of `cae_Key[40]`/`cae_Value[128]` slots that the program writes
+lock-free from any of its tasks — a torn value beats a lock a crashing
+task might hold.
+
+`cr_alert_record()` walks `SysBase->PortList` for a block whose
+`cab_Owner` is the failing task or one of its ancestors (`ETask
+et_Parent`, so a pthread of the process matches), validates magic/version/
+sizes, and under `Forbid()` renders the live entries as `key: value` lines
+into `rec_Annot` (`CR_ANNOTLEN` 36 KiB, enough for a full 200-slot block)
+with bounded copies that treat the block as volatile.  `report.c` then
+emits `Product:` in the header and an `[Annotations]` section.  PROTOCOL.md
+§9.5 is the wire-level description.
+
+Chromium implements its crash-key interface over this block
+(`base/aros/crash_annotations`, `components/crash/core/common/
+crash_key_aros.cc`), so a Chromium report carries `url-chunk`,
+`top-origin`, `ptype`, the switches and the GPU keys without any Chromium
+knowledge in the reporter.
+
 ## 5. Testing
 
 `C:CrashTest MODE/A,DELAY/N` fails on purpose: `NULL WRITE ILLEGAL BREAK
@@ -157,11 +183,19 @@ survives and prints "survived"); `DEEP` faults five frames down to check
 the backtrace.  The QEMU evidence run lives in
 `qemu-test/logs/crashreporter-qemu-<date>/`.
 
+The annotations path is exercised with Chromium on the hosted tree:
+`chrome://crash` typed in the omnibox (single-process) traps the
+in-process renderer thread; the report must carry `Product: Chromium ...`
+and an `[Annotations]` section with `url-chunk`.  Note that the popup is
+only opened when `AutoSend` is off — with AutoSend the daemon queues and
+posts silently.
+
 ## 6. Files
 
 | file | role |
 |---|---|
 | `crashrec.h` | ring + record shared by hook and daemon |
+| `include/crashreporter/annotations.h` | the program-side annotation block contract (installed to the SDK) |
 | `crashhook.c` | trap observers, `Alert()` thunk, ring |
 | `report.[ch]` | report text, storage, `[Description]` annotation, `log.resource` publish |
 | `CrashReporter.c` | Zune commodity, worker, upload |

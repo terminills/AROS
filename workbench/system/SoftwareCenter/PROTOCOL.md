@@ -299,8 +299,8 @@ Required keys: `Report-Version` (`1`), `Task`, `Alert` (8 hex digits),
 (CPU vector, decimal), `Exception-Name`, `Fault-Address`, `Error-Code`,
 `PC`, `Module`, `Function`, `Offset`, `Location`, `Summary`, `Arch`,
 `AROS-Version`, `AROS-Release`, `AROS-Variant`, `ABI`, `Exec-Version`,
-`CPUs`, `Memory-Free`, `Memory-Total`, `Memory-Largest`.  Unknown keys are
-preserved and ignored.
+`CPUs`, `Memory-Free`, `Memory-Total`, `Memory-Largest`, `Product` (§9.5).
+Unknown keys are preserved and ignored.
 
 ### 9.3 Signature
 
@@ -318,3 +318,26 @@ record per `Signature` with `Count`, `First`, `Last`, sample headers,
 `Reports: <id>...`) and `.../report/<id>` (verbatim report).  Servers
 SHOULD keep these off by default or behind authentication; reports are
 not public data.
+
+### 9.5 Program annotations
+
+A program can hand the reporter its own state — the page a browser was
+showing, the file an editor had open — through a `CrashAnnotationBlock`
+(`crashreporter/annotations.h` in the SDK): a fixed table of key/value
+strings in public memory that the program rewrites in place at any time and
+registers with `AddPort()` under the name `CrashReporter.annotations`.
+When one of the program's tasks crashes, the reporter copies the block and
+the report carries:
+
+* `Product: <name> <version>` in the header (e.g. `Chromium 124.0.6367.0`),
+  from the block's product string, when the block has one;
+* an `[Annotations]` section, `key: value` per line in table order, after
+  `[Log]` and before `[Description]`.  Values are single-line (control
+  characters become spaces); a value longer than one slot is split by the
+  program into `key__1`, `key__2`, ... chunks (Chromium's convention),
+  which a server MAY stitch back together for display.
+
+Keys are the program's own vocabulary and a server MUST NOT require any of
+them.  Servers MAY index `Product` and MAY surface well-known keys
+(Chromium: `url-chunk`, `top-origin`, `ptype`, `pid`, `switch-N`,
+`gpu-*`) in their views; anything else is shown verbatim.
