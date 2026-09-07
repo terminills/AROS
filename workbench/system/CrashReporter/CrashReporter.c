@@ -35,6 +35,7 @@
              patch sits on top of our Alert() thunk (see crashhook_remove).
 */
 
+#include <aros/debug.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/intuition.h>
@@ -440,16 +441,22 @@ static IPTR CR__MUIM_CR_SendResult(struct IClass *cl, Object *self, struct MUIP_
     }
     else
     {
+        CONST_STRPTR why = pkg_last_error_text(data->ctx);
+
         data->failed++;
         snprintf(data->detailbuf, sizeof data->detailbuf, "Send failed for %s: %s%s%s", name,
-                 pkg_strerror(msg->rc), msg->status ? " HTTP " : "", "");
+                 pkg_strerror(msg->rc), why && why[0] ? " - " : "", why && why[0] ? why : (CONST_STRPTR)"");
         if (msg->status)
         {
-            TEXT st[16];
-            snprintf(st, sizeof st, "%ld", (long)msg->status);
+            TEXT st[24];
+            snprintf(st, sizeof st, " HTTP %ld", (long)msg->status);
             strlcat(data->detailbuf, st, sizeof data->detailbuf);
         }
     }
+    /* one line per attempt on the debug console: the status window is a
+       hidden commodity, and on an unattended machine this is the only place
+       a failed upload is ever visible */
+    bug("[CrashReporter] %s\n", data->detailbuf);
     /* the reply may span lines; keep the first for the status line */
     { STRPTR nl = strchr(data->detailbuf, '\n'); if (nl) *nl = 0; }
     set(data->txt_detail, MUIA_Text_Contents, (IPTR)data->detailbuf);
@@ -658,6 +665,7 @@ static IPTR CR__OM_NEW(struct IClass *cl, Object *self, struct opSet *msg)
     resolve_url(ctx, data->url, sizeof data->url);
     data->autosend = env_bool(CR_ENV_AUTOSEND);
     SetAttrs(chk_auto, MUIA_NoNotify, TRUE, MUIA_Selected, data->autosend, TAG_DONE);
+    bug("[CrashReporter] server '%s' autosend %d\n", data->url, (int)data->autosend);
 
     data->proc = MUI_NewObject(MUIC_Process,
         MUIA_Process_SourceClass,  (IPTR)cl,

@@ -24,6 +24,12 @@
     AI_DEPENDENCIES: bsdsocket.library (AROSTCP)
 */
 
+/* Descriptor numbers come from the system-wide fd.library table, so a
+   socket can be numbered well past the 64 the default fd_set holds (a
+   busy process elsewhere holds hundreds of files); size the WaitSelect()
+   mask for the largest number AROSTCP will grow a base's table to. */
+#define FD_SETSIZE 1024
+
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/socket.h>
@@ -390,10 +396,10 @@ LONG pkg_http(struct PkgContext *ctx, struct PkgHttpReq *req)
         memcpy(&sa.sin_addr, he->h_addr_list[0], sizeof sa.sin_addr);
     }
     c.s = socket(AF_INET, SOCK_STREAM, 0);
-    if (c.s < 0) { pkg_set_error(ctx, "socket() failed"); rc = PKGERR_NETWORK; goto out; }
+    if (c.s < 0) { pkg_set_error(ctx, "socket() failed (errno %ld)", (long)Errno()); rc = PKGERR_NETWORK; goto out; }
     if (connect(c.s, (struct sockaddr *)&sa, sizeof sa) < 0)
     {
-        pkg_set_error(ctx, "connect to %s:%u failed", host, (unsigned)port);
+        pkg_set_error(ctx, "connect to %s:%u failed (errno %ld)", host, (unsigned)port, (long)Errno());
         rc = PKGERR_NETWORK;
         goto out;
     }
