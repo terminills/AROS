@@ -1,0 +1,85 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+# Software Center: libpkg (static linklib), C:Pkg, SYS:System/SoftwareCenter
+# and the WBStartup UpdateNotifier.  See DESIGN.md / PROTOCOL.md.
+
+include $(SRCDIR)/config/aros.cfg
+
+PKGDIR    := $(SRCDIR)/$(CURDIR)
+
+# -- libpkg ------------------------------------------------------------------
+
+LIBPKG_CORE   := pkg_stanza pkg_verify pkg_tar
+LIBPKG_AROS   := pkg_file pkg_http pkg_repo pkg_db pkg_records pkg_install pkg_context
+LIBPKG_FILES  := $(addprefix $(PKGDIR)/libpkg/core/,$(LIBPKG_CORE)) \
+                 $(addprefix $(PKGDIR)/libpkg/,$(LIBPKG_AROS)) \
+                 $(PKGDIR)/libpkg/vendor/tweetnacl \
+                 $(PKGDIR)/libpkg/vendor/credentials_crypto
+
+USER_CPPFLAGS := -I$(PKGDIR)/libpkg -I$(PKGDIR)/libpkg/core -I$(PKGDIR)/libpkg/vendor
+USER_CFLAGS   := $(CFLAGS_NO_STRICT_ALIASING)
+
+#MM- linklibs : linklibs-pkg
+#MM linklibs-pkg : includes linklibs-z-static
+
+%build_linklib mmake=linklibs-pkg libname=pkg \
+    files="$(LIBPKG_FILES)" objdir=$(GENDIR)/$(CURDIR)/libpkg
+
+# -- C:Pkg -------------------------------------------------------------------
+
+#MM- workbench-system : workbench-system-softwarecenter
+#MM- workbench-system-softwarecenter : \
+#MM    workbench-system-softwarecenter-pkg \
+#MM    workbench-system-softwarecenter-gui \
+#MM    workbench-system-softwarecenter-gui-icon \
+#MM    workbench-system-softwarecenter-notifier \
+#MM    workbench-system-softwarecenter-notifier-icon
+
+#MM workbench-system-softwarecenter-pkg : includes linklibs linklibs-pkg
+
+USER_CPPFLAGS := -I$(PKGDIR)/libpkg
+
+%build_prog mmake=workbench-system-softwarecenter-pkg \
+    progname=Pkg targetdir=$(AROS_C) \
+    files=$(PKGDIR)/Pkg/Pkg \
+    objdir=$(GENDIR)/$(CURDIR)/Pkg \
+    uselibs="pkg z.static"
+
+# -- SYS:System/SoftwareCenter (Zune GUI) ------------------------------------
+
+#MM workbench-system-softwarecenter-gui : includes linklibs linklibs-pkg
+
+GUI_FILES := $(PKGDIR)/gui/SoftwareCenter $(PKGDIR)/gui/pictureview
+
+# SCDEBUG=1 make ... : trace object construction to RAM:sc-debug.log
+ifneq ($(SCDEBUG),)
+USER_CPPFLAGS += -DSC_DEBUG
+endif
+
+%build_prog mmake=workbench-system-softwarecenter-gui \
+    progname=SoftwareCenter targetdir=$(AROS_SYSTEM) \
+    files="$(GUI_FILES)" \
+    objdir=$(GENDIR)/$(CURDIR)/gui \
+    uselibs="pkg z.static"
+
+%build_icons mmake=workbench-system-softwarecenter-gui-icon \
+    icons=SoftwareCenter dir=$(AROS_SYSTEM) \
+    srcdir=$(PKGDIR)/gui/icons
+
+# -- SYS:WBStartup/UpdateNotifier (Zune commodity) ---------------------------
+
+#MM workbench-system-softwarecenter-notifier : includes linklibs linklibs-pkg workbench-directories
+
+WBSTARTUPDIR := $(AROSDIR)/WBStartup
+
+%build_prog mmake=workbench-system-softwarecenter-notifier \
+    progname=UpdateNotifier targetdir=$(WBSTARTUPDIR) \
+    files=$(PKGDIR)/notifier/UpdateNotifier \
+    objdir=$(GENDIR)/$(CURDIR)/notifier \
+    uselibs="pkg z.static"
+
+%build_icons mmake=workbench-system-softwarecenter-notifier-icon \
+    icons=UpdateNotifier dir=$(WBSTARTUPDIR) \
+    srcdir=$(PKGDIR)/notifier/icons
+
+%common
