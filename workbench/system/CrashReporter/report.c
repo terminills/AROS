@@ -399,7 +399,9 @@ LONG report_build(const struct CrashRecord *rec, struct CrashReport *rep)
     TEXT when[64], loc[256], module[64], func[96];
     IPTR offset = 0;
     IPTR ver = 0, relmaj = 0, relmin = 0, abi = 0;
-    STRPTR reldate = NULL, variant = NULL, arch = NULL;
+    /* AI_ArosReleaseDate is a day count, not a string (aros/inquire.h);
+       the printable date is AI_ArosBuildDate */
+    STRPTR builddate = NULL, variant = NULL, arch = NULL;
     ULONG cpus = 1;
     APTR pc0;
     const char *general;
@@ -431,7 +433,7 @@ LONG report_build(const struct CrashRecord *rec, struct CrashReport *rep)
     ArosInquire(AI_ArosVersion,      (IPTR)&ver,
                 AI_ArosReleaseMajor, (IPTR)&relmaj,
                 AI_ArosReleaseMinor, (IPTR)&relmin,
-                AI_ArosReleaseDate,  (IPTR)&reldate,
+                AI_ArosBuildDate,    (IPTR)&builddate,
                 AI_ArosVariant,      (IPTR)&variant,
                 AI_ArosArchitecture, (IPTR)&arch,
                 AI_ArosABIMajor,     (IPTR)&abi,
@@ -472,7 +474,7 @@ LONG report_build(const struct CrashRecord *rec, struct CrashReport *rep)
     tb_printf(&tb, "Arch: %s\n", arch ? (const char *)arch : "?");
     tb_printf(&tb, "AROS-Version: %lu\n", (unsigned long)ver);
     tb_printf(&tb, "AROS-Release: %lu.%lu%s%s\n", (unsigned long)relmaj, (unsigned long)relmin,
-              (reldate && *reldate) ? " " : "", (reldate && *reldate) ? (const char *)reldate : "");
+              (builddate && *builddate) ? " " : "", (builddate && *builddate) ? (const char *)builddate : "");
     if (variant) tb_printf(&tb, "AROS-Variant: %s\n", variant);
     /* aros.library answers -1 for an unknown ABI; leave the line out then */
     if (abi != (IPTR)-1 && abi != 0)
