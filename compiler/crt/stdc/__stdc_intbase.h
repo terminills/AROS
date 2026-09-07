@@ -41,6 +41,10 @@ struct StdCIntBase
     /* common */
     int                         flags;
 
+    /* __stdc_errno.c: the Task that opened this base owns _errno; any other
+       Task calling through it gets a per-Task errno cell instead. */
+    struct Task                 *errno_task;
+
     /* stdlib.h */
     APTR                        mempool;
     unsigned int                srand_seed;

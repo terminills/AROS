@@ -28,11 +28,6 @@
 #include "__dos64.h"
 #include "__upath.h"
 
-#ifdef errno
-#undef errno
-#endif
-#define errno (*(&((struct PosixCBase *)PosixCBase)->StdCBase->_errno))
-
 static int __fdlib_available(struct PosixCIntBase *PosixCBase)
 {
     if (PosixCBase->PosixCFDBase == NULL)
@@ -41,6 +36,10 @@ static int __fdlib_available(struct PosixCIntBase *PosixCBase)
     return PosixCBase->PosixCFDBase != NULL;
 }
 
+/* errno resolves through PosixCBase->StdCBase (the errno macro calls
+   __stdc_geterrnoptr() via it), which is still NULL while __init_fd() runs
+   from OpenLib before the opener's StdCBase is wired - so only set it once
+   the base is there. */
 static void __set_errno(struct PosixCIntBase *PosixCBase, int enval)
 {
     if (((struct PosixCBase *)PosixCBase)->StdCBase) {

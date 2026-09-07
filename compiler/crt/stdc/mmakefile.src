@@ -486,6 +486,8 @@ STDC := \
     __stdc_time \
     __stdc_startup \
     __stdc_fpuprivate \
+    __stdc_errno \
+    __stdc_geterrnoptr \
     __vcformat \
     __vcscan \
     abort \
@@ -617,7 +619,6 @@ STDC_LINKLIB := \
     __stdc_mathinit
 
 STDC_LINKLIB_COMMON := \
-    __stdc_geterrnoptr \
     __stdc_mb_cur_max
 
 STDC_CHAR_LIBSTUBS := \
@@ -625,7 +626,6 @@ STDC_CHAR_LIBSTUBS := \
 
 # The common files will be put both in the shared and in the static link lib
 STDC_COMMON := \
-    __stdc_geterrnoptr \
     __stdc_getsigngamptr \
     math/infinity
 
@@ -836,8 +836,11 @@ STDC_MATH_STATIC_RAW += $(STDC_LONGDB128_MATH)
 endif
 endif
 
+# __stdc_geterrnoptr is a library function for stdc.library (per-Task
+# errno), but the static link library needs its own copy.
 STDC_STATIC := \
     __ctype \
+    __stdc_geterrnoptr \
     __vcformat \
     __vcscan \
     abs labs llabs \

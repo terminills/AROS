@@ -22,8 +22,8 @@
     rel-libraries (stdc/stdcio), and runs __init_fd() - which detects the
     CLI-less worker Task and routes its descriptors to the creator Process.
 
-    The registry contract below is duplicated in compiler/pthread/pthread_create.c
-    and must be kept in sync.
+    The registry itself lives in compiler/crt/stdc/__crt_threadhooks.h (its
+    contract is duplicated in compiler/pthread/pthread_create.c).
 
     Which base the worker's CRT calls actually reach depends on how the program
     is linked.  A program linked against the *_rel linklibs (relbases.o) fetches
@@ -47,26 +47,10 @@
 #include <proto/task.h>
 #include <proto/stdc.h>
 #include <proto/stdcio.h>
-#include <exec/semaphores.h>
-#include <exec/lists.h>
 #include <aros/symbolsets.h>
 
 #include "__posixc_intbase.h"
-
-#define CRT_THREADHOOKS_SEMNAME "crt.thread-hooks.v1"
-
-struct CRTThreadHook
-{
-    struct MinNode  th_Node;
-    void          (*th_Enter)(void);
-    void          (*th_Leave)(void);
-};
-
-struct CRTThreadHooks
-{
-    struct SignalSemaphore th_Sem;   /* ss_Link.ln_Name = CRT_THREADHOOKS_SEMNAME */
-    struct MinList         th_Hooks;
-};
+#include "__crt_threadhooks.h"
 
 static struct CRTThreadHook __posixc_threadhook;
 
@@ -101,78 +85,24 @@ static void posixc_thread_leave(void)
         CloseLibrary(base);
 }
 
-static struct CRTThreadHooks *__get_threadhooks(BOOL create)
-{
-    struct CRTThreadHooks *reg, *newreg;
-
-    Forbid();
-    reg = (struct CRTThreadHooks *)FindSemaphore((STRPTR)CRT_THREADHOOKS_SEMNAME);
-    Permit();
-    if (reg || !create)
-        return reg;
-
-    /* Not present yet - allocate outside Forbid, then add if we still win. */
-    newreg = AllocMem(sizeof(*newreg), MEMF_PUBLIC | MEMF_CLEAR);
-    if (!newreg)
-        return NULL;
-    InitSemaphore(&newreg->th_Sem);
-    newreg->th_Sem.ss_Link.ln_Name = (char *)CRT_THREADHOOKS_SEMNAME;
-    NEWLIST(&newreg->th_Hooks);
-
-    Forbid();
-    reg = (struct CRTThreadHooks *)FindSemaphore((STRPTR)CRT_THREADHOOKS_SEMNAME);
-    if (!reg)
-    {
-        AddSemaphore(&newreg->th_Sem);
-        reg = newreg;
-        newreg = NULL;
-    }
-    Permit();
-
-    if (newreg)
-        FreeMem(newreg, sizeof(*newreg));
-    return reg;
-}
-
 static int __posixc_threadhook_init(struct PosixCIntBase *PosixCBase)
 {
-    struct CRTThreadHooks *reg = __get_threadhooks(TRUE);
-
-    if (!reg)
-        return TRUE;  /* Non-fatal: workers simply won't get a CRT base. */
-
     if (!__posixc_threadslot)
         __posixc_threadslot = AllocTaskStorageSlot();
 
-    ObtainSemaphore(&reg->th_Sem);
-    /* posixc.library is a single system-wide library; register exactly once
-       even if this init runs again. */
-    if (!__posixc_threadhook.th_Node.mln_Succ)
-    {
-        __posixc_threadhook.th_Enter = posixc_thread_enter;
-        __posixc_threadhook.th_Leave = posixc_thread_leave;
-        AddTail((struct List *)&reg->th_Hooks,
-                (struct Node *)&__posixc_threadhook.th_Node);
-    }
-    ReleaseSemaphore(&reg->th_Sem);
+    /* posixc.library is a single system-wide library; the registry helper
+       adds the hook exactly once even if this init runs again.  Failure is
+       non-fatal: workers simply won't get a CRT base. */
+    __posixc_threadhook.th_Enter = posixc_thread_enter;
+    __posixc_threadhook.th_Leave = posixc_thread_leave;
+    __crt_add_threadhook(&__posixc_threadhook);
 
     return TRUE;
 }
 
 static void __posixc_threadhook_expunge(struct PosixCIntBase *PosixCBase)
 {
-    struct CRTThreadHooks *reg = __get_threadhooks(FALSE);
-
-    if (!reg)
-        return;
-
-    ObtainSemaphore(&reg->th_Sem);
-    if (__posixc_threadhook.th_Node.mln_Succ)
-    {
-        Remove((struct Node *)&__posixc_threadhook.th_Node);
-        __posixc_threadhook.th_Node.mln_Succ = NULL;
-    }
-    ReleaseSemaphore(&reg->th_Sem);
+    __crt_rem_threadhook(&__posixc_threadhook);
 
     if (__posixc_threadslot)
     {

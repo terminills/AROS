@@ -33,8 +33,8 @@
 
 /*
  * Loosely-coupled C-runtime per-thread hook registry.  Kept in sync with the
- * identical declarations in compiler/crt/posixc/__threadhook.c and found by
- * name in the public semaphore list.
+ * identical declarations in compiler/crt/stdc/__crt_threadhooks.h and found
+ * by name in the public semaphore list.
  *
  * A C runtime that uses per-task library bases (e.g. posixc.library, which is
  * "pertaskbase") reads the calling Task's own base out of per-task storage and
