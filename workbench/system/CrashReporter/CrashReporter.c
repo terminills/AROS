@@ -70,6 +70,7 @@ static const char version[] __attribute__((used)) = "$VER: CrashReporter " CR_VE
 #define CR_API_PATH      "api/crash/v1/report"
 #define POPUP_WIDTH_PCT  30
 #define POPUP_MARGIN     12
+#define POPUP_WRAP_COLS  56         /* summary line width in the popup      */
 
 /* ------------------------------------------------------------------------ */
 /* Methods                                                                   */
@@ -325,6 +326,66 @@ static void place_popup(struct CR_DATA *data)
     set(data->win_popup, MUIA_Window_TopEdge,  top + POPUP_MARGIN);
 }
 
+/* The popup's natural width follows its longest line (Zune Text objects set
+   their minimum width from the text), so a long summary pushes it past the
+   right screen edge.  Once it is open its real width is known: if it hangs
+   over, move it back (LeftEdge only takes effect on open, so reopen). */
+static void fit_popup(struct CR_DATA *data)
+{
+    struct Screen *scr = LockPubScreen(NULL);
+    IPTR ww = 0, wl = 0;
+    LONG w = 640;
+
+    if (scr)
+    {
+        w = scr->Width;
+        UnlockPubScreen(NULL, scr);
+    }
+    get(data->win_popup, MUIA_Window_Width,    &ww);
+    get(data->win_popup, MUIA_Window_LeftEdge, &wl);
+    if (ww && (LONG)(wl + ww) > w - POPUP_MARGIN)
+    {
+        LONG left = w - (LONG)ww - POPUP_MARGIN;
+        set(data->win_popup, MUIA_Window_Open, FALSE);
+        set(data->win_popup, MUIA_Window_LeftEdge, left < 0 ? 0 : left);
+        set(data->win_popup, MUIA_Window_Open, TRUE);
+    }
+}
+
+/* Word-wrap src into dst at about width columns.  Breaks after a space or,
+   in the path-like summaries a crash produces ("...chrome!_ZN5blink...+0x1a"),
+   after '/', '!', ':' or '+', so the popup keeps a readable width. */
+static void wrap_text(STRPTR dst, ULONG dstlen, CONST_STRPTR src, ULONG width)
+{
+    ULONG col = 0, out = 0, lastbreak = 0, lastbreakcol = 0;
+
+    while (*src && out + 1 < dstlen)
+    {
+        TEXT c = *src++;
+
+        if (c == '\n') { dst[out++] = c; col = 0; lastbreak = 0; continue; }
+        dst[out++] = c;
+        col++;
+        if (c == ' ' || c == '/' || c == '!' || c == ':' || c == '+')
+        {
+            lastbreak = out;
+            lastbreakcol = col;
+        }
+        if (col >= width && lastbreak && out + 1 < dstlen)
+        {
+            /* insert a newline at the last break point (drop a trailing space) */
+            ULONG at = lastbreak;
+            if (dst[at - 1] == ' ') at--;
+            memmove(dst + at + 1, dst + lastbreak, out - lastbreak);
+            dst[at] = '\n';
+            out = at + 1 + (out - lastbreak);
+            col = col - lastbreakcol;
+            lastbreak = 0;
+        }
+    }
+    dst[out] = 0;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Methods on the main task                                                  */
 
@@ -370,9 +431,12 @@ static IPTR CR__MUIM_CR_Crash(struct IClass *cl, Object *self, struct MUIP_CR_Cr
     }
     else
     {
+        TEXT summary[256];
+
+        wrap_text(summary, sizeof summary, rep.Summary, POPUP_WRAP_COLS);
         snprintf(data->ptitlebuf, sizeof data->ptitlebuf, "\33bProgram failed: %s", rep.Task);
         snprintf(data->pbodybuf, sizeof data->pbodybuf, "%s\n\nA crash report was saved%s.",
-                 rep.Summary, data->url[0] ? " and can be sent to the distribution" : "");
+                 summary, data->url[0] ? " and can be sent to the distribution" : "");
         set(data->txt_ptitle, MUIA_Text_Contents, (IPTR)data->ptitlebuf);
         set(data->txt_pbody,  MUIA_Text_Contents, (IPTR)data->pbodybuf);
         set(data->str_pdesc,  MUIA_String_Contents, (IPTR)"");
@@ -380,6 +444,7 @@ static IPTR CR__MUIM_CR_Crash(struct IClass *cl, Object *self, struct MUIP_CR_Cr
         set(data->btn_psend,  MUIA_Disabled, !data->url[0]);
         if (!data->popup_open) place_popup(data);
         set(data->win_popup, MUIA_Window_Open, TRUE);
+        fit_popup(data);
         data->popup_open = TRUE;
     }
     report_free(&rep);
