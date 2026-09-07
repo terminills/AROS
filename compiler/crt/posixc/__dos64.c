@@ -172,6 +172,170 @@ QUAD __dos64_write(fcb *fcb, CONST_APTR buf, QUAD len)
     return r;
 }
 
+/*
+ * Logical offset past EOF (see fcb->eofpos in __fdesc.h).
+ *
+ * POSIX lets lseek() park the offset anywhere at or beyond EOF: reads
+ * there return 0 and only a write grows the file, zero-filling the gap.
+ * DOS Seek() fails with ERROR_SEEK_ERROR instead, so the position is
+ * kept in the fcb until a transfer needs it.
+ */
+QUAD __fcb_getpos(fcb *fcb)
+{
+    QUAD r;
+
+    __fcb_lock(fcb);
+    if (fcb->privflags & _FCB_PASTEOF)
+        r = fcb->eofpos;
+    else
+        r = __dos64_getpos(fcb);
+    __fcb_unlock(fcb);
+    return r;
+}
+
+QUAD __fcb_seek(fcb *fcb, QUAD position, LONG mode)
+{
+    QUAD r, cur, size, target;
+
+    __fcb_lock(fcb);
+
+    /* A relative seek from a parked offset is relative to that offset */
+    if (mode == OFFSET_CURRENT && (fcb->privflags & _FCB_PASTEOF))
+    {
+        position += fcb->eofpos;
+        mode = OFFSET_BEGINNING;
+    }
+
+    r = __dos64_seek(fcb, position, mode);
+    if (r != -1)
+    {
+        fcb->privflags &= ~_FCB_PASTEOF;
+        r = __dos64_getpos(fcb);
+        __fcb_unlock(fcb);
+        return r;
+    }
+
+    if (IoErr() != ERROR_SEEK_ERROR)
+    {
+        __fcb_unlock(fcb);
+        return -1;
+    }
+
+    /* Work out where the caller wanted to go; only a target beyond EOF
+       is ours to satisfy. */
+    cur = __dos64_getpos(fcb);
+    size = cur == -1 ? -1 : __dos64_getsize(fcb);
+    if (size == -1)
+    {
+        __fcb_unlock(fcb);
+        return -1;
+    }
+
+    switch (mode)
+    {
+        case OFFSET_BEGINNING: target = position;        break;
+        case OFFSET_CURRENT:   target = cur + position;  break;
+        case OFFSET_END:       target = size + position; break;
+        default:               target = -1;              break;
+    }
+
+    if (target <= size)
+    {
+        SetIoErr(ERROR_SEEK_ERROR);
+        __fcb_unlock(fcb);
+        return -1;
+    }
+
+    if (__dos64_seek(fcb, 0, OFFSET_END) == -1)
+    {
+        __fcb_unlock(fcb);
+        return -1;
+    }
+
+    fcb->privflags |= _FCB_PASTEOF;
+    fcb->eofpos = target;
+    __fcb_unlock(fcb);
+    return target;
+}
+
+LONG __fcb_settle(fcb *fcb, BOOL extend)
+{
+    QUAD size, gap;
+    LONG r = 0;
+
+    __fcb_lock(fcb);
+
+    if (!(fcb->privflags & _FCB_PASTEOF))
+    {
+        __fcb_unlock(fcb);
+        return 0;
+    }
+
+    size = __dos64_getsize(fcb);
+    if (size == -1)
+    {
+        __fcb_unlock(fcb);
+        return -1;
+    }
+
+    /* The file may have grown underneath us (another handle, ftruncate());
+       once the offset is inside the file it is a plain DOS position. */
+    if (fcb->eofpos <= size)
+    {
+        r = __dos64_seek(fcb, fcb->eofpos, OFFSET_BEGINNING) == -1 ? -1 : 0;
+        if (r == 0)
+            fcb->privflags &= ~_FCB_PASTEOF;
+        __fcb_unlock(fcb);
+        return r;
+    }
+
+    if (__dos64_seek(fcb, 0, OFFSET_END) == -1)
+    {
+        __fcb_unlock(fcb);
+        return -1;
+    }
+
+    if (!extend)
+    {
+        __fcb_unlock(fcb);
+        return 1;
+    }
+
+    gap = fcb->eofpos - size;
+    {
+        const ULONG bufsize = 4096;
+        APTR zeros = AllocMem(bufsize, MEMF_ANY | MEMF_CLEAR);
+
+        if (!zeros)
+        {
+            SetIoErr(ERROR_NO_FREE_STORE);
+            __fcb_unlock(fcb);
+            return -1;
+        }
+
+        while (gap > 0)
+        {
+            QUAD chunk = gap < bufsize ? gap : bufsize;
+            QUAD n = __dos64_write(fcb, zeros, chunk);
+
+            if (n != chunk)
+            {
+                r = -1;
+                break;
+            }
+            gap -= chunk;
+        }
+
+        FreeMem(zeros, bufsize);
+    }
+
+    if (r == 0)
+        fcb->privflags &= ~_FCB_PASTEOF;
+
+    __fcb_unlock(fcb);
+    return r;
+}
+
 static void __dos64_widenfib(const struct FileInfoBlock32 *src,
                              struct FileInfoBlock64 *dst)
 {

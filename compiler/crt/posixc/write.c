@@ -70,7 +70,14 @@
         return -1;
     }
 
-    cnt = __dos64_write (fdesc->fcb, (void *)buf, count);
+    /* A logical offset parked past EOF is materialised (zero-filled)
+       before the data goes out; keep both steps under one lock. */
+    __fcb_lock(fdesc->fcb);
+    if (__fcb_settle (fdesc->fcb, TRUE) == 0)
+        cnt = __dos64_write (fdesc->fcb, (void *)buf, count);
+    else
+        cnt = -1;
+    __fcb_unlock(fdesc->fcb);
 
     if (cnt == -1)
         errno = __stdc_ioerr2errno (IoErr ());

@@ -86,18 +86,22 @@
        concurrent read()/write() on the same handle cannot interleave. */
     __fcb_lock(fdesc->fcb);
 
-    saved = __dos64_getpos(fdesc->fcb);
+    saved = __fcb_getpos(fdesc->fcb);
     if (saved == -1)
         goto error;
 
-    if (__dos64_seek(fdesc->fcb, (QUAD)offset, OFFSET_BEGINNING) == -1)
+    /* An offset past EOF grows the file, zero-filling the gap */
+    if (__fcb_seek(fdesc->fcb, (QUAD)offset, OFFSET_BEGINNING) == -1)
         goto error;
 
-    cnt = __dos64_write(fdesc->fcb, (APTR)buf, nbytes);
+    if (__fcb_settle(fdesc->fcb, TRUE) == 0)
+        cnt = __dos64_write(fdesc->fcb, (APTR)buf, nbytes);
+    else
+        cnt = -1;
     ioerr = IoErr();
 
     /* Restore the original offset regardless of the transfer outcome. */
-    __dos64_seek(fdesc->fcb, saved, OFFSET_BEGINNING);
+    __fcb_seek(fdesc->fcb, saved, OFFSET_BEGINNING);
     __fcb_unlock(fdesc->fcb);
 
     if (cnt == -1)

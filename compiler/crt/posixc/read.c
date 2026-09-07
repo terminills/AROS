@@ -78,7 +78,15 @@
         return -1;
     }
 
-    cnt = __dos64_read (fdesc->fcb, buf, count);
+    /* Position the handle for the logical offset first (it may be parked
+       past EOF, see __fcb_settle()); keep both steps under one lock. */
+    __fcb_lock(fdesc->fcb);
+    cnt = __fcb_settle (fdesc->fcb, FALSE);
+    if (cnt == 0)
+        cnt = __dos64_read (fdesc->fcb, buf, count);
+    else if (cnt > 0)
+        cnt = 0;    /* at or past EOF */
+    __fcb_unlock(fdesc->fcb);
 
     if (cnt == -1)
         errno = __stdc_ioerr2errno (IoErr ());

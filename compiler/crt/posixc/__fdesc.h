@@ -27,6 +27,12 @@ typedef struct _fcb
        state and are not safe for concurrent use, so read/write serialise
        on this. Initialised at fcb creation. */
     struct SignalSemaphore io_lock;
+    /* POSIX allows the file offset to sit beyond EOF without growing the
+       file; DOS Seek() refuses that. While _FCB_PASTEOF is set the DOS
+       handle is parked at EOF and eofpos holds the logical offset (which
+       is >= the file size). A read there hits EOF, a write first fills
+       the gap with zeros. See __fcb_seek()/__fcb_settle() in __dos64.c. */
+    QUAD eofpos;
 } fcb;
 
 #include <proto/exec.h>
@@ -42,6 +48,7 @@ static inline void __fcb_unlock(fcb *f) { if (f) ReleaseSemaphore(&f->io_lock); 
 #define _FCB_DONTCLOSE_FH ((unsigned int)1<<1)
 #define _FCB_FLUSHONREAD  ((unsigned int)1<<2)
 #define _FCB_CONSOLERAW   ((unsigned int)1<<3)
+#define _FCB_PASTEOF      ((unsigned int)1<<4)
 #define _FCB_FH64         ((unsigned int)1<<14)
 #define _FCB_FS64         ((unsigned int)1<<15)
 

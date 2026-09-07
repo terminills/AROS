@@ -53,7 +53,7 @@ int __fseeko64 (
 
     /* Handling for fseeko specific behaviour (not all cases handled) */
     /* Get current position */
-    cnt = __dos64_getpos (fdesc->fcb);
+    cnt = __fcb_getpos (fdesc->fcb);
     if (cnt == -1)
     {
         errno = __stdc_ioerr2errno (IoErr ());
@@ -115,7 +115,7 @@ int __fseeko64 (
         }
     }
 
-    cnt = __dos64_seek (fdesc->fcb, finalseekposition, OFFSET_BEGINNING);
+    cnt = __fcb_seek (fdesc->fcb, finalseekposition, OFFSET_BEGINNING);
 
     if (cnt == -1)
     {

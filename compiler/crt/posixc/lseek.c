@@ -44,13 +44,13 @@
         variable errno is set.
 
     NOTES
+        Seeking beyond the end of the file is allowed and does not change
+        the file size: reads from there return 0 and a write extends the
+        file, filling the gap with zero bytes.
 
     EXAMPLE
 
     BUGS
-        File is extended with zeros if desired position is beyond the end of
-        file.
-
         Since it's not possible to use Seek() for directories, this
         implementation fails with EISDIR for directory file descriptors.
 
@@ -89,73 +89,7 @@
             return -1;
     }
 
-    cnt = __dos64_seek (fdesc->fcb, offset, whence);
-
-    if (cnt == -1)
-    {
-        if(IoErr() == ERROR_SEEK_ERROR)
-        {
-            LONG saved_error = IoErr();
-            /* Most likely we tried to seek behind EOF. POSIX lseek allows
-               that, and if anything is written at the end on the gap,
-               reads from the gap should return 0 unless some real data
-               is written there. Since implementing it would be rather
-               difficult, we simply extend the file by writing zeros
-               and hope for the best. */
-            QUAD abs_cur_pos = __dos64_getpos(fdesc->fcb);
-            if(abs_cur_pos == -1)
-                goto error;
-            QUAD file_size = __dos64_getsize(fdesc->fcb);
-            if(file_size == -1)
-                goto error;
-            /* Now compute how much we have to extend the file */
-            QUAD abs_new_pos = 0;
-            switch(whence)
-            {
-                case OFFSET_BEGINNING: abs_new_pos = offset; break;
-                case OFFSET_CURRENT: abs_new_pos = abs_cur_pos + offset; break;
-                case OFFSET_END: abs_new_pos = file_size + offset; break;
-            }
-            if(abs_new_pos > file_size)
-            {
-                ULONG bufsize = 4096;
-                APTR zeros = AllocMem(bufsize, MEMF_ANY | MEMF_CLEAR);
-                if(!zeros)
-                {
-                    /* Restore previous position */
-                    __dos64_seek(fdesc->fcb, abs_cur_pos, OFFSET_BEGINNING);
-                    errno = ENOMEM;
-                    return -1;
-                }
-
-                if(__dos64_seek(fdesc->fcb, 0, OFFSET_END) == -1)
-                {
-                    FreeMem(zeros, bufsize);
-                    goto error;
-                }
-                QUAD towrite = abs_new_pos - file_size;
-                do
-                {
-                    __dos64_write(fdesc->fcb, zeros, MIN(towrite, bufsize));
-                    towrite -= bufsize;
-                }
-                while(towrite > 0);
-
-                FreeMem(zeros, bufsize);
-            }
-            else
-            {
-                /* Hmm, that's strange. Looks like ERROR_SEEK_ERROR has
-                   been caused by something else */
-                SetIoErr(saved_error);
-                goto error;
-            }
-        }
-        else
-            goto error;
-    }
-
-    cnt = __dos64_getpos(fdesc->fcb);
+    cnt = __fcb_seek (fdesc->fcb, offset, whence);
     if (cnt == -1)
         goto error;
     if (cnt != (QUAD)(off_t)cnt)

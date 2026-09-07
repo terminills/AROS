@@ -29,6 +29,26 @@ QUAD __dos64_setfilesize(fcb *fcb, QUAD size, LONG mode);
 QUAD __dos64_read(fcb *fcb, APTR buf, QUAD len);
 QUAD __dos64_write(fcb *fcb, CONST_APTR buf, QUAD len);
 
+/* Descriptor-level position helpers on top of the DOS primitives above.
+   They implement the POSIX rule that lseek() may place the offset past
+   EOF without growing the file (fcb->eofpos, _FCB_PASTEOF).
+
+   __fcb_seek()   moves the logical offset like Seek() and returns the new
+                  absolute offset, or -1 with IoErr() set. A target beyond
+                  EOF succeeds and is remembered instead of failing.
+   __fcb_getpos() returns the logical offset (the remembered one when it
+                  is past EOF).
+   __fcb_settle() prepares a transfer at the logical offset: returns 0
+                  when the DOS handle is positioned for it, 1 when the
+                  offset is at or past EOF and a read must return 0, -1
+                  with IoErr() set on failure. With extend set (a write is
+                  about to happen) the gap up to the offset is filled with
+                  zero bytes first, so 1 is never returned.
+   All three take the fcb's io_lock themselves. */
+QUAD __fcb_seek(fcb *fcb, QUAD position, LONG mode);
+QUAD __fcb_getpos(fcb *fcb);
+LONG __fcb_settle(fcb *fcb, BOOL extend);
+
 /* obj is a filehandle for __DOS64_EXAMINE_FH, otherwise a lock */
 #define __DOS64_EXAMINE      0
 #define __DOS64_EXAMINE_FH   1

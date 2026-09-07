@@ -75,7 +75,7 @@
         return -1;
     }
 
-    oldpos = __dos64_getpos(fdesc->fcb);
+    oldpos = __fcb_getpos(fdesc->fcb);
     size   = __dos64_getsize(fdesc->fcb);
 
     if (__dos64_setfilesize(fdesc->fcb, length, OFFSET_BEGINNING) == -1)
@@ -109,7 +109,7 @@
 
     /* Restore the original position */
     if (oldpos != -1)
-        __dos64_seek(fdesc->fcb, oldpos, OFFSET_BEGINNING);
+        __fcb_seek(fdesc->fcb, oldpos, OFFSET_BEGINNING);
 
     return 0;
 }

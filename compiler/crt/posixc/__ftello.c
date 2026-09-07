@@ -35,7 +35,7 @@ off64_t __ftello64(FILE *stream)
     fh = fdesc->fcb->handle;
 
     Flush (fh);
-    cnt = __dos64_getpos (fdesc->fcb);
+    cnt = __fcb_getpos (fdesc->fcb);
 
     if (cnt == -1)
         errno = __stdc_ioerr2errno (IoErr ());
