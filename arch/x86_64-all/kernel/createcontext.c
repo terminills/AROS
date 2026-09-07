@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: Create an empty usable CPU context, x86_64 version.
 */
@@ -35,7 +35,7 @@ AROS_LH0(void *, KrnCreateContext,
 
         D(bug("[Kernel] %s: Context data @ 0x%p (%u bytes)\n", __func__, ctx, KernelBase->kb_ContextSize);)
 
-#if (AROS_FLAVOUR == AROS_FLAVOUR_STANDALONE)
+#if (AROS_FLAVOUR == AROS_FLAVOUR_STANDALONE) || defined(SIGCORE_FPU_XSAVE)
         if (KernelBase->kb_ContextSize > (sizeof(struct AROSCPUContext) + sizeof(struct FPFXSContext) +  16))
         {
             ctx->FPUCtxSize = KernelBase->kb_ContextSize - (sizeof(struct AROSCPUContext) +  63);

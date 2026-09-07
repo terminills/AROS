@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <proto/exec.h>
@@ -16,7 +16,7 @@
 
 static int cpu_Init(struct KernelBase *KernelBase)
 {
-#if (AROS_FLAVOUR == AROS_FLAVOUR_STANDALONE)
+#if (AROS_FLAVOUR == AROS_FLAVOUR_STANDALONE) || defined(SIGCORE_FPU_XSAVE)
     ULONG AVXOffs = 0;
 #endif
 
@@ -88,6 +88,36 @@ static int cpu_Init(struct KernelBase *KernelBase)
             bug("[Kernel] %s: AVX required size = %u\n", __func__, XContextSize);
         )
         KernelBase->kb_ContextSize = sizeof(struct AROSCPUContext) + XContextSize +  63;
+    }
+#elif defined(SIGCORE_FPU_XSAVE)
+    /*
+     * Hosted: the host kernel owns CR0/CR4/XCR0 and hands us its XSAVE area
+     * in every signal frame. Only ask whether it enabled XSAVE (OSXSAVE,
+     * bit 27) and AVX (bit 28), then size the context from what XCR0 covers.
+     */
+    D(bug("[Kernel] %s: Checking for OSXSAVE/AVX availability...\n", __func__);)
+
+    asm volatile (
+        "    mov $0x01, %%eax\n\t"
+        "    cpuid\n\t"
+        "    mov        $0x18000000, %%eax\n\t"
+        "    and        %%ecx, %%eax\n\t"
+        "    cmp        $0x18000000, %%eax\n\t"
+        "    jne .xscheck_done\n\t"
+        "    mov        $0x0d, %%eax\n\t"                                               /* Size of the XSAVE area for XCR0              */
+        "    xor        %%ecx, %%ecx\n\t"
+        "    cpuid\n\t"
+        "    mov        %%ebx, %0\n\t\n"
+        ".xscheck_done:\n\t"
+        : "+m"(AVXOffs)
+        :
+        : "%eax", "%ebx", "%ecx", "%edx"
+    );
+
+    if (AVXOffs)
+    {
+        D(bug("[Kernel] %s: XSAVE area size = %u\n", __func__, AVXOffs);)
+        KernelBase->kb_ContextSize = sizeof(struct AROSCPUContext) + AVXOffs +  63;
     }
 #endif
     if (KernelBase->kb_ContextSize == 0)

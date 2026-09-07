@@ -2,7 +2,7 @@
 #define _SIGCORE_H
 
 /*
-    Copyright © 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright © 1995-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: Macros to handle unix signals, x86_64 version.
@@ -14,6 +14,15 @@
 #define USER_CS 0x33
 #define USER_DS 0x00 /* Not used */
 #define USER_GS 0x00 /* Not used */
+
+/*
+    The signal frame carries the whole XSAVE area (FXSAVE block, XSAVE header,
+    YMM_Hi128 and any further components) on CPUs that have XSAVE, and
+    SAVEREGS/RESTOREREGS below move all of it when the task context has room
+    for it (ECF_FPXS). cpu_init.c and createcontext.c size the context
+    accordingly.
+*/
+#define SIGCORE_FPU_XSAVE 1
 
 #ifdef __AROS_EXEC_LIBRARY__
 
@@ -43,6 +52,8 @@ typedef struct ucontext regs_t;
 #define __KERNEL_STRICT_NAMES
 #endif
 #include <bits/sigcontext.h>
+
+#include <proto/exec.h>
 
 typedef ucontext_t regs_t;
 
@@ -197,26 +208,87 @@ typedef ucontext_t regs_t;
     RESTORE_SEG_REGS(cc, sc)
 
 /*
+ * FPU state in the signal frame.
+ *
+ * uc_mcontext.fpregs points at the 512-byte FXSAVE block. On a CPU with XSAVE
+ * the block is the start of the whole XSAVE area (64-byte header at 512,
+ * YMM_Hi128 at 576, ...) and its software-reserved bytes at offset 464 hold a
+ * struct _fpx_sw_bytes tagged FP_XSTATE_MAGIC1 giving the area's size. A task
+ * context sized for it (ECF_FPXS) carries the whole area; anything less hands
+ * the resumed task the upper register halves of whatever ran before it.
+ */
+#define SIGCORE_FPX_SW_OFFSET   464
+#define SIGCORE_XSAVE_HDR       sizeof(struct FPFXSContext)
+
+static inline ULONG sigcore_fpu_size(struct ExceptionContext *ctx, regs_t *sc)
+{
+    if (ctx->Flags & ECF_FPXS)
+    {
+        struct _fpx_sw_bytes *sw = (struct _fpx_sw_bytes *)((UBYTE *)sc->uc_mcontext.fpregs + SIGCORE_FPX_SW_OFFSET);
+
+        if (sw->magic1 == FP_XSTATE_MAGIC1 && sw->xstate_size > sizeof(struct FPFXSContext)
+            && sw->xstate_size <= ctx->FPUCtxSize)
+            return sw->xstate_size;
+    }
+    return sizeof(struct FPFXSContext);
+}
+
+static inline void sigcore_save_fpu(struct ExceptionContext *ctx, regs_t *sc)
+{
+    ULONG size = sigcore_fpu_size(ctx, sc);
+
+    CopyMemQuick(sc->uc_mcontext.fpregs, ctx->FXSData, size);
+    if ((ctx->Flags & ECF_FPXS) && size == sizeof(struct FPFXSContext))
+    {
+        /*
+         * An FXSAVE-only frame went into an XSAVE context: only x87 and SSE
+         * are current, so let a later restore initialise the rest instead of
+         * replaying whatever the extended components held before.
+         */
+        ctx->XSData->xstate_bv = 0x3;
+    }
+}
+
+static inline void sigcore_restore_fpu(struct ExceptionContext *ctx, regs_t *sc)
+{
+    ULONG size = sigcore_fpu_size(ctx, sc);
+    UBYTE *frame = (UBYTE *)sc->uc_mcontext.fpregs;
+
+    if (size > sizeof(struct FPFXSContext))
+    {
+        /*
+         * Keep the frame's own software-reserved bytes: sigreturn checks their
+         * magic and sizes before it restores the extended state.
+         */
+        CopyMemQuick(ctx->XSData, frame, SIGCORE_FPX_SW_OFFSET);
+        CopyMemQuick(ctx->XSData->xsheader, frame + SIGCORE_XSAVE_HDR, size - SIGCORE_XSAVE_HDR);
+    }
+    else
+        CopyMemQuick(ctx->FXSData, frame, sizeof(struct FPFXSContext));
+}
+
+/*
  * Save all registers from UNIX signal context to AROS context.
- * Save also SSE state if the context has buffer. ECF_FPFXS will be set
- * if SSE state was copied.
+ * Save also the FPU state if the context has a buffer. ECF_FPFXS will be set
+ * if it was copied; ECF_FPXS (set by createcontext) says the buffer holds a
+ * whole XSAVE area.
  */
 #define SAVEREGS(cc, sc)                                                                        \
     SAVE_CPU((cc)->regs, sc);                                                                   \
     if (sc->uc_mcontext.fpregs && (cc)->regs.FXSData)                                           \
     {                                                                                           \
         (cc)->regs.Flags |= ECF_FPFXS;                                                          \
-        CopyMemQuick(sc->uc_mcontext.fpregs, (cc)->regs.FXSData, sizeof(struct FPFXSContext));  \
+        sigcore_save_fpu(&(cc)->regs, sc);                                                      \
     }
 
 /*
  * Restore all registers from AROS context to UNIX signal context.
- * Check context flags to decide whether to restore SSE or not.
+ * Check context flags to decide whether to restore the FPU state or not.
  */
 #define RESTOREREGS(cc, sc)                                                                 \
     RESTORE_CPU((cc)->regs, sc);                                                            \
-    if ((cc)->regs.Flags & ECF_FPFXS)                                                       \
-    CopyMemQuick((cc)->regs.FXSData, sc->uc_mcontext.fpregs, sizeof(struct FPFXSContext));
+    if (((cc)->regs.Flags & ECF_FPFXS) && sc->uc_mcontext.fpregs)                           \
+        sigcore_restore_fpu(&(cc)->regs, sc);
 
 /* Print signal context. Used in crash handler. */
 #define PRINT_SC(sc)                                            \
@@ -225,10 +297,14 @@ typedef ucontext_t regs_t;
         "    RDI=%016lx  RSI=%016lx  RFLAGS=%016lx\n"           \
         "    R8 =%016lx  R9 =%016lx  R10=%016lx  R11=%016lx\n"  \
         "    R12=%016lx  R13=%016lx  R14=%016lx  R15=%016lx\n"  \
+        "    CR2=%016lx  ERR=%016lx  TRAPNO=%016lx\n"           \
         , SP(sc), FP(sc), PC(sc)                                \
         , R0(sc), R1(sc), R2(sc), R3(sc)                        \
         , R4(sc), R5(sc), R6(sc), R8(sc), R9(sc)                \
         , R10(sc), R11(sc), R12(sc), R13(sc), R14(sc), R15(sc)  \
+        , (sc)->uc_mcontext.gregs[REG_CR2]                      \
+        , (sc)->uc_mcontext.gregs[REG_ERR]                      \
+        , (sc)->uc_mcontext.gregs[REG_TRAPNO]                   \
     )
 
 #endif /* __AROS_EXEC_LIBRARY__ */
