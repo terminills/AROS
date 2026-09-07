@@ -666,9 +666,8 @@ LONG sdFind(struct SocketBase *libPtr, LONG *fdp)
      * When fd.library is available it is the system-wide descriptor-number
      * authority (shared with posixc.library), so take the number from it
      * rather than from our private per-task bitmask.  The descriptor still
-     * lives in dTable[fd]/the used-socket bitmask for internal use, so it
-     * must fall inside the current table; grow-on-demand is not yet wired
-     * up, so fail cleanly if it would not.
+     * lives in dTable[fd]/the used-socket bitmask for internal use, so the
+     * table is grown to fit the number we were given (sdGrow()).
      */
     if (FDBase != NULL) {
         LONG fd, error;
@@ -680,9 +679,9 @@ LONG sdFind(struct SocketBase *libPtr, LONG *fdp)
         if (error)
             return EMFILE;
 
-        if ((ULONG)fd >= libPtr->dTableSize) {
+        if ((error = sdGrow(libPtr, fd)) != 0) {
             FD_Free(fd, FD_OWNER_BSDSOCKET);
-            return EMFILE;
+            return error;
         }
 
         *fdp = fd;

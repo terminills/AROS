@@ -174,10 +174,10 @@ static LONG fdh_sock_dup(APTR data, LONG newfd, LONG *perror)
     if (error) { *perror = error; return -1; }
 
     ObtainSyscallSemaphore(p);
-    if ((ULONG)newfd >= p->dTableSize) {
+    if ((error = sdGrow(p, newfd)) != 0) {
         ReleaseSyscallSemaphore(p);
         FD_Free(newfd, FD_OWNER_BSDSOCKET);
-        *perror = EMFILE;
+        *perror = error;
         return -1;
     }
     p->dTable[newfd] = so;

@@ -323,7 +323,7 @@ static int getLastSockFd(struct SocketBase *libPtr)
 /*
  * Set size of descriptor tab|e
  */
-static LONG
+LONG
 setdtablesize(struct SocketBase *libPtr, UWORD size)
 {
 
@@ -361,6 +361,35 @@ setdtablesize(struct SocketBase *libPtr, UWORD size)
     libPtr->dTableSize = size;
 
     return size;
+}
+
+/*
+ * Make sure descriptor number fd fits in this base's table.  With
+ * fd.library handing out descriptor numbers system-wide, a base whose task
+ * has only just opened us can be given a number far beyond the default
+ * table size (another process may hold hundreds of files), so the table
+ * has to follow the numbers it is given rather than the other way round.
+ * Grows in DTABLE_GROW_STEP units; fails only when the number cannot be
+ * represented by the WORD-sized table at all.
+ */
+#define DTABLE_GROW_STEP 64
+
+LONG
+sdGrow(struct SocketBase *libPtr, LONG fd)
+{
+    LONG want;
+
+    if (fd < 0)
+        return EBADF;
+    if ((ULONG)fd < (ULONG)libPtr->dTableSize)
+        return 0;
+
+    want = (fd / DTABLE_GROW_STEP + 1) * DTABLE_GROW_STEP;
+    if (want > 0x7fff)
+        return EMFILE;
+    if (setdtablesize(libPtr, (UWORD)want) <= fd)
+        return ENOMEM;
+    return 0;
 }
 
 #ifdef __GNUC__

@@ -3,6 +3,7 @@
  *                    Helsinki University of Technology, Finland.
  *                    All rights reserved.
  * Copyright (C) 2005 Neil Cafferkey
+ * Copyright (C) 2026, The AROS Development Team.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -104,6 +105,14 @@ static inline LONG getSock(struct SocketBase *p, int fd, struct socket **sop)
  * fdAlloc there. libPtr->nextDToSearch is dumped.
  */
 LONG sdFind(struct SocketBase * libPtr, LONG *fdp);
+
+/*
+ * Descriptor table sizing, in amiga_generic2.c: setdtablesize() is the
+ * SBTC_DTABLESIZE backend, sdGrow() extends the table so that descriptor
+ * number fd fits (0 on success, else an errno).
+ */
+LONG setdtablesize(struct SocketBase *libPtr, UWORD size);
+LONG sdGrow(struct SocketBase *libPtr, LONG fd);
 
 #ifndef AMIGA_RAF_H
 #include <api/amiga_raf.h>
