@@ -339,5 +339,6 @@ the report carries:
 
 Keys are the program's own vocabulary and a server MUST NOT require any of
 them.  Servers MAY index `Product` and MAY surface well-known keys
-(Chromium: `url-chunk`, `top-origin`, `ptype`, `pid`, `switch-N`,
-`gpu-*`) in their views; anything else is shown verbatim.
+(Chromium: `url-chunk`, `top-origin`, `ptype`, `pid`, `num-tabs`,
+`num-windows`, `switch-N`, `gpu-*`) in their views; anything else is shown
+verbatim.
