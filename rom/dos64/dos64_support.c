@@ -38,7 +38,16 @@ QUAD dos64_Seek(struct Dos64Base *DOS64Base, struct FileHandle *fh,
             return -1;
         ret = dos64_SendPkt(DOS64Base, fh->fh_Type, ACTION_CHANGE_FILE_POSITION64,
                             fh->fh_Arg1, position, mode, 0, 0, &err);
-        return ret ? old : -1;
+        /*
+         * A handler may answer the position query yet not know the
+         * repositioning packet (emul.handler does exactly this). Its
+         * refusal must not become the caller's IoErr(): the seek was
+         * never attempted, so fall through to ACTION_SEEK, which the
+         * handler does understand and whose verdict - including a
+         * genuine ERROR_SEEK_ERROR - is the one the caller acts on.
+         */
+        if (ret || !dos64_UnsupportedAction(err))
+            return ret ? old : -1;
     }
 #else
     old = dos64_SendPkt64OS4(DOS64Base, fh->fh_Type, ACTION_GET_FILE_POSITION64,
