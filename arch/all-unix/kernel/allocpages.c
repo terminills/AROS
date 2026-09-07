@@ -5,8 +5,18 @@
 
     The generic rom/kernel/allocpages.c serves pages out of the MMU page
     database (mm_AllocPages). The hosted ports never populate that database,
-    so the generic function is a silent no-op that returns NULL. Here we back
-    KrnAllocPages()/KrnFreePages() with the host's mmap()/munmap() instead.
+    so the generic function is a silent no-op that returns NULL.
+
+    On hosts without W^X (Linux and friends) pages are carved out of the
+    exec.library MemHeaders instead, page-aligned, exactly like the native
+    kernel serves them from mm_Init()ed headers. That keeps the pages
+    visible to TypeOfMem(): the DOS debug builds validate every buffer
+    handed to Read()/Write() with ASSERT_VALID_PTR, and a buffer that
+    exec does not know about raises a Recoverable Alert on each call.
+    Host mmap() memory is invisible to exec in exactly that way.
+
+    Darwin keeps the mmap()/munmap() backing: its W^X rules need real host
+    mappings that KrnSetProtection() can flip per hunk.
 
     W^X note (Apple Silicon): a page may not be writable and executable at the
     same time. We therefore always hand back *writable* memory so the caller can
@@ -21,11 +31,64 @@
 
 #include <inttypes.h>
 
+#include <exec/execbase.h>
 #include <exec/memory.h>
+#include <exec/memheaderext.h>
+#include <proto/exec.h>
 #include <kernel_base.h>
 #include <kernel_intern.h>
 
+#include <string.h>
 #include <sys/mman.h>
+
+#if !(defined(HOST_OS_darwin) || defined(__APPLE__))
+/*
+ * Take one page-aligned block of len bytes from a single MemHeader.
+ * Must be called with the memory list locked (Forbid()).
+ */
+static void *krnAllocPagesFromHeader(struct MemHeader *mh, IPTR len, IPTR pageSize)
+{
+    if (IsManagedMem(mh))
+    {
+        struct MemHeaderExt *mhe = (struct MemHeaderExt *)mh;
+        ULONG mflags = MEMF_ANY;
+
+        if (!mhe->mhe_AllocAligned)
+            return NULL;
+
+        return mhe->mhe_AllocAligned(mhe, len, pageSize, &mflags);
+    }
+    else
+    {
+        /*
+         * Classic first-fit header: Allocate() only guarantees MemChunk
+         * alignment, so take one extra page and give the slack on either
+         * side back. What remains is exactly [aligned, aligned + len),
+         * which is what KrnFreePages() will Deallocate() later.
+         */
+        UBYTE *raw, *aligned;
+        IPTR   head, tail;
+
+        if (mh->mh_Free < len + pageSize)
+            return NULL;
+
+        raw = Allocate(mh, len + pageSize);
+        if (!raw)
+            return NULL;
+
+        aligned = (UBYTE *)(((IPTR)raw + pageSize - 1) & ~(pageSize - 1));
+        head    = aligned - raw;
+        tail    = pageSize - head;
+
+        if (head)
+            Deallocate(mh, raw, head);
+        if (tail)
+            Deallocate(mh, aligned + len, tail);
+
+        return aligned;
+    }
+}
+#endif
 
 /*****************************************************************************
 
@@ -43,15 +106,18 @@
         struct KernelBase *, KernelBase, 27, Kernel)
 
 /*  FUNCTION
-        Allocate page-granular memory from the host. The region is always
-        mapped readable/writable; pass it to KrnSetProtection() afterwards to
-        make it executable or read-only.
+        Allocate page-granular memory. The region is always readable and
+        writable; pass it to KrnSetProtection() afterwards to make it
+        executable or read-only. On Linux the pages come from exec's RAM
+        and are known to TypeOfMem(); on Darwin they are a host mapping.
 
     INPUTS
-        addr   - Preferred start address, or NULL to let the host choose.
+        addr   - Preferred start address, or NULL to let the kernel choose.
+                 Only honoured on Darwin; elsewhere a non-NULL addr fails.
         length - Size in bytes (rounded up to the host page size).
-        flags  - exec.library/AllocMem() style MEMF_* flags. Honoured for
-                 intent only; the mapping itself is always R/W (see W^X note).
+        flags  - exec.library/AllocMem() style MEMF_* flags. MEMF_CLEAR and
+                 the physical attribute bits are honoured; MEMF_EXECUTABLE
+                 is declined on non-W^X hosts (see below).
 
     RESULT
         Start address of the allocated region, or NULL on failure.
@@ -60,11 +126,8 @@
 {
     AROS_LIBFUNC_INIT
 
-    struct KernelInterface *iface = KernelBase->kb_PlatformData->iface;
     IPTR    pageSize = KernelBase->kb_PageSize ? KernelBase->kb_PageSize : 4096;
     size_t  len      = (length + pageSize - 1) & ~(pageSize - 1);
-    int     prot     = PROT_READ | PROT_WRITE;
-    void   *map;
 
 #if !(defined(HOST_OS_darwin) || defined(__APPLE__))
     /*
@@ -79,7 +142,55 @@
      */
     if (flags & MEMF_EXECUTABLE)
         return NULL;
-#endif
+
+    /*
+     * Everything else comes out of exec's RAM (see the file header). Only
+     * the physical attribute bits select a header; an exact-address
+     * request cannot be honoured without a non-mungwalled AllocAbs(), so
+     * it fails and the caller falls back to an unhinted request.
+     */
+    {
+        ULONG physFlags = flags & MEMF_PHYSICAL_MASK;
+        struct MemHeader *mh;
+        void *res = NULL;
+
+        if (addr)
+        {
+            D(bug("[KrnAllocPages] exact address %p not supported\n", addr));
+            return NULL;
+        }
+
+        Forbid();
+        ForeachNode(&SysBase->MemList, mh)
+        {
+            if (physFlags & ~mh->mh_Attributes)
+                continue;
+
+            res = krnAllocPagesFromHeader(mh, len, pageSize);
+            if (res)
+                break;
+        }
+        Permit();
+
+        if (!res)
+        {
+            D(bug("[KrnAllocPages] FAILED: len=%u flags=0x%x, no RAM\n",
+                  (unsigned)len, (unsigned)flags));
+            return NULL;
+        }
+
+        if (flags & MEMF_CLEAR)
+            memset(res, 0, len);
+
+        D(bug("[KrnAllocPages] len=%u (req %u) flags=0x%x -> %p (exec RAM)\n",
+              (unsigned)len, (unsigned)length, (unsigned)flags, res));
+
+        return res;
+    }
+#else
+    struct KernelInterface *iface = KernelBase->kb_PlatformData->iface;
+    int     prot = PROT_READ | PROT_WRITE;
+    void   *map;
 
     /*
      * MEMF_EXECUTABLE allocations are mapped R/W/X directly where the host
@@ -143,6 +254,7 @@
           addr, (unsigned)len, (unsigned)length, (unsigned)flags, map));
 
     return map;
+#endif
 
     AROS_LIBFUNC_EXIT
 }
