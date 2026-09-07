@@ -39,10 +39,28 @@
 
 //#define USE_ASYNC_CANCEL
 
+/*
+ * The program startup code registers the exception frames before it runs the
+ * INIT set, and __register_frame() allocates memory. A malloc that keeps
+ * per-thread state (an allocator with a thread cache, for example) thus calls
+ * pthread_key_create() before __pthread_Init_Func(). Initialise the library's
+ * semaphores statically so they are valid from the first call; the zeroed
+ * spinlock of an SMP build is SPINLOCK_UNLOCKED, which is what KrnSpinInit()
+ * produces.
+ */
+#define STATIC_SEMAPHORE_INIT(sem)                                              \
+{                                                                               \
+    .ss_Link.ln_Type = NT_SIGNALSEM,                                            \
+    .ss_WaitQueue.mlh_Head = (struct MinNode *)&sem.ss_WaitQueue.mlh_Tail,      \
+    .ss_WaitQueue.mlh_Tail = NULL,                                              \
+    .ss_WaitQueue.mlh_TailPred = (struct MinNode *)&sem.ss_WaitQueue.mlh_Head,  \
+    .ss_QueueCount = -1,                                                        \
+}
+
 ThreadInfo threads[PTHREAD_THREADS_MAX];
-struct SignalSemaphore thread_sem;
+struct SignalSemaphore thread_sem = STATIC_SEMAPHORE_INIT(thread_sem);
 TLSKey tlskeys[PTHREAD_KEYS_MAX];
-struct SignalSemaphore tls_sem;
+struct SignalSemaphore tls_sem = STATIC_SEMAPHORE_INIT(tls_sem);
 
 //
 // Helper functions
@@ -1306,8 +1324,7 @@ int __pthread_Init_Func(void)
     DB2(bug("%s()\n", __FUNCTION__));
 
     //memset(&threads, 0, sizeof(threads));
-    InitSemaphore(&thread_sem);
-    InitSemaphore(&tls_sem);
+    // thread_sem and tls_sem are initialised statically, see above
 
     // reserve ID 0 for the main thread
     ThreadInfo *inf = &threads[0];
