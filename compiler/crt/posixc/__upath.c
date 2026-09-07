@@ -5,10 +5,17 @@
 */
 
 #include <aros/debug.h>
+#include <aros/symbolsets.h>
 
+#include <exec/memory.h>
+#include <exec/semaphores.h>
+#include <exec/tasks.h>
 #include <dos/dosextens.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
+
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -17,6 +24,111 @@
 
 static const char *__path_devstuff_u2a(const char *path);
 static void  __path_normalstuff_u2a(const char *path, char *buf);
+
+struct upath_task_buffer
+{
+    struct upath_task_buffer *next;
+    struct Task *task;
+    size_t capacity;
+    char buffer[1];
+};
+
+static struct SignalSemaphore upath_lock;
+
+static char *__path_task_buffer(struct PosixCIntBase *PosixCBase,
+    size_t required)
+{
+    struct upath_task_buffer *entry;
+    struct upath_task_buffer *previous = NULL;
+    struct upath_task_buffer *replacement;
+    struct Task *task = FindTask(NULL);
+    size_t allocation_size;
+    char *buffer = NULL;
+
+    if (required > SIZE_MAX - offsetof(struct upath_task_buffer, buffer))
+        return NULL;
+
+    ObtainSemaphore(&upath_lock);
+
+    entry = (struct upath_task_buffer *)PosixCBase->upathbuf;
+    while (entry != NULL && entry->task != task)
+    {
+        previous = entry;
+        entry = entry->next;
+    }
+
+    if (entry != NULL && entry->capacity >= required)
+    {
+        buffer = entry->buffer;
+        goto out;
+    }
+
+    allocation_size = offsetof(struct upath_task_buffer, buffer) + required;
+    replacement = AllocVec(allocation_size, MEMF_ANY);
+    if (replacement == NULL)
+        goto out;
+
+    replacement->task = task;
+    replacement->capacity = required;
+
+    if (entry != NULL)
+    {
+        replacement->next = entry->next;
+        if (previous != NULL)
+            previous->next = replacement;
+        else
+            PosixCBase->upathbuf = (char *)replacement;
+
+        FreeVec(entry);
+    }
+    else
+    {
+        replacement->next =
+            (struct upath_task_buffer *)PosixCBase->upathbuf;
+        PosixCBase->upathbuf = (char *)replacement;
+    }
+
+    buffer = replacement->buffer;
+
+out:
+    ReleaseSemaphore(&upath_lock);
+    return buffer;
+}
+
+static int __init_upath_lock(struct PosixCIntBase *PosixCBase)
+{
+    (void)PosixCBase;
+    InitSemaphore(&upath_lock);
+    return TRUE;
+}
+
+static int __init_upath(struct PosixCIntBase *PosixCBase)
+{
+    PosixCBase->upathbuf = NULL;
+    return TRUE;
+}
+
+static void __exit_upath(struct PosixCIntBase *PosixCBase)
+{
+    struct upath_task_buffer *entry;
+    struct upath_task_buffer *next;
+
+    ObtainSemaphore(&upath_lock);
+    entry = (struct upath_task_buffer *)PosixCBase->upathbuf;
+    PosixCBase->upathbuf = NULL;
+    ReleaseSemaphore(&upath_lock);
+
+    while (entry != NULL)
+    {
+        next = entry->next;
+        FreeVec(entry);
+        entry = next;
+    }
+}
+
+ADD2INITLIB(__init_upath_lock, 0);
+ADD2OPENLIB(__init_upath, -40);
+ADD2CLOSELIB(__exit_upath, 0);
 
 int __path_volume_exists(const char *path)
 {
@@ -57,9 +169,8 @@ int __path_volume_exists(const char *path)
         A pointer to a string containing the AmigaDOS-style path, or NULL in
         case of error.
 
-        The pointer is valid only until next call to this function, so if
-        you need to call this function recursively, you must save the string
-        pointed to by the pointer before calling this function again.
+        The pointer is valid only until the current task next calls a path
+        conversion function, so recursive use must save the string first.
 
     NOTES
         This function is for private usage by system code. Do not use it
@@ -126,7 +237,7 @@ int __path_volume_exists(const char *path)
         D(bug("__path_u2a: No /dev stuff, doing normal conversion\n"));
 
         /* Else, convert it normally */
-        newpath = realloc_nocopy(PosixCBase->upathbuf, strlen(upath) + 1);
+        newpath = __path_task_buffer(PosixCBase, strlen(upath) + 1);
 
         if (newpath == NULL)
         {
@@ -134,8 +245,7 @@ int __path_volume_exists(const char *path)
             return NULL;
         }
 
-        PosixCBase->upathbuf = (char *)newpath;
-        __path_normalstuff_u2a(upath, PosixCBase->upathbuf);
+        __path_normalstuff_u2a(upath, (char *)newpath);
     }
 
     D(bug("__path_u2a: converted path \"%s\"\n", newpath));
@@ -164,9 +274,8 @@ int __path_volume_exists(const char *path)
         A pointer to a string containing the unix-style path, or NULL in
         case of error.
 
-        The pointer is valid only until next call to this function, so if
-        you need to call this function recursively, you must save the string
-        pointed to by the pointer before calling this function again.
+        The pointer is valid only until the current task next calls a path
+        conversion function, so recursive use must save the string first.
 
     NOTES
         This function is for private usage by system code. Do not use it
@@ -215,14 +324,13 @@ int __path_volume_exists(const char *path)
     if (size == 0)
         return "";
 
-    old_upath = realloc_nocopy(PosixCBase->upathbuf, 1 + size + 1);
+    old_upath = __path_task_buffer(PosixCBase, 1 + size + 1);
     if (old_upath == NULL)
     {
         errno = ENOMEM;
         return NULL;
     }
 
-    PosixCBase->upathbuf = old_upath;
     upath = ++old_upath;
     apath = old_apath;
 
@@ -465,4 +573,3 @@ static void __path_normalstuff_u2a(const char *path, char *buf)
 
     buf[0] = '\0';
 }
-
