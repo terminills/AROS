@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2012, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     POSIX.1-2008 function dup().
 */
@@ -55,6 +55,14 @@
 
 ******************************************************************************/
 {
-    return dup2(oldfd, __getfirstfd(0));
+    int newfd = __getfirstfd(0);
+    int result;
+
+    if (newfd < 0)
+        return -1;
+    result = dup2(oldfd, newfd);
+    if (result < 0)
+        __freefdslot(newfd);
+    return result;
 }
 

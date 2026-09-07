@@ -83,9 +83,12 @@
             LONG err = 0;
             if (oldfd == newfd)
                 return newfd;
-            /* Vacate newfd first (close a posixc file or free a reservation). */
+            /* Vacate newfd first (close a posixc file or free a reservation,
+               including one dup()/F_DUPFD just took from __getfirstfd()). */
             if (__getfdesc(newfd))
                 close(newfd);
+            else
+                __freefdslot(newfd);
             if (hooks->fdh_dup(data, newfd, &err) < 0)
             {
                 errno = err;

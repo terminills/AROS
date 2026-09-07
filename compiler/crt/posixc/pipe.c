@@ -103,7 +103,20 @@
     InitSemaphore(&rfcb->io_lock);
     InitSemaphore(&wfcb->io_lock);
 
-    pipedes[0] = __getfdslot(__getfirstfd(0));
+    /* errno is set by __getfirstfd()/__getfdslot() on failure */
+    pipedes[0] = __getfirstfd(0);
+    if (pipedes[0] < 0 || __getfdslot(pipedes[0]) < 0)
+    {
+        if (pipedes[0] >= 0)
+            __freefdslot(pipedes[0]);
+        Close(reader);
+        Close(writer);
+        FreeVec(rfcb);
+        FreeVec(wfcb);
+        __free_fdesc(rdesc);
+        __free_fdesc(wdesc);
+        return -1;
+    }
     rdesc->fdflags = 0;
     rdesc->fcb = rfcb;
     rdesc->fcb->handle    = reader;
@@ -111,7 +124,17 @@
     rdesc->fcb->opencount = 1;
     __setfdesc(pipedes[0], rdesc);
 
-    pipedes[1] = __getfdslot(__getfirstfd(pipedes[0]));
+    pipedes[1] = __getfirstfd(pipedes[0]);
+    if (pipedes[1] < 0 || __getfdslot(pipedes[1]) < 0)
+    {
+        if (pipedes[1] >= 0)
+            __freefdslot(pipedes[1]);
+        close(pipedes[0]);      /* releases reader, rfcb and rdesc */
+        Close(writer);
+        FreeVec(wfcb);
+        __free_fdesc(wdesc);
+        return -1;
+    }
     wdesc->fdflags = 0;
     wdesc->fcb = wfcb;
     wdesc->fcb->handle    = writer;

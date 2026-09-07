@@ -227,7 +227,14 @@ static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
                     va_start(ap, cmd);
                     arg = va_arg(ap, int);
                     va_end(ap);
-                    return dup2(fd, __getfirstfd(arg));
+                    int newfd = __getfirstfd(arg);
+                    int result;
+                    if (newfd < 0)
+                        return -1;
+                    result = dup2(fd, newfd);
+                    if (result < 0)
+                        __freefdslot(newfd);
+                    return result;
                 }
                 default:
                     errno = EINVAL;
@@ -254,7 +261,15 @@ static int __fcntl_record_lock(fdesc *desc, int cmd, struct flock *lock)
                        is supported (related to F_GETFD and F_SETFD).
             */
             
-            result = dup2(fd, __getfirstfd(arg));
+            int newfd = __getfirstfd(arg);
+            if (newfd < 0)
+            {
+                result = -1;
+                break;
+            }
+            result = dup2(fd, newfd);
+            if (result < 0)
+                __freefdslot(newfd);
             break;
         }
         case F_GETFD:

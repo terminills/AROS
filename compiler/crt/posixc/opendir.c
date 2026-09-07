@@ -140,7 +140,9 @@
     desc->fcb->opencount = 1;
     desc->fcb->privflags |= _FCB_ISDIR;
 
-    fd = __getfdslot(__getfirstfd(3));
+    fd = __getfirstfd(3);
+    if (fd < 0 || __getfdslot(fd) < 0)
+        goto err6;
     __setfdesc(fd, desc);
 
     dir->fd = fd;
@@ -150,6 +152,10 @@
     D(bug("opendir(%s) fd=%d\n", name, fd));
     return dir;
 
+err6:
+    if (fd >= 0)
+        __freefdslot(fd);
+    __free_fdesc(desc);
 err5:
     FreeVec(cblock);
 err4:

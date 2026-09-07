@@ -196,12 +196,27 @@ void __setfdesc(register int fd, fdesc *desc)
     }
 }
 
+/* Pick the lowest free descriptor number >= startfd.
+
+   With fd.library present the number is *reserved* for this caller
+   (FD_OWNER_POSIXC, no data) in the same locked step that finds it, so two
+   Tasks of one Process opening files concurrently can never be handed the
+   same number.  Previously the number was only looked at here and reserved
+   later in __getfdslot(), and that reservation is skipped for a number the
+   table already attributes to posixc - so the second Task silently took over
+   the first one's descriptor, and every later read()/ftruncate() through it
+   hit the wrong file.  The caller either publishes the descriptor with
+   __setfdesc() (through __getfdslot()) or gives it back with __freefdslot();
+   on failure errno is set and -1 returned.  0..2 are process-local and are
+   never registered (see __setfdesc()). */
 int __getfirstfd(register int startfd)
 {
     struct PosixCIntBase *PosixCBase =
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
 
-    /* FIXME: Check if fd is in valid range... */
+    if (startfd < 0)
+        startfd = 0;
+
     if (!__fdlib_available(PosixCBase)) {
         for (
             ;
@@ -214,14 +229,58 @@ int __getfirstfd(register int startfd)
 
     struct Library *FDBase = PosixCBase->PosixCFDBase;
     for (;;) {
-        if (startfd < FD_SLOTS(PosixCBase) && FD_ARRAY(PosixCBase)[startfd]) {
+        LONG got, error;
+
+        FD_LOCK(PosixCBase);
+        while (startfd < FD_SLOTS(PosixCBase) && FD_ARRAY(PosixCBase)[startfd])
             startfd++;
+        FD_UNLOCK(PosixCBase);
+
+        if (startfd <= STDERR_FILENO)
+            return startfd;
+
+        error = FD_Alloc(startfd, FD_OWNER_POSIXC, NULL, &got);
+        if (error) {
+            __set_errno(PosixCBase, error == ENOMEM ? ENOMEM : EMFILE);
+            return -1;
+        }
+
+        /* A local entry without a registry owner is stale (see __getfdesc());
+           do not hand its number out, it would be close()d by __getfdslot(). */
+        FD_LOCK(PosixCBase);
+        if (got < FD_SLOTS(PosixCBase) && FD_ARRAY(PosixCBase)[got]) {
+            FD_UNLOCK(PosixCBase);
+            FD_Free(got, FD_OWNER_POSIXC);
+            startfd = got + 1;
             continue;
         }
-        if (FD_Check(startfd) == 0)
-            return startfd;
-        startfd++;
+        FD_UNLOCK(PosixCBase);
+
+        return got;
     }
+}
+
+/* Give back a descriptor number obtained from __getfirstfd() that was not
+   published with __setfdesc(). */
+void __freefdslot(int fd)
+{
+    struct PosixCIntBase *PosixCBase =
+        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+
+    if (fd <= STDERR_FILENO || !__fdlib_available(PosixCBase))
+        return;
+
+    FD_LOCK(PosixCBase);
+    if (fd < FD_SLOTS(PosixCBase) && FD_ARRAY(PosixCBase)[fd]) {
+        /* Published after all - not ours to release. */
+        FD_UNLOCK(PosixCBase);
+        return;
+    }
+    FD_UNLOCK(PosixCBase);
+
+    struct Library *FDBase = PosixCBase->PosixCFDBase;
+    if (FD_GetOwner(fd) == FD_OWNER_POSIXC)
+        FD_Free(fd, FD_OWNER_POSIXC);
 }
 
 int __getfdslot(int wanted_fd)
@@ -284,11 +343,13 @@ int __getfdslot(int wanted_fd)
        numbers in the system-wide fd.library table (see __setfdesc()). */
     if (wanted_fd > STDERR_FILENO && __fdlib_available(PosixCBase)) {
         struct Library *FDBase = PosixCBase->PosixCFDBase;
-        /* A vfork child inherits the parent's descriptor table (__copy_fdarray);
-           those fd numbers are already reserved system-wide by the parent as
-           FD_OWNER_POSIXC and are shared, not re-created.  Re-reserving them
-           would fail and abort the child's posixc OpenLib (seen as a spurious
-           ENOMEM from fork()).  Only reserve numbers not already owned by us. */
+        /* A number already attributed to posixc is either the reservation
+           __getfirstfd() just made for this caller, or one a vfork child
+           inherited with the parent's descriptor table (__copy_fdarray):
+           those are reserved system-wide by the parent and shared, not
+           re-created.  Re-reserving would fail (EBUSY) and abort the child's
+           posixc OpenLib (seen as a spurious ENOMEM from fork()).  Only
+           reserve numbers not already owned by us. */
         if (FD_GetOwner(wanted_fd) != FD_OWNER_POSIXC) {
             error = FD_Reserve(wanted_fd, FD_OWNER_POSIXC, NULL);
             if (error) {
@@ -353,15 +414,20 @@ int __open(int wanted_fd, const char *pathname, int flags, int mode)
     struct FileInfoBlock *fib = NULL;
     LONG  openmode = __oflags2amode(flags);
 
+    /* wanted_fd comes reserved from __getfirstfd(), which set errno if it
+       failed; from here on every failure must give it back, see err: */
+    if (wanted_fd < 0)
+        return -1;
+
     if (PosixCBase->doupath && pathname[0] == '\0')
     {
         /* On *nix "" is not really a valid file name.  */
         __set_errno(PosixCBase, ENOENT);
-        return -1;
+        goto err;
     }
 
     pathname = __path_u2a(pathname);
-    if (!pathname) return -1;
+    if (!pathname) goto err;
 
     /*
      * DOS may display an insert-volume requester when a translated absolute
@@ -371,16 +437,16 @@ int __open(int wanted_fd, const char *pathname, int flags, int mode)
     if (!__path_volume_exists(pathname))
     {
         __set_errno(PosixCBase, ENOENT);
-        return -1;
+        goto err;
     }
-    
+
     D(bug("__open: entering, wanted fd = %d, path = %s, flags = %d, mode = %d\n", wanted_fd, pathname, flags, mode));
 
     if (openmode == -1)
     {
         __set_errno(PosixCBase, EINVAL);
         D(bug( "__open: bad mode, exiting with error EINVAL\n"));
-        return -1;
+        goto err;
     }
 
     cblock = AllocVec(sizeof(fcb), MEMF_ANY | MEMF_CLEAR);
@@ -391,8 +457,7 @@ int __open(int wanted_fd, const char *pathname, int flags, int mode)
     currdesc->fdflags = 0;
     currdesc->fcb = cblock;
 
-    wanted_fd = __getfdslot(wanted_fd);
-    if (wanted_fd == -1) { D(bug("__open: no free fd\n")); goto err; }
+    if (__getfdslot(wanted_fd) == -1) { D(bug("__open: no free fd\n")); goto err; }
     reserved_fd = 1;
 
     /*
@@ -558,6 +623,8 @@ err:
     if (lock) UnLock(lock);
     if (reserved_fd)
         __setfdesc(wanted_fd, NULL);
+    else
+        __freefdslot(wanted_fd);
 
     D(bug("__open: exiting with error %d\n", errno ));
 
