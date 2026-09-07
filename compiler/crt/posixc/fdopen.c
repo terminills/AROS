@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2013, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     POSIX.1-2008 function fdopen().
 */
@@ -99,7 +99,9 @@
     fn = AllocPooled(PosixCBase->internalpool, sizeof(FILENODE));
     if (!fn) return NULL;
 
+    ObtainSemaphore(&PosixCBase->stdio_sem);
     AddTail ((struct List *)&PosixCBase->stdio_files, (struct Node *)fn);
+    ReleaseSemaphore(&PosixCBase->stdio_sem);
 
     fn->File.flags = __oflags2sflags(oflags);
     fn->File.fd    = filedes;

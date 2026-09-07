@@ -115,6 +115,7 @@ int __init_stdio(struct PosixCIntBase *PosixCIntBase)
 {
     struct PosixCBase *PosixCBase = (struct PosixCBase *)PosixCIntBase;
     NEWLIST(&PosixCIntBase->stdio_files);
+    InitSemaphore(&PosixCIntBase->stdio_sem);
 
     if
     (

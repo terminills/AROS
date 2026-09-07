@@ -57,6 +57,9 @@
     {
         FILENODE *fn;
 
+        /* Hold the list guard for the walk so a concurrent fclose() cannot
+           unlink the node under us. */
+        ObtainSemaphore(&PosixCBase->stdio_sem);
         ForeachNode (&PosixCBase->stdio_files, fn)
         {
             if (fn->File.flags & __POSIXC_STDIO_WRITE)
@@ -65,6 +68,7 @@
 
                 if (!fdesc)
                 {
+                    ReleaseSemaphore(&PosixCBase->stdio_sem);
                     errno = EBADF;
                     return EOF;
                 }
@@ -73,12 +77,14 @@
                 if (!Flush(fdesc->fcb->handle))
                 {
                     __fcb_unlock(fdesc->fcb);
+                    ReleaseSemaphore(&PosixCBase->stdio_sem);
                     errno = __stdc_ioerr2errno(IoErr());
                     return EOF;
                 }
                 __fcb_unlock(fdesc->fcb);
             }
         }
+        ReleaseSemaphore(&PosixCBase->stdio_sem);
     }
     else
     {

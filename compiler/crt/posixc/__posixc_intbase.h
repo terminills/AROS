@@ -104,6 +104,9 @@ struct PosixCIntBase
 
     /* __stdio.c */
     struct MinList stdio_files;
+    /* Guards stdio_files: fdopen()/fclose() from concurrent Tasks would
+       otherwise unlink through freed nodes. */
+    struct SignalSemaphore stdio_sem;
 
     /* setuid.c/getuid.c */
     uid_t uid; /* Real user id of process */

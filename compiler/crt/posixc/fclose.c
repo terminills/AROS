@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     C99 function fclose().
 */
@@ -54,7 +54,9 @@
         return EOF;
 
     fn = FILE2FILENODE (stream);
+    ObtainSemaphore(&PosixCBase->stdio_sem);
     Remove ((struct Node *)fn);
+    ReleaseSemaphore(&PosixCBase->stdio_sem);
 
     FreePooled(PosixCBase->internalpool, fn, sizeof(FILENODE));
 
