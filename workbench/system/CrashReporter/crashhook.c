@@ -125,12 +125,21 @@ static int cr_trap_observer(void *ctx, void *data, void *data2)
 #if defined(__x86_64__) || defined(__i386__)
     if (rec->rec_Exception == 14)
     {
-        /* trap handlers run in ring 0; CR2 still holds the linear address
-           the #PF was raised for */
-        IPTR cr2;
-        __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
-        rec->rec_FaultAddress = (APTR)cr2;
-        rec->rec_Flags |= CRF_FAULTADDR;
+        /* on native kernels trap handlers run in ring 0 and CR2 still holds
+           the linear address the #PF was raised for.  On hosted kernels the
+           handler runs inside the host's signal handler, in user mode, where
+           "mov %cr2" is itself a #GP that kills the whole hosted process; so
+           read CR2 only when the current privilege level (low two bits of
+           %cs) is 0, and leave Fault-Address out of the report otherwise. */
+        UWORD cs;
+        __asm__ __volatile__("mov %%cs, %0" : "=r"(cs));
+        if ((cs & 3) == 0)
+        {
+            IPTR cr2;
+            __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
+            rec->rec_FaultAddress = (APTR)cr2;
+            rec->rec_Flags |= CRF_FAULTADDR;
+        }
     }
 #endif
     __sync_synchronize();
