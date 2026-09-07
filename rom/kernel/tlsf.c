@@ -700,94 +700,130 @@ static void tlsf_release_memory_area(struct MemHeaderExt * mhe, tlsf_area_t * ar
         tlsf->autogrow_release_fn(tlsf->autogrow_data, begin, size);
 }
 
+/*
+ * Aligned allocation. A block of size + align + header bytes is taken with
+ * tlsf_malloc() and the aligned block is cut out of it: the slack in front
+ * and behind become free blocks of their own when they are big enough to
+ * carry a header and a free node, otherwise the front slack is avoided by
+ * moving up one alignment step and the rear slack stays part of the block.
+ * The smallest free block TLSF can represent is SIZE_ALIGN bytes of payload
+ * behind a header, so a slack of less than that would be a corrupt block.
+ */
 void * tlsf_malloc_aligned(struct MemHeaderExt *mhe, IPTR size, IPTR align, ULONG *flags)
 {
     tlsf_t *tlsf = (tlsf_t *)mhe->mhe_UserData;
-    void * ptr;
-    bhdr_t *b;
+    const IPTR hdr_size = ROUNDUP(sizeof(hdr_t));
+    const IPTR min_slack = hdr_size + SIZE_ALIGN;
+    UBYTE *ptr, *aligned, *end;
+    bhdr_t *b, *ab, *next;
+    IPTR head, tail;
+
+    size = ROUNDUP(size);
+
+    if (unlikely(!size))
+        return NULL;
+
+    D(nbug("[Kernel:TLSF] %s(%p, %lx, %u)\n", __PRETTY_FUNCTION__, mhe, size, align));
+
+    /* Adjust align to the nearest power of two at or above the request */
+    if (align & (align - 1))
+        align = (IPTR)1 << (MS(align) + 1);
+    else if (align)
+        align = (IPTR)1 << MS(align);
+
+    D(nbug("[Kernel:TLSF] %s: adjusted align = %u\n", __PRETTY_FUNCTION__, align));
+
+    if (align <= SIZE_ALIGN)
+        return tlsf_malloc(mhe, size, flags);
 
     if (((ULONG)(IPTR)mhe->mhe_MemHeader.mh_First) & MEMF_SEM_PROTECTED)
         ObtainSemaphore((struct SignalSemaphore *)mhe->mhe_MemHeader.mh_Node.ln_Name);
 
-    size = ROUNDUP(size);
-
-    D(nbug("[Kernel:TLSF] %s(%p, %lx, %u)\n", __PRETTY_FUNCTION__, mhe, size, align));
-
-    /* Adjust align to the top nearest power of two */
-    align = 1 << MS(align);
-
-    D(nbug("[Kernel:TLSF] %s: adjusted align = %u\n", __PRETTY_FUNCTION__, align));
-
-    ptr = tlsf_malloc(mhe, size+align, flags);
+    /*
+     * Worst case the aligned block starts align - SIZE_ALIGN bytes in, or
+     * one step further when that leaves a front slack too small to be a
+     * free block (see below). Clearing, if wanted, is done on the aligned
+     * block only.
+     */
+    ptr = tlsf_malloc(mhe, size + align + hdr_size, NULL);
 
     if (!ptr)
     {
         if (((ULONG)(IPTR)mhe->mhe_MemHeader.mh_First) & MEMF_SEM_PROTECTED)
             ReleaseSemaphore((struct SignalSemaphore *)mhe->mhe_MemHeader.mh_Node.ln_Name);
 
-        return ptr;
+        return NULL;
     }
 
-    b = MEM_TO_BHDR(ptr);
+    b    = MEM_TO_BHDR(ptr);
+    end  = ptr + GET_SIZE(b);
+    next = GET_NEXT_BHDR(b, GET_SIZE(b));
 
-    D(nbug("[Kernel:TLSF] %s: allocated region @%p\n", __PRETTY_FUNCTION__, ptr));
+    aligned = (UBYTE *)(((IPTR)ptr + align - 1) & ~(align - 1));
+    head    = aligned - ptr;
 
-    if (align > SIZE_ALIGN)
+    if (head && head < min_slack)
     {
-        void *aligned_ptr = (void *)(((IPTR)ptr + align - 1) & ~(align - 1));
-        bhdr_t *aligned_bhdr = MEM_TO_BHDR(aligned_ptr);
-        IPTR diff_begin = (IPTR)aligned_bhdr - (IPTR)b;
-        IPTR diff_end = (IPTR)GET_NEXT_BHDR(b, GET_SIZE(b)) - (IPTR)GET_NEXT_BHDR(aligned_bhdr, size);
-
-        SET_SIZE(aligned_bhdr, size);
-
-        if (aligned_ptr != ptr)
-        {
-            D(nbug("[Kernel:TLSF] %s: aligned ptr: %p\n", __PRETTY_FUNCTION__, aligned_ptr));
-            D(nbug("[Kernel:TLSF] %s: difference begin: %d\n", __PRETTY_FUNCTION__, diff_begin));
-            D(nbug("[Kernel:TLSF] %s: difference end: %d\n", __PRETTY_FUNCTION__, diff_end));
-
-            if (diff_begin > 0)
-            {
-                SET_SIZE(b, diff_begin - ROUNDUP(sizeof(hdr_t)));
-
-                tlsf->free_size += GET_SIZE(b);
-
-                aligned_bhdr->header.prev = b;
-                SET_FREE_PREV_BLOCK(aligned_bhdr);
-                SET_FREE_BLOCK(b);
-
-                b = MERGE_PREV(mhe, tlsf, b);
-
-                D(nbug("[Kernel:TLSF] %s: block @%p, b->next %p\n", __PRETTY_FUNCTION__, b, GET_NEXT_BHDR(b, GET_SIZE(b))));
-
-                /* Insert free block into the proper list */
-                INSERT_FREE_BLOCK(mhe, tlsf, b);
-            }
-
-            ptr = &aligned_bhdr->mem[0];
-        }
-
-        if (diff_end > 0)
-        {
-            bhdr_t *b1 = GET_NEXT_BHDR(aligned_bhdr, GET_SIZE(aligned_bhdr));
-            bhdr_t *next;
-
-            b1->header.prev = aligned_bhdr;
-
-            SET_SIZE(b1, diff_end - ROUNDUP(sizeof(hdr_t)));
-            SET_BUSY_PREV_BLOCK(b1);
-            SET_FREE_BLOCK(b1);
-
-            next = GET_NEXT_BHDR(b1, GET_SIZE(b1));
-            next->header.prev = b1;
-            SET_FREE_PREV_BLOCK(next);
-
-            b1 = MERGE_NEXT(mhe, tlsf, b1);
-
-            INSERT_FREE_BLOCK(mhe, tlsf, b1);
-        }
+        aligned += align;
+        head    += align;
     }
+
+    tail = end - (aligned + size);
+
+    D(nbug("[Kernel:TLSF] %s: block @%p (%lu bytes), aligned @%p, head %lu, tail %lu\n",
+           __PRETTY_FUNCTION__, ptr, GET_SIZE(b), aligned, head, tail));
+
+    if (head)
+    {
+        /*
+         * Front slack becomes a free block. The block in front of b was
+         * busy (adjacent free blocks are always merged), so no merge is
+         * needed; b keeps its own PREV flag.
+         */
+        ab = MEM_TO_BHDR(aligned);
+
+        SET_SIZE(b, head - hdr_size);
+        SET_FREE_BLOCK(b);
+        tlsf->free_size += GET_SIZE(b);
+        INSERT_FREE_BLOCK(mhe, tlsf, b);
+
+        ab->header.prev = b;
+        SET_SIZE_AND_FLAGS(ab, size, THIS_BUSY | PREV_FREE);
+    }
+    else
+    {
+        ab = b;
+        SET_SIZE(ab, size);
+    }
+
+    if (tail >= min_slack)
+    {
+        /* Rear slack becomes a free block, merged with a free successor */
+        bhdr_t *tb = GET_NEXT_BHDR(ab, size);
+
+        tb->header.prev = ab;
+        SET_SIZE_AND_FLAGS(tb, tail - hdr_size, THIS_FREE | PREV_BUSY);
+        tlsf->free_size += GET_SIZE(tb);
+
+        tb   = MERGE_NEXT(mhe, tlsf, tb);
+        next = GET_NEXT_BHDR(tb, GET_SIZE(tb));
+        next->header.prev = tb;
+        SET_FREE_PREV_BLOCK(next);
+
+        INSERT_FREE_BLOCK(mhe, tlsf, tb);
+    }
+    else
+    {
+        /* Too small for a block of its own: it stays inside ab */
+        SET_SIZE(ab, size + tail);
+        next->header.prev = ab;
+        SET_BUSY_PREV_BLOCK(next);
+    }
+
+    ab->free_node.next = NULL;
+    ab->free_node.prev = NULL;
+
+    mhe->mhe_MemHeader.mh_Free = tlsf->free_size;
 
     D({
         bhdr_t *b2 = b;
@@ -803,7 +839,10 @@ void * tlsf_malloc_aligned(struct MemHeaderExt *mhe, IPTR size, IPTR align, ULON
     if (((ULONG)(IPTR)mhe->mhe_MemHeader.mh_First) & MEMF_SEM_PROTECTED)
         ReleaseSemaphore((struct SignalSemaphore *)mhe->mhe_MemHeader.mh_Node.ln_Name);
 
-    return ptr;
+    if (flags && (*flags & MEMF_CLEAR))
+        bzero(aligned, size);
+
+    return aligned;
 }
 
 
