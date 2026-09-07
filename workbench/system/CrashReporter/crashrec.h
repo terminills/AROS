@@ -21,7 +21,9 @@
 #define CR_RING         8           /* concurrent crashes kept before reuse */
 #define CR_NAMELEN      64
 #define CR_PROGLEN      128
-#define CR_ANNOTLEN     4096        /* rendered "key: value\n" lines          */
+#define CR_ANNOTLEN     36864       /* rendered "key: value\n" lines: room for a
+                                       full 200-entry v1 block (crashreporter/
+                                       annotations.h), ~34 KiB worst case      */
 
 /* record states (rec_State) */
 #define CRS_FREE        0
