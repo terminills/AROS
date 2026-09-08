@@ -1,0 +1,34 @@
+#   Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+#   linuxso: static link library that maps Linux x86-64 ELF shared objects
+#   (ET_DYN) into an AROS process and serves their glibc imports.
+
+include $(SRCDIR)/config/aros.cfg
+
+#MM- core-linklibs : linklibs-linuxso
+#MM linklibs-linuxso : includes linuxso-includes-copy
+
+#MM- includes-copy : linuxso-includes-copy
+#MM- compiler-includes : linuxso-includes-copy
+
+%copy_includes mmake=linuxso-includes-copy includes="linuxso.h"
+
+LINUXSOFILES := \
+    lso_elf \
+    lso_task \
+    lso_pthread \
+    lso_file \
+    lso_mem \
+    lso_shim \
+    lso_syscall
+
+%build_linklib mmake=linklibs-linuxso \
+    libname=linuxso \
+    files="$(LINUXSOFILES)" \
+    asmfiles="lso_syscall_tramp"
+
+#MM- test-linuxso : linklibs-linuxso linklibs-pthread
+
+%build_prog mmake=test-linuxso \
+    progname=LinuxSO targetdir=$(AROS_TESTS) \
+    files="linuxso_cli" uselibs="linuxso pthread"
