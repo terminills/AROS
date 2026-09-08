@@ -24,6 +24,7 @@ struct MinList lso_objects;
 struct SignalSemaphore lso_lock;
 static int lso_initialised;
 static int lso_debug = -1;
+static char *lso_debug_path;             /* LINUXSO_DEBUG=<file>: also append there */
 static unsigned int lso_next_tls_modid = 1;
 
 /* libgcc's frame registry (unwind-dw2-fde.c) */
@@ -33,7 +34,15 @@ extern void *__deregister_frame_info(const void *begin);
 int linuxso_debug_enabled(void)
 {
     if (lso_debug < 0)
-        lso_debug = getenv("LINUXSO_DEBUG") != NULL;
+    {
+        const char *v = getenv("LINUXSO_DEBUG");
+
+        /* a value with a volume or directory separator names a log file:
+           on native there is no host stderr to read kprintf from */
+        if (v && (strchr(v, ':') || strchr(v, '/')))
+            lso_debug_path = strdup(v);
+        lso_debug = v != NULL;
+    }
     return lso_debug;
 }
 
@@ -46,6 +55,19 @@ void lso_log(const char *fmt, ...)
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
     kprintf("[linuxso] %s\n", line);
+    if (lso_debug_path && FindTask(NULL)->tc_Node.ln_Type == NT_PROCESS)
+    {
+        /* open per line: a trap right after leaves the file complete */
+        BPTR fh = Open(lso_debug_path, MODE_READWRITE);
+        if (fh)
+        {
+            Seek(fh, 0, OFFSET_END);
+            Write(fh, "[linuxso] ", 10);
+            Write(fh, line, strlen(line));
+            Write(fh, "\n", 1);
+            Close(fh);
+        }
+    }
 }
 
 static void lso_init_once(void)

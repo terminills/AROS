@@ -43,7 +43,8 @@ void *linuxso_sym(struct LinuxSO *so, const char *name);
 int linuxso_close(struct LinuxSO *so);
 
 /*
- * Debug channel.  Set the LINUXSO_DEBUG environment variable (any value)
+ * Debug channel.  Set the LINUXSO_DEBUG environment variable (any value;
+ * a value naming a file, i.e. containing ':' or '/', also appends there)
  * before linuxso_open() to get loader, shim and syscall-emulation traces on
  * the kernel debug output (serial on native, stderr on hosted).
  */

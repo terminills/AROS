@@ -25,12 +25,19 @@
                 contract) but keeps it mapped: unmapping would need a TLB
                 shootdown on the other CPUs, and the address space is
                 reused by the allocator soon anyway.
+
+    Windows are handed out from a cursor shared by every process on the
+    machine (a named public semaphore), so no window is ever given out
+    twice per boot: a stale TLB entry left on another CPU by a finished
+    process can then never alias a live window.  At process exit the
+    windows still held are unmapped and their backing chunks returned.
 */
 
 #include <proto/exec.h>
 #include <proto/kernel.h>
 #include <exec/memory.h>
 #include <exec/semaphores.h>
+#include <aros/symbolsets.h>
 
 #define __HOSTLIB_NOLIBBASE__
 #define __HOSTLIB_LIBBASE HostLibBase
@@ -81,12 +88,28 @@ struct lso_reserve {
     unsigned nchunks;
 };
 
+/* one per arena of chunks, so they can be given back at exit */
+struct lso_arena {
+    struct MinNode node;
+    APTR raw;
+    size_t size;
+};
+
+/* the machine-wide window cursor, a named public semaphore */
+#define LSO_WINDOWS_NAME "linuxso.windows"
+struct lso_windows {
+    struct SignalSemaphore sem;
+    char name[sizeof(LSO_WINDOWS_NAME)];
+    uintptr_t next;
+};
+
 static struct MinList mappings;
 static struct MinList reserves;
+static struct MinList arenas;
 static struct SignalSemaphore map_lock;
 static int map_ready;
 
-static uintptr_t window_next = LSO_WINDOW_BASE;
+static struct lso_windows *windows;
 
 /* host mmap family (hosted only) */
 static APTR HostLibBase;
@@ -110,10 +133,37 @@ static void map_init(void)
     {
         NEWLIST(&mappings);
         NEWLIST(&reserves);
+        NEWLIST(&arenas);
         InitSemaphore(&map_lock);
         map_ready = 1;
     }
     Permit();
+}
+
+/* the shared window cursor, created by the first process that needs it */
+static struct lso_windows *windows_get(void)
+{
+    struct lso_windows *w;
+
+    if (windows)
+        return windows;
+    Forbid();
+    w = (struct lso_windows *)FindSemaphore(LSO_WINDOWS_NAME);
+    if (!w)
+    {
+        /* outlives this process, so the name lives inside it */
+        w = AllocMem(sizeof(*w), MEMF_PUBLIC | MEMF_CLEAR);
+        if (w)
+        {
+            strcpy(w->name, LSO_WINDOWS_NAME);
+            w->sem.ss_Link.ln_Name = w->name;
+            w->next = LSO_WINDOW_BASE;
+            AddSemaphore(&w->sem);
+        }
+    }
+    Permit();
+    windows = w;
+    return w;
 }
 
 /* ---- hosted: host mmap through hostlib.resource --------------------------- */
@@ -167,10 +217,19 @@ static APTR chunk_alloc(void)
     {
         size_t size = (LSO_ARENA_CHUNKS + 1) * LSO_CHUNK;
         APTR raw = AllocMem(size, MEMF_ANY | MEMF_CLEAR);
+        struct lso_arena *arena;
         uintptr_t first, i;
 
         if (!raw)
             return NULL;
+        arena = AllocMem(sizeof(*arena), MEMF_ANY);
+        if (!arena)
+        {
+            FreeMem(raw, size);
+            return NULL;
+        }
+        arena->raw = raw;
+        arena->size = size;
         first = ((uintptr_t)raw + LSO_CHUNK - 1) & ~(LSO_CHUNK - 1);
 
         Forbid();
@@ -184,6 +243,7 @@ static APTR chunk_alloc(void)
             if (!n)
             {
                 Permit();
+                FreeMem(arena, sizeof(*arena));
                 FreeMem(raw, size);
                 return NULL;
             }
@@ -197,6 +257,7 @@ static APTR chunk_alloc(void)
         }
         for (i = 1; i < LSO_ARENA_CHUNKS; i++)
             chunk_free[chunk_free_n++] = (APTR)(first + i * LSO_CHUNK);
+        AddTail((struct List *)&arenas, (struct Node *)&arena->node);
         Permit();
         LSO_DEBUG("chunk arena %p (+%lu MiB)", raw, (unsigned long)(size >> 20));
         return (APTR)first;
@@ -305,23 +366,30 @@ static void *reserve_alloc(size_t len, int prot, int flags)
            allocator's aligned-reservation dance succeeds first time */
         size_t span = (len + LSO_CHUNK - 1) & ~(LSO_CHUNK - 1);
         size_t align = LSO_CHUNK;
+        struct lso_windows *w = windows_get();
         uintptr_t base;
 
+        if (!w)
+        {
+            FreeMem(r, sizeof(*r));
+            lso_set_errno(LX_ENOMEM);
+            return LX_MAP_FAILED;
+        }
         while (align < span && align < (64UL << 30))
             align <<= 1;
 
-        ObtainSemaphore(&map_lock);
-        base = (window_next + align - 1) & ~(align - 1);
+        ObtainSemaphore(&w->sem);
+        base = (w->next + align - 1) & ~(align - 1);
         if (base + span > LSO_WINDOW_LIMIT)
         {
-            ReleaseSemaphore(&map_lock);
+            ReleaseSemaphore(&w->sem);
             FreeMem(r, sizeof(*r));
             LSO_DEBUG("reserve(%lx): window space exhausted", (unsigned long)len);
             lso_set_errno(LX_ENOMEM);
             return LX_MAP_FAILED;
         }
-        window_next = base + span;
-        ReleaseSemaphore(&map_lock);
+        w->next = base + span;
+        ReleaseSemaphore(&w->sem);
 
         r->nchunks = span >> LSO_CHUNK_SHIFT;
         r->chunks = AllocMem(r->nchunks * sizeof(APTR), MEMF_ANY | MEMF_CLEAR);
@@ -630,3 +698,53 @@ int lx_madvise(void *addr, size_t len, int advice)
     ReleaseSemaphore(&map_lock);
     return 0;
 }
+
+/* ---- process exit --------------------------------------------------------- */
+
+/*
+ * Whatever the guest still holds goes back: windows are unmapped (the
+ * present bit cleared; the address range is never handed out again this
+ * boot, so no shootdown is needed) before their arenas return to exec.
+ */
+static void lso_mem_exit(void)
+{
+    struct lso_reserve *r, *r2;
+    struct lso_mapping *m, *m2;
+    struct lso_arena *a, *a2;
+    APTR KernelBase = mem_KernelBase;
+
+    if (!map_ready)
+        return;
+
+    ForeachNodeSafe(&reserves, r, r2)
+    {
+        if (!r->hosted && KernelBase)
+        {
+            unsigned i;
+            for (i = 0; i < r->nchunks; i++)
+                if (r->chunks[i])
+                    KrnMapGlobal((void *)(r->base + (i << LSO_CHUNK_SHIFT)), NULL, LSO_CHUNK, 0);
+        }
+        Remove((struct Node *)&r->node);
+        reserve_free(r);
+    }
+    ForeachNodeSafe(&mappings, m, m2)
+    {
+        Remove((struct Node *)&m->node);
+        if (m->alloc)
+            FreeMem(m->alloc, m->allocsize);
+        FreeMem(m, sizeof(*m));
+    }
+    ForeachNodeSafe(&arenas, a, a2)
+    {
+        Remove((struct Node *)&a->node);
+        FreeMem(a->raw, a->size);
+        FreeMem(a, sizeof(*a));
+    }
+    if (chunk_free)
+        FreeMem(chunk_free, chunk_free_cap * sizeof(APTR));
+    chunk_free = NULL;
+    chunk_free_n = chunk_free_cap = 0;
+}
+
+ADD2EXIT(lso_mem_exit, 0);

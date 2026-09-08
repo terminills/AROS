@@ -21,6 +21,7 @@
 #include <exec/io.h>
 #include <devices/timer.h>
 #include <aros/x86_64/cpucontext.h>
+#include <aros/symbolsets.h>
 
 #include <errno.h>
 #include <pthread.h>
@@ -92,6 +93,9 @@ void lso_syscall_trap_remove(void)
         trap_handle = NULL;
     }
 }
+
+/* the handler lives in this program's memory: it must go before we do */
+ADD2EXIT(lso_syscall_trap_remove, 0);
 
 /* ---- helpers -------------------------------------------------------------- */
 
