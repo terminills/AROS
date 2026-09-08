@@ -1,0 +1,682 @@
+diff --git a/deps/cares/config/linux/ares_config.h b/deps/cares/config/linux/ares_config.h
+index 967f28e..74396c5 100644
+--- a/deps/cares/config/linux/ares_config.h
++++ b/deps/cares/config/linux/ares_config.h
+@@ -573 +573,26 @@
+-/* #undef size_t */
+\ No newline at end of file
++/* #undef size_t */
++
++/*
++ * Node's GYP generator has no AROS target identity, so the port temporarily
++ * uses the Linux configuration. Remove facilities that AROS does not expose;
++ * c-ares then selects its portable select() backend.
++ */
++#ifdef __AROS__
++# undef HAVE_EPOLL
++# undef HAVE_SYS_EPOLL_H
++# undef HAVE_POLL
++# undef HAVE_POLL_H
++# undef HAVE_PIPE2
++# undef HAVE_GETRANDOM
++# undef HAVE_SYS_RANDOM_H
++# define HAVE_ARC4RANDOM_BUF 1
++# undef HAVE_GETSERVBYPORT_R
++# undef GETSERVBYPORT_R_ARGS
++# undef HAVE_IF_INDEXTONAME
++# undef HAVE_IF_NAMETOINDEX
++# undef HAVE_GETIFADDRS
++# undef HAVE_IFADDRS_H
++# ifndef INET6_ADDRSTRLEN
++#  define INET6_ADDRSTRLEN 46
++# endif
++#endif
+diff --git a/configure.py b/configure.py
+--- a/configure.py
++++ b/configure.py
+@@ -947,0 +948,6 @@
++parser.add_argument('--shared-node-v8',
++    action='store_true',
++    dest='shared_node_v8',
++    default=False,
++    help='route Node-specific V8 API deltas through node-v8.library')
++
+@@ -1740,0 +1747,3 @@
++  o['variables']['node_use_node_v8_library'] = b(options.shared_node_v8)
++  o['variables']['node_aros_libraries'] = ['-lusergroup'] if options.shared_node_v8 else []
++  o['variables']['node_v8_libraries'] = ['-lnode-v8'] if options.shared_node_v8 else []
+diff --git a/deps/uvwasi/src/clocks.c b/deps/uvwasi/src/clocks.c
+--- a/deps/uvwasi/src/clocks.c
++++ b/deps/uvwasi/src/clocks.c
+@@ -123,6 +123,8 @@ uvwasi_errno_t uvwasi__clock_gettime_process_cputime(uvwasi_timestamp_t* time)
+ uvwasi_errno_t uvwasi__clock_gettime_process_cputime(uvwasi_timestamp_t* time) {
+ #if defined(_WIN32)
+   UVWASI__WIN_TIME_AND_RETURN(GetCurrentProcess(), GetProcessTimes, *time);
++#elif defined(__AROS__)
++  return UVWASI_ENOSYS;
+ #elif defined(CLOCK_PROCESS_CPUTIME_ID) && \
+       !defined(__APPLE__)               && \
+       !defined(__sun)
+@@ -138,7 +140,8 @@ uvwasi_errno_t uvwasi__clock_gettime_thread_cputime(uvwasi_timestamp_t* time) {
+   UVWASI__WIN_TIME_AND_RETURN(GetCurrentThread(), GetThreadTimes, *time);
+ #elif defined(__APPLE__)
+   UVWASI__OSX_THREADTIME_AND_RETURN(*time);
+-#elif defined(CLOCK_THREAD_CPUTIME_ID) && !defined(__sun) && !defined(__PASE__)
++#elif defined(CLOCK_THREAD_CPUTIME_ID) && !defined(__sun) && \
++      !defined(__PASE__) && !defined(__AROS__)
+   UVWASI__CLOCK_GETTIME_AND_RETURN(CLOCK_THREAD_CPUTIME_ID, *time);
+ #else
+ # if defined(RUSAGE_LWP)
+@@ -157,7 +160,8 @@ uvwasi_errno_t uvwasi__clock_getres_process_cputime(uvwasi_timestamp_t* time) {
+   UVWASI__WIN_GETRES_AND_RETURN(*time);
+ #elif defined(CLOCK_PROCESS_CPUTIME_ID) && \
+       !defined(__APPLE__)               && \
+-      !defined(__sun)
++      !defined(__sun)                   && \
++      !defined(__AROS__)
+   UVWASI__CLOCK_GETRES_AND_RETURN(CLOCK_PROCESS_CPUTIME_ID, *time);
+ #else
+   UVWASI__SLOW_GETRES_AND_RETURN(*time);
+@@ -170,7 +174,8 @@ uvwasi_errno_t uvwasi__clock_getres_thread_cputime(uvwasi_timestamp_t* time) {
+   UVWASI__WIN_GETRES_AND_RETURN(*time);
+ #elif defined(__APPLE__)
+   UVWASI__SLOW_GETRES_AND_RETURN(*time);
+-#elif defined(CLOCK_THREAD_CPUTIME_ID) && !defined(__sun) && !defined(__PASE__)
++#elif defined(CLOCK_THREAD_CPUTIME_ID) && !defined(__sun) && \
++      !defined(__PASE__) && !defined(__AROS__)
+   UVWASI__CLOCK_GETTIME_AND_RETURN(CLOCK_THREAD_CPUTIME_ID, *time);
+ #elif defined(RUSAGE_THREAD) || defined(RUSAGE_LWP)
+   UVWASI__SLOW_GETRES_AND_RETURN(*time);
+diff --git a/deps/uvwasi/src/uvwasi.c b/deps/uvwasi/src/uvwasi.c
+--- a/deps/uvwasi/src/uvwasi.c
++++ b/deps/uvwasi/src/uvwasi.c
+@@ -39,4 +39,4 @@
+-/* IBMi PASE does not support posix_fadvise() */
+-#ifdef __PASE__
++/* IBM i PASE and AROS do not support posix_fadvise(). */
++#if defined(__PASE__) || defined(__AROS__)
+ # undef POSIX_FADV_NORMAL
+ #endif
+diff --git a/deps/simdjson/simdjson.h b/deps/simdjson/simdjson.h
+--- a/deps/simdjson/simdjson.h
++++ b/deps/simdjson/simdjson.h
+@@ -4354 +4354 @@
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__AROS__)
+@@ -4691 +4691 @@
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__AROS__)
+@@ -5056 +5056 @@
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__AROS__)
+diff --git a/src/debug_utils.cc b/src/debug_utils.cc
+--- a/src/debug_utils.cc
++++ b/src/debug_utils.cc
+@@ -13 +13,2 @@
+-#if defined(__linux__) && !defined(__GLIBC__) || \
++#if defined(__AROS__) || \
++    defined(__linux__) && !defined(__GLIBC__) || \
+diff --git a/src/node_constants.cc b/src/node_constants.cc
+--- a/src/node_constants.cc
++++ b/src/node_constants.cc
+@@ -46 +46 @@
+-#if defined(__POSIX__)
++#if defined(__POSIX__) && !defined(__AROS__)
+diff --git a/node.gyp b/node.gyp
+--- a/node.gyp
++++ b/node.gyp
+@@ -601 +601,2 @@
+-        [ 'node_intermediate_lib_type=="static_library" and node_shared=="false"', {
++        [ 'node_intermediate_lib_type=="static_library" and node_shared=="false" '
++            'and node_use_bundled_v8=="true"', {
+@@ -629,0 +631,32 @@
++        [ 'node_intermediate_lib_type=="static_library" and node_shared=="false" '
++            'and node_use_bundled_v8=="false"', {
++          'libraries': [
++            '<@(node_aros_libraries)',
++            '<@(node_v8_libraries)',
++            '-lv8',
++          ],
++          'xcode_settings': {
++            'OTHER_LDFLAGS': [
++              '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
++            ],
++          },
++          'msvs_settings': {
++            'VCLinkerTool': {
++              'AdditionalOptions': [
++                '/WHOLEARCHIVE:<(PRODUCT_DIR)/lib/<(node_lib_target_name)<(STATIC_LIB_SUFFIX)',
++              ],
++            },
++          },
++          'conditions': [
++            ['OS != "aix" and OS != "os400" and OS != "mac" and OS != "ios"', {
++              'ldflags': [
++                '-Wl,--whole-archive',
++                '<(obj_dir)/<(STATIC_LIB_PREFIX)<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
++                '-Wl,--no-whole-archive',
++              ],
++            }],
++            [ 'OS=="win"', {
++              'sources': [ 'src/res/node.rc' ],
++            }],
++          ],
++        }],
+diff --git a/node.gypi b/node.gypi
+--- a/node.gypi
++++ b/node.gypi
+@@ -316,2 +316,3 @@
+-    [ '(OS=="freebsd" or OS=="linux" or OS=="openharmony") and node_shared=="false"'
+-        ' and force_load=="true"', {
++    [ 'node_use_bundled_v8=="true" and '
++        '(OS=="freebsd" or OS=="linux" or OS=="openharmony") and '
++        'node_shared=="false" and force_load=="true"', {
+diff --git a/src/node_binding.h b/src/node_binding.h
+--- a/src/node_binding.h
++++ b/src/node_binding.h
+@@ -6 +6 @@
+-#if defined(__POSIX__)
++#if defined(__POSIX__) && !defined(__AROS__)
+@@ -118 +118 @@
+-#ifdef __POSIX__
++#if defined(__POSIX__) && !defined(__AROS__)
+@@ -136 +136 @@
+-#ifndef __POSIX__
++#if !defined(__POSIX__) || defined(__AROS__)
+diff --git a/src/node_buffer.cc b/src/node_buffer.cc
+--- a/src/node_buffer.cc
++++ b/src/node_buffer.cc
+@@ -39,0 +40,4 @@
++#if defined(__AROS__)
++#include <proto/node-v8.h>
++#endif
++
+@@ -1439,2 +1443,7 @@
+-    std::unique_ptr<BackingStore> store =
+-        ArrayBuffer::NewBackingStoreForNodeLTS(isolate, size);
++#if defined(__AROS__)
++    std::unique_ptr<BackingStore> store(static_cast<BackingStore*>(
++        NodeV8NewBackingStoreForNodeLTS(isolate, size)));
++#else
++    std::unique_ptr<BackingStore> store =
++        ArrayBuffer::NewBackingStoreForNodeLTS(isolate, size);
++#endif
+diff --git a/src/node_config.cc b/src/node_config.cc
+--- a/src/node_config.cc
++++ b/src/node_config.cc
+@@ -8,0 +9,6 @@
++#if defined(__AROS__)
++#include <proto/node-v8.h>
++
++#include <vector>
++#endif
++
+ #if HAVE_OPENSSL
+ #include "ncrypto.h"  // Ensure OPENSSL_IS_BORINGSSL is defined if applicable
+ #endif
+@@ -24,7 +30,20 @@
+ void GetDefaultLocale(const FunctionCallbackInfo<Value>& args) {
+   Isolate* isolate = args.GetIsolate();
+   Local<Context> context = isolate->GetCurrentContext();
++#if defined(__AROS__)
++  std::string locale;
++  IPTR locale_length = NodeV8GetDefaultLocale(isolate, nullptr, 0);
++  if (locale_length > 0) {
++    std::vector<char> locale_buffer(static_cast<size_t>(locale_length) + 1);
++    if (NodeV8GetDefaultLocale(
++            isolate, locale_buffer.data(), locale_buffer.size()) !=
++        static_cast<IPTR>(-1)) {
++      locale.assign(locale_buffer.data(), static_cast<size_t>(locale_length));
++    }
++  }
++#else
+   std::string locale = isolate->GetDefaultLocale();
++#endif
+   Local<Value> result;
+   if (ToV8Value(context, locale).ToLocal(&result)) {
+     args.GetReturnValue().Set(result);
+diff --git a/src/node_credentials.cc b/src/node_credentials.cc
+--- a/src/node_credentials.cc
++++ b/src/node_credentials.cc
+@@ -12,6 +12,9 @@
+ #if !defined(_MSC_VER)
+ #include <unistd.h>  // setuid, getuid
+ #endif
++#ifdef __AROS__
++#include <proto/usergroup.h>  // setgroups(), initgroups()
++#endif
+ #ifdef __linux__
+ #include <dlfcn.h>  // dlsym()
+ #include <linux/capability.h>
+@@ -135,0 +139,13 @@ static void GetTempDir(const FunctionCallbackInfo<Value>& args) {
++#ifdef __AROS__
++  // POSIXC may expose the native T: assignment as /T, /T/, or /T:/... .
++  // Returning that spelling to Node callers eventually sends it back to DOS,
++  // where it is interpreted as a request for a volume literally named "/T".
++  if (dir == "/T" || dir == "/T/") {
++    dir = "T:";
++  } else if (dir.starts_with("/T:/")) {
++    dir.erase(0, 1);
++  } else if (dir.starts_with("/T/")) {
++    dir.replace(0, 3, "T:");
++  }
++#endif
++
+diff --git a/src/node_binding.cc b/src/node_binding.cc
+--- a/src/node_binding.cc
++++ b/src/node_binding.cc
+@@ -342 +342 @@
+-#ifdef __POSIX__
++#if defined(__POSIX__) && !defined(__AROS__)
+@@ -398 +398 @@
+-#endif  // !__POSIX__
++#endif  // defined(__POSIX__) && !defined(__AROS__)
+diff --git a/src/memory_tracker-inl.h b/src/memory_tracker-inl.h
+--- a/src/memory_tracker-inl.h
++++ b/src/memory_tracker-inl.h
+@@ -9,0 +10,4 @@
++#if defined(__AROS__) && defined(GetNodeName)
++#undef GetNodeName
++#endif
++
+diff --git a/src/node_sockaddr-inl.h b/src/node_sockaddr-inl.h
+--- a/src/node_sockaddr-inl.h
++++ b/src/node_sockaddr-inl.h
+@@ -34 +34,5 @@
+-  return inet_pton(family, hostname, &dst) == 1;
++#if defined(__AROS__)
++  return uv_inet_pton(family, hostname, &dst) == 0;
++#else
++  return inet_pton(family, hostname, &dst) == 1;
++#endif
+diff --git a/src/node_report.cc b/src/node_report.cc
+--- a/src/node_report.cc
++++ b/src/node_report.cc
+@@ -17,0 +18 @@
++#if !defined(__AROS__)
+@@ -19,0 +21 @@
++#endif
+@@ -276 +278 @@
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__AROS__)
+@@ -283 +285 @@
+-#endif /* _WIN32 */
++#endif /* !_WIN32 && !__AROS__ */
+@@ -737 +739 @@
+-#if !(defined(_AIX) || defined(__sun))
++#if !(defined(_AIX) || defined(__sun) || defined(__AROS__))
+@@ -740 +742 @@
+-#ifndef __sun
++#if !defined(__sun) && !defined(__AROS__)
+@@ -746 +748 @@
+-#ifndef __sun
++#if !defined(__sun) && !defined(__AROS__)
+diff --git a/src/node_process_object.cc b/src/node_process_object.cc
+--- a/src/node_process_object.cc
++++ b/src/node_process_object.cc
+@@ -78 +78 @@
+-  info.GetReturnValue().Set(uv_os_getppid());
++  info.GetReturnValue().Set(static_cast<int32_t>(uv_os_getppid()));
+diff --git a/deps/zstd/lib/common/threading.h b/deps/zstd/lib/common/threading.h
+--- a/deps/zstd/lib/common/threading.h
++++ b/deps/zstd/lib/common/threading.h
+@@ -18,0 +19,9 @@
++#if defined(__AROS__)
++/*
++ * AROS exposes pthreads, but exec/types.h reserves BYTE as a signed ABI type
++ * while zstd uses BYTE as uint8_t. Keep zstd on its supported single-thread
++ * fallback until that namespace collision is isolated at the library seam.
++ */
++#  undef ZSTD_MULTITHREAD
++#endif
++
+diff --git a/src/large_pages/node_large_page.cc b/src/large_pages/node_large_page.cc
+--- a/src/large_pages/node_large_page.cc
++++ b/src/large_pages/node_large_page.cc
+@@ -61 +61,2 @@
+-#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES
++#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES && \
++    !defined(__AROS__)
+@@ -106 +107,2 @@
+-#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES
++#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES && \
++    !defined(__AROS__)
+@@ -418 +420,2 @@
+-#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES
++#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES && \
++    !defined(__AROS__)
+diff --git a/src/util.cc b/src/util.cc
+--- a/src/util.cc
++++ b/src/util.cc
+@@ -323,7 +323,8 @@
+ #else  // UNIX, macOS
+   struct timeval time_val;
+   gettimeofday(&time_val, nullptr);
+-  localtime_r(&time_val.tv_sec, tm_struct);
++  time_t seconds = static_cast<time_t>(time_val.tv_sec);
++  localtime_r(&seconds, tm_struct);
+ #endif
+ }
+
+diff --git a/lib/internal/url.js b/lib/internal/url.js
+--- a/lib/internal/url.js
++++ b/lib/internal/url.js
+@@ -1578,2 +1578,12 @@
+-  // Fast-path: if there is no percent-encoding, avoid decodeURIComponent.
+-  return StringPrototypeIncludes(pathname, '%') ? decodeURIComponent(pathname) : pathname;
++  // Fast-path: if there is no percent-encoding, avoid decodeURIComponent.
++  const decodedPathname = StringPrototypeIncludes(pathname, '%') ?
++    decodeURIComponent(pathname) : pathname;
++  if (StringPrototypeCharCodeAt(decodedPathname, 0) === CHAR_FORWARD_SLASH) {
++    const volumeEnd = StringPrototypeIndexOf(decodedPathname, ':');
++    const firstSeparator = StringPrototypeIndexOf(decodedPathname, '/', 1);
++    if (volumeEnd > 1 &&
++        (firstSeparator === -1 || volumeEnd < firstSeparator)) {
++      return StringPrototypeSlice(decodedPathname, 1);
++    }
++  }
++  return decodedPathname;
+@@ -1604,5 +1614,24 @@
+   const u8 = percentDecode(Buffer.from(pathname, 'utf8'));
+-  return Buffer.from(TypedArrayPrototypeGetBuffer(u8),
+-                     TypedArrayPrototypeGetByteOffset(u8),
+-                     TypedArrayPrototypeGetByteLength(u8));
++  let byteOffset = TypedArrayPrototypeGetByteOffset(u8);
++  let byteLength = TypedArrayPrototypeGetByteLength(u8);
++  if (byteLength > 2 && u8[0] === CHAR_FORWARD_SLASH) {
++    let volumeEnd = -1;
++    let firstSeparator = -1;
++    for (let n = 1; n < byteLength; n++) {
++      if (u8[n] === CHAR_COLON) {
++        volumeEnd = n;
++        break;
++      }
++      if (u8[n] === CHAR_FORWARD_SLASH) {
++        firstSeparator = n;
++        break;
++      }
++    }
++    if (volumeEnd > 1 &&
++        (firstSeparator === -1 || volumeEnd < firstSeparator)) {
++      byteOffset++;
++      byteLength--;
++    }
++  }
++  return Buffer.from(TypedArrayPrototypeGetBuffer(u8), byteOffset, byteLength);
+ }
+
+diff --git a/lib/path.js b/lib/path.js
+--- a/lib/path.js
++++ b/lib/path.js
+@@ -71,6 +71,14 @@
+   return code === CHAR_FORWARD_SLASH;
+ }
+
++function arosVolumeEnd(path) {
++  const volumeEnd = StringPrototypeIndexOf(path, ':');
++  const firstSeparator = StringPrototypeIndexOf(path, '/');
++  return volumeEnd > 0 &&
++    (firstSeparator === -1 || volumeEnd < firstSeparator) ?
++    volumeEnd : -1;
++}
++
+ const WINDOWS_RESERVED_NAMES = [
+   'CON', 'PRN', 'AUX', 'NUL',
+   'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+@@ -1266,6 +1266,7 @@
+     }
+     let resolvedPath = '';
+     let resolvedAbsolute = false;
++    let resolvedVolume = false;
+
+     for (let i = args.length - 1; i >= 0 && !resolvedAbsolute; i--) {
+       const path = args[i];
+@@ -1277,15 +1278,25 @@
+       }
+
+       resolvedPath = `${path}/${resolvedPath}`;
++      const volumeEnd = StringPrototypeIndexOf(path, ':');
++      const firstSeparator = StringPrototypeIndexOf(path, '/');
++      resolvedVolume = volumeEnd > 0 &&
++        (firstSeparator === -1 || volumeEnd < firstSeparator);
+       resolvedAbsolute =
+-        StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++        StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH ||
++        resolvedVolume;
+     }
+
+     if (!resolvedAbsolute) {
+       const cwd = posixCwd();
+       resolvedPath = `${cwd}/${resolvedPath}`;
++      const volumeEnd = StringPrototypeIndexOf(cwd, ':');
++      const firstSeparator = StringPrototypeIndexOf(cwd, '/');
++      resolvedVolume = volumeEnd > 0 &&
++        (firstSeparator === -1 || volumeEnd < firstSeparator);
+       resolvedAbsolute =
+-        StringPrototypeCharCodeAt(cwd, 0) === CHAR_FORWARD_SLASH;
++        StringPrototypeCharCodeAt(cwd, 0) === CHAR_FORWARD_SLASH ||
++        resolvedVolume;
+     }
+
+     // At this point the path should be resolved to a full absolute path, but
+@@ -1295,7 +1306,7 @@
+     resolvedPath = normalizeString(resolvedPath, !resolvedAbsolute, '/',
+                                    isPosixPathSeparator);
+
+-    if (resolvedAbsolute) {
++    if (resolvedAbsolute && !resolvedVolume) {
+       return `/${resolvedPath}`;
+     }
+     return resolvedPath.length > 0 ? resolvedPath : '.';
+@@ -1311,8 +1330,10 @@
+     if (path.length === 0)
+       return '.';
+
++    const volumeEnd = arosVolumeEnd(path);
++    const isVolume = volumeEnd !== -1;
+     const isAbsolute =
+-      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH || isVolume;
+     const trailingSeparator =
+       StringPrototypeCharCodeAt(path, path.length - 1) === CHAR_FORWARD_SLASH;
+
+@@ -1327,7 +1348,7 @@
+     if (trailingSeparator)
+       path += '/';
+
+-    return isAbsolute ? `/${path}` : path;
++    return isAbsolute && !isVolume ? `/${path}` : path;
+   },
+
+   /**
+@@ -1336,8 +1357,10 @@
+    */
+   isAbsolute(path) {
+     validateString(path, 'path');
++    const volumeEnd = arosVolumeEnd(path);
+     return path.length > 0 &&
+-           StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++      (StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH ||
++       volumeEnd !== -1);
+   },
+
+   /**
+@@ -1382,10 +1405,21 @@
+     if (from === to)
+       return '';
+
+-    const fromStart = 1;
++    const fromVolumeEnd = arosVolumeEnd(from);
++    const toVolumeEnd = arosVolumeEnd(to);
++    if (fromVolumeEnd !== -1 || toVolumeEnd !== -1) {
++      const fromVolume = StringPrototypeToLowerCase(
++        StringPrototypeSlice(from, 0, fromVolumeEnd + 1));
++      const toVolume = StringPrototypeToLowerCase(
++        StringPrototypeSlice(to, 0, toVolumeEnd + 1));
++      if (fromVolume !== toVolume)
++        return to;
++    }
++
++    const fromStart = fromVolumeEnd !== -1 ? fromVolumeEnd + 1 : 1;
+     const fromEnd = from.length;
+     const fromLen = fromEnd - fromStart;
+-    const toStart = 1;
++    const toStart = toVolumeEnd !== -1 ? toVolumeEnd + 1 : 1;
+     const toLen = to.length - toStart;
+
+     // Compare paths to find the longest common path from root
+@@ -1457,10 +1491,14 @@
+     validateString(path, 'path');
+     if (path.length === 0)
+       return '.';
+-    const hasRoot = StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++    const volumeEnd = arosVolumeEnd(path);
++    const hasVolume = volumeEnd !== -1;
++    const hasRoot =
++      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH || hasVolume;
++    const rootEnd = hasVolume ? volumeEnd + 1 : 1;
+     let end = -1;
+     let matchedSlash = true;
+-    for (let i = path.length - 1; i >= 1; --i) {
++    for (let i = path.length - 1; i >= rootEnd; --i) {
+       if (StringPrototypeCharCodeAt(path, i) === CHAR_FORWARD_SLASH) {
+         if (!matchedSlash) {
+           end = i;
+@@ -1472,9 +1510,12 @@
+       }
+     }
+
+-    if (end === -1)
++    if (end === -1) {
++      if (hasVolume)
++        return StringPrototypeSlice(path, 0, rootEnd);
+       return hasRoot ? '/' : '.';
+-    if (hasRoot && end === 1)
++    }
++    if (!hasVolume && hasRoot && end === 1)
+       return '//';
+     return StringPrototypeSlice(path, 0, end);
+   },
+@@ -1488,6 +1529,9 @@
+     if (suffix !== undefined)
+       validateString(suffix, 'suffix');
+     validateString(path, 'path');
++    const volumeEnd = arosVolumeEnd(path);
++    if (volumeEnd !== -1)
++      path = StringPrototypeSlice(path, volumeEnd + 1);
+
+     let start = 0;
+     let end = -1;
+@@ -1565,6 +1609,9 @@
+    */
+   extname(path) {
+     validateString(path, 'path');
++    const volumeEnd = arosVolumeEnd(path);
++    if (volumeEnd !== -1)
++      path = StringPrototypeSlice(path, volumeEnd + 1);
+     let startDot = -1;
+     let startPart = 0;
+     let end = -1;
+@@ -1633,10 +1680,15 @@
+     const ret = { root: '', dir: '', base: '', ext: '', name: '' };
+     if (path.length === 0)
+       return ret;
++    const volumeEnd = arosVolumeEnd(path);
++    const hasVolume = volumeEnd !== -1;
+     const isAbsolute =
+-      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH || hasVolume;
+     let start;
+-    if (isAbsolute) {
++    if (hasVolume) {
++      ret.root = StringPrototypeSlice(path, 0, volumeEnd + 1);
++      start = volumeEnd + 1;
++    } else if (isAbsolute) {
+       ret.root = '/';
+       start = 1;
+     } else {
+@@ -1684,7 +1736,8 @@
+     }
+
+     if (end !== -1) {
+-      const start = startPart === 0 && isAbsolute ? 1 : startPart;
++      const componentStart =
++        startPart === 0 && isAbsolute ? start : startPart;
+       if (startDot === -1 ||
+           // We saw a non-dot character immediately before the dot
+           preDotState === 0 ||
+@@ -1692,10 +1745,11 @@
+           (preDotState === 1 &&
+           startDot === end - 1 &&
+           startDot === startPart + 1)) {
+-        ret.base = ret.name = StringPrototypeSlice(path, start, end);
++        ret.base = ret.name =
++          StringPrototypeSlice(path, componentStart, end);
+       } else {
+-        ret.name = StringPrototypeSlice(path, start, startDot);
+-        ret.base = StringPrototypeSlice(path, start, end);
++        ret.name = StringPrototypeSlice(path, componentStart, startDot);
++        ret.base = StringPrototypeSlice(path, componentStart, end);
+         ret.ext = StringPrototypeSlice(path, startDot, end);
+       }
+     }
+@@ -1703,7 +1757,7 @@
+     if (startPart > 0)
+       ret.dir = StringPrototypeSlice(path, 0, startPart - 1);
+     else if (isAbsolute)
+-      ret.dir = '/';
++      ret.dir = ret.root;
+
+     return ret;
+   },
+diff --git a/src/node_url.cc b/src/node_url.cc
+--- a/src/node_url.cc
++++ b/src/node_url.cc
+@@ -122,7 +122,19 @@
+ enum class OS { WINDOWS, POSIX };
+
+ std::string EncodePathChars(std::string_view input_str, OS operating_system) {
++#ifdef __AROS__
++  /*
++   * AROS absolute paths use a volume prefix (for example "System:lib/node")
++   * rather than a leading slash.  "file://" would make the volume name a URL
++   * host, so retain an empty host with the third slash.
++   */
++  const bool aros_volume_path =
++      operating_system == OS::POSIX && !input_str.empty() &&
++      input_str.front() != '/' && input_str.find(':') != std::string_view::npos;
++  std::string encoded = aros_volume_path ? "file:///" : "file://";
++#else
+   std::string encoded = "file://";
++#endif
+   encoded.reserve(input_str.size() +
+                   7);  // Reserve space for "file://" and input_str
+   for (size_t i : input_str) {
+@@ -680 +692,14 @@
+-  return ada::unicode::percent_decode(pathname, first_percent);
++  std::string decoded_pathname =
++      ada::unicode::percent_decode(pathname, first_percent);
++#ifdef __AROS__
++  if (decoded_pathname.size() > 2 && decoded_pathname.front() == '/') {
++    size_t volume_end = decoded_pathname.find(':', 1);
++    size_t first_separator = decoded_pathname.find('/', 1);
++    if (volume_end > 1 &&
++        (first_separator == std::string::npos ||
++         volume_end < first_separator)) {
++      decoded_pathname.erase(0, 1);
++    }
++  }
++#endif
++  return decoded_pathname;
+diff --git a/src/node_main_instance.cc b/src/node_main_instance.cc
+--- a/src/node_main_instance.cc
++++ b/src/node_main_instance.cc
+@@ -105,0 +106,8 @@
++#ifdef __AROS__
++  SetProcessExitHandler(
++      env.get(), [&exit_code](Environment* exit_env, int requested_exit_code) {
++        exit_code = static_cast<ExitCode>(requested_exit_code);
++        Stop(exit_env, StopFlags::kDoNotTerminateIsolate);
++      });
++#endif
++
