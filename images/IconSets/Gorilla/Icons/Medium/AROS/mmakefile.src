@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2023, The AROS Development Team. All rights reserved.
+# Copyright (C) 2004-2026, The AROS Development Team. All rights reserved.
 
 include $(SRCDIR)/config/aros.cfg
 
@@ -9,6 +9,9 @@ ADDITIONALICONS := Demos \
          Libs Storage \
          WBStartup \
          Rexxc
+# SYS:Applications is created by application packages, not by the base
+# system image, so its drawer icon has its own target.
+APPLICATIONICONS := Applications
 
 #MM- iconset-Gorilla-wbench-icons-clean : iconset-Gorilla-wbench-icons-aros-clean iconset-Gorilla-additional-icons-aros-clean
 #MM- iconset-Gorilla-wbench-icons : iconset-Gorilla-wbench-icons-aros
@@ -23,6 +26,13 @@ ADDITIONALICONS := Demos \
 
 #MM- icons-additional-wbench : gorilla-icons-additional-wbench
 %build_icons mmake=gorilla-icons-additional-wbench icons=$(ADDITIONALICONS) dir=$(AROS_PRESETS)/Icons/Gorilla/Default/$(AROS_DIR_AROS)
+
+#MM- iconset-Gorilla-applications-icons-clean : iconset-Gorilla-applications-icons-aros-clean
+#MM- iconset-Gorilla-applications-icons : iconset-Gorilla-applications-icons-aros
+%build_icons mmake=iconset-Gorilla-applications-icons-aros icons=$(APPLICATIONICONS) dir=$(AROSDIR)
+
+#MM- icons-wbench-applications : gorilla-icons-wbench-applications
+%build_icons mmake=gorilla-icons-wbench-applications icons=$(APPLICATIONICONS) dir=$(AROS_PRESETS)/Icons/Gorilla/Default/$(AROS_DIR_AROS)
 
 #MM
 iconset-Gorilla-wbench-icons-aros-livecd :  

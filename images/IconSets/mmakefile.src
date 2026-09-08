@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2023, The AROS Development Team. All rights reserved.
+# Copyright (C) 2004-2026, The AROS Development Team. All rights reserved.
 
 include $(SRCDIR)/config/aros.cfg
 
@@ -11,6 +11,7 @@ include $(SRCDIR)/config/aros.cfg
 #MM         icons-developer-debug \
 #MM         icons-developer-debug-hardware \
 #MM         icons-wbench \
+#MM         icons-wbench-applications \
 #MM         icons-wbench-devs \
 #MM         icons-wbench-devs-dosdrivers \
 #MM         icons-wbench-devs-monitors \

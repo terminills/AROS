@@ -1,0 +1,18 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+# Category drawers below SYS:Applications.  They are not part of the base
+# system image; application packages that install into Applications/<Category>
+# pull the matching drawer icon from here or from the presets.
+CATEGORYICONS := Internet
+
+#MM- iconset-Gorilla-applications-icons-clean : iconset-Gorilla-applications-icons-aros-categories-clean
+#MM- iconset-Gorilla-applications-icons : iconset-Gorilla-applications-icons-aros-categories
+
+%build_icons mmake=iconset-Gorilla-applications-icons-aros-categories icons=$(CATEGORYICONS) \
+             dir=$(AROSDIR)/Applications
+
+#MM- icons-wbench-applications : gorilla-icons-wbench-applications-categories
+%build_icons mmake=gorilla-icons-wbench-applications-categories icons=$(CATEGORYICONS) \
+             dir=$(AROS_PRESETS)/Icons/Gorilla/Default/$(AROS_DIR_AROS)/Applications
