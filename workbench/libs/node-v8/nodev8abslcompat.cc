@@ -3,9 +3,13 @@
  * ABSL_HAVE_MMAP is false.
  *
  * AROS has a native allocator but no mmap API. Node's Abseil Mutex still
- * references LowLevelAlloc and its deadlock graph, so supply the allocator
- * contract directly and let the normal graph/thread-identity sources build on
- * top. This remains Node adapter code; it is not part of pristine v8.library.
+ * references LowLevelAlloc, its deadlock graph, thread identities and the
+ * per-thread semaphore, and Node's tools/v8_gypfiles Abseil build leaves all of
+ * those as empty units.  This single translation unit supplies the whole
+ * surface (malloc-backed arena, no-op cycle diagnostics, pthread-backed
+ * semaphore) and is the only member of libnode-absl-compat.a; it is compiled
+ * with -DABSL_HAVE_MMAP so the headers declare the classes it defines.  This
+ * remains Node adapter code; it is not part of pristine v8.library.
  */
 
 #include "absl/base/internal/low_level_alloc.h"
