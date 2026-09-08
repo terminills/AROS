@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "linuxso_intern.h"
 
@@ -49,10 +50,16 @@ int linuxso_debug_enabled(void)
 void lso_log(const char *fmt, ...)
 {
     char line[512];
+    struct timespec now;
     va_list ap;
+    int n;
 
+    /* monotonic seconds first, so the trace answers "where did the time go" */
+    lso_clock_gettime(1, &now);
+    n = snprintf(line, sizeof(line), "%lu.%03lu ", (unsigned long)now.tv_sec,
+                 (unsigned long)(now.tv_nsec / 1000000));
     va_start(ap, fmt);
-    vsnprintf(line, sizeof(line), fmt, ap);
+    vsnprintf(line + n, sizeof(line) - n, fmt, ap);
     va_end(ap);
     kprintf("[linuxso] %s\n", line);
     if (lso_debug_path && FindTask(NULL)->tc_Node.ln_Type == NT_PROCESS)
@@ -165,6 +172,7 @@ void *linuxso_sym(struct LinuxSO *so, const char *name)
         return NULL;
     if ((s->st_info & 0xf) == LSO_STT_TLS)
         return NULL;
+    LSO_DEBUG("sym %s -> %p", name, (void *)(so->base + s->st_value));
     return (void *)(so->base + s->st_value);
 }
 
