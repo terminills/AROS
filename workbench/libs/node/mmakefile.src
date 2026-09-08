@@ -100,7 +100,7 @@ NODE_CROSS_ENV := \
     CC=$(AROS_TARGET_CPU)-aros-gcc CXX=$(AROS_TARGET_CPU)-aros-g++ \
     AR="$(NODE_AR)" \
     CC.host="$(HOST_CC)" CXX.host="$(HOST_CXX)" \
-    AR.host="$(HOST_AR)" LINK.host="$(HOST_CXX)"
+    AR.host="$(firstword $(HOST_AR))" LINK.host="$(HOST_CXX)"
 
 # libuv's tarball keeps its libuv-v<ver>/ top directory under the fetch
 # destination (see workbench/libs/uv/make.opt); resolve it in the recipe so a

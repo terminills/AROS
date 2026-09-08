@@ -33,7 +33,9 @@ for a in "$@"; do
         -pthread|-DZSTD_MULTITHREAD) continue ;;
     esac
     case "$a" in
-        *.s|*.S) compat_include=() ;;
+        # Preprocess-only runs are configure.py's compiler probes (version,
+        # macro dump); the compat header must not appear in their output.
+        -E|*.s|*.S) compat_include=() ;;
         */deps/sqlite/sqlite3.c|../deps/sqlite/sqlite3.c)
             sqlite_compat=(
                 -include "$compat_dir/aros-node-sqlite-compat.h"

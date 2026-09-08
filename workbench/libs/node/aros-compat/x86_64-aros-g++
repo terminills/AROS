@@ -20,9 +20,13 @@ set -u
 compat_dir="${NODE_AROS_COMPAT_DIR:-$(cd "$(dirname "$0")/../include-aros" && pwd)}"
 
 args=()
+compat_include=(-include "$compat_dir/aros-node-compat.h")
 for a in "$@"; do
     case "$a" in
         -pthread|-rdynamic|-DZSTD_MULTITHREAD) continue ;;
+        # Preprocess-only runs are configure.py's compiler probes; the compat
+        # header must not appear in their output.
+        -E) compat_include=() ;;
         -luv1)
             args+=("-Wl,--whole-archive" "$a" "-Wl,--no-whole-archive")
             continue
@@ -33,7 +37,7 @@ done
 
 exec "$NODE_AROS_CXX" \
     -mcmodel=large -mno-red-zone \
-    -I"$compat_dir" -include "$compat_dir/aros-node-compat.h" \
+    -I"$compat_dir" "${compat_include[@]}" \
     -DM_METHOD=3 -DRIO_NOTIFIER_METHOD=1 \
     -DOPENSSL_NO_DSO -DOPENSSL_NO_DTLS \
     -DOPENSSL_NO_SECURE_MEMORY -DZSTD_TRACE=0 "${args[@]}"
