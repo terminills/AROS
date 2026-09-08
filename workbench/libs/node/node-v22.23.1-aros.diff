@@ -1,0 +1,2553 @@
+--- node-v22.23.1/configure.py	2026-06-23 11:27:38.000000000 -0500
++++ node-v22.23.1/configure.py	2026-07-26 12:11:56.876427176 -0500
+@@ -943,6 +943,12 @@
+     help='do not use V8 includes from the bundled deps folder. ' +
+          '(This mode is not officially supported for regular applications)')
+ 
++parser.add_argument('--shared-node-v8',
++    action='store_true',
++    dest='shared_node_v8',
++    default=False,
++    help='route Node-specific V8 API deltas through node-v8.library')
++
+ parser.add_argument('--verbose',
+     action='store_true',
+     dest='verbose',
+@@ -1737,6 +1743,9 @@
+   o['variables']['v8_trace_maps'] = 1 if options.trace_maps else 0
+   o['variables']['node_use_v8_platform'] = b(not options.without_v8_platform)
+   o['variables']['node_use_bundled_v8'] = b(not options.without_bundled_v8)
++  o['variables']['node_use_node_v8_library'] = b(options.shared_node_v8)
++  o['variables']['node_aros_libraries'] = ['-lusergroup'] if options.shared_node_v8 else []
++  o['variables']['node_v8_libraries'] = ['-lnode-v8'] if options.shared_node_v8 else []
+   o['variables']['force_dynamic_crt'] = 1 if options.shared else 0
+   o['variables']['node_enable_d8'] = b(options.enable_d8)
+   o['variables']['node_enable_v8windbg'] = b(options.enable_v8windbg)
+@@ -2336,6 +2345,19 @@
+ # Add configurations to target defaults
+ output['configurations'] = configurations
+ 
++if options.cross_compiling:
++  # Shared-library paths describe the target sysroot.  Applying them to host
++  # tools makes cross builds compile generators against target headers and
++  # attempt to link target archives with the host linker.
++  target_link_settings = {}
++  for setting in ('include_dirs', 'libraries'):
++    if output[setting]:
++      target_link_settings[setting] = output[setting]
++      output[setting] = []
++  if target_link_settings:
++    output.setdefault('target_conditions', []).append(
++        ['_toolset=="target"', target_link_settings])
++
+ output = {
+   'variables': variables,
+   'target_defaults': output,
+--- node-v22.23.1/deps/cares/config/linux/ares_config.h	2026-06-23 11:27:39.000000000 -0500
++++ node-v22.23.1/deps/cares/config/linux/ares_config.h	2026-07-25 19:19:39.118058420 -0500
+@@ -570,4 +570,29 @@
+ /* #undef _LARGE_FILES */
+ 
+ /* Define to `unsigned int' if <sys/types.h> does not define. */
+-/* #undef size_t */
+\ No newline at end of file
++/* #undef size_t */
++
++/*
++ * Node's GYP generator has no AROS target identity, so the port temporarily
++ * uses the Linux configuration. Remove facilities that AROS does not expose;
++ * c-ares then selects its portable select() backend.
++ */
++#ifdef __AROS__
++# undef HAVE_EPOLL
++# undef HAVE_SYS_EPOLL_H
++# undef HAVE_POLL
++# undef HAVE_POLL_H
++# undef HAVE_PIPE2
++# undef HAVE_GETRANDOM
++# undef HAVE_SYS_RANDOM_H
++# define HAVE_ARC4RANDOM_BUF 1
++# undef HAVE_GETSERVBYPORT_R
++# undef GETSERVBYPORT_R_ARGS
++# undef HAVE_IF_INDEXTONAME
++# undef HAVE_IF_NAMETOINDEX
++# undef HAVE_GETIFADDRS
++# undef HAVE_IFADDRS_H
++# ifndef INET6_ADDRSTRLEN
++#  define INET6_ADDRSTRLEN 46
++# endif
++#endif
+--- node-v22.23.1/deps/llhttp/llhttp.gyp	2026-06-23 11:27:39.000000000 -0500
++++ node-v22.23.1/deps/llhttp/llhttp.gyp	2026-07-26 11:27:49.880191623 -0500
+@@ -17,6 +17,11 @@
+       'sources': [
+         '<@(llhttp_sources)',
+       ],
++      'conditions': [
++        [ 'node_use_bundled_v8=="false" and node_shared=="false"', {
++          'cflags': [ '-fPIC' ],
++        }],
++      ],
+     },
+   ]
+ }
+--- node-v22.23.1/deps/openssl/openssl/crypto/dso/dso_dlfcn.c	2026-06-23 11:27:40.000000000 -0500
++++ node-v22.23.1/deps/openssl/openssl/crypto/dso/dso_dlfcn.c	2026-07-26 12:26:26.113130609 -0500
+@@ -19,6 +19,14 @@
+ #include "dso_local.h"
+ #include "internal/e_os.h"
+ 
++#ifdef __AROS__
++#undef DSO_DLFCN
++DSO_METHOD *DSO_METHOD_openssl(void)
++{
++    return NULL;
++}
++#endif
++
+ #ifdef DSO_DLFCN
+ 
+ #ifdef HAVE_DLFCN_H
+--- node-v22.23.1/deps/simdjson/simdjson.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/simdjson/simdjson.h	2026-07-25 20:14:31.905043506 -0500
+@@ -4351,7 +4351,7 @@
+ #endif
+ 
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__AROS__)
+ /**
+  * A class representing a memory-mapped file with padding.
+  * It is only available on non-Windows platforms, as Windows has different APIs for memory mapping.
+@@ -4688,7 +4688,7 @@
+ #include <climits>
+ #include <cwchar>
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__AROS__)
+ #include <fcntl.h>
+ #include <stdio.h>
+ #include <sys/mman.h>
+@@ -5053,7 +5053,7 @@
+ }
+ 
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__AROS__)
+ simdjson_inline padded_memory_map::padded_memory_map(const char *filename) noexcept {
+ 
+     int fd = open(filename, O_RDONLY);
+--- node-v22.23.1/deps/uvwasi/src/clocks.c	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/uvwasi/src/clocks.c	2026-07-25 19:20:48.315617538 -0500
+@@ -123,6 +123,8 @@
+ uvwasi_errno_t uvwasi__clock_gettime_process_cputime(uvwasi_timestamp_t* time) {
+ #if defined(_WIN32)
+   UVWASI__WIN_TIME_AND_RETURN(GetCurrentProcess(), GetProcessTimes, *time);
++#elif defined(__AROS__)
++  return UVWASI_ENOSYS;
+ #elif defined(CLOCK_PROCESS_CPUTIME_ID) && \
+       !defined(__APPLE__)               && \
+       !defined(__sun)
+@@ -138,7 +140,8 @@
+   UVWASI__WIN_TIME_AND_RETURN(GetCurrentThread(), GetThreadTimes, *time);
+ #elif defined(__APPLE__)
+   UVWASI__OSX_THREADTIME_AND_RETURN(*time);
+-#elif defined(CLOCK_THREAD_CPUTIME_ID) && !defined(__sun) && !defined(__PASE__)
++#elif defined(CLOCK_THREAD_CPUTIME_ID) && !defined(__sun) && \
++      !defined(__PASE__) && !defined(__AROS__)
+   UVWASI__CLOCK_GETTIME_AND_RETURN(CLOCK_THREAD_CPUTIME_ID, *time);
+ #else
+ # if defined(RUSAGE_LWP)
+@@ -157,7 +160,8 @@
+   UVWASI__WIN_GETRES_AND_RETURN(*time);
+ #elif defined(CLOCK_PROCESS_CPUTIME_ID) && \
+       !defined(__APPLE__)               && \
+-      !defined(__sun)
++      !defined(__sun)                   && \
++      !defined(__AROS__)
+   UVWASI__CLOCK_GETRES_AND_RETURN(CLOCK_PROCESS_CPUTIME_ID, *time);
+ #else
+   UVWASI__SLOW_GETRES_AND_RETURN(*time);
+@@ -170,7 +174,8 @@
+   UVWASI__WIN_GETRES_AND_RETURN(*time);
+ #elif defined(__APPLE__)
+   UVWASI__SLOW_GETRES_AND_RETURN(*time);
+-#elif defined(CLOCK_THREAD_CPUTIME_ID) && !defined(__sun) && !defined(__PASE__)
++#elif defined(CLOCK_THREAD_CPUTIME_ID) && !defined(__sun) && \
++      !defined(__PASE__) && !defined(__AROS__)
+   UVWASI__CLOCK_GETTIME_AND_RETURN(CLOCK_THREAD_CPUTIME_ID, *time);
+ #elif defined(RUSAGE_THREAD) || defined(RUSAGE_LWP)
+   UVWASI__SLOW_GETRES_AND_RETURN(*time);
+--- node-v22.23.1/deps/uvwasi/src/uvwasi.c	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/uvwasi/src/uvwasi.c	2026-07-25 19:15:49.002530066 -0500
+@@ -36,8 +36,8 @@
+ #include "wasi_serdes.h"
+ #include "debug.h"
+ 
+-/* IBMi PASE does not support posix_fadvise() */
+-#ifdef __PASE__
++/* IBM i PASE and AROS do not support posix_fadvise(). */
++#if defined(__PASE__) || defined(__AROS__)
+ # undef POSIX_FADV_NORMAL
+ #endif
+ 
+--- node-v22.23.1/deps/zstd/lib/common/threading.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/deps/zstd/lib/common/threading.h	2026-07-25 19:24:02.983380202 -0500
+@@ -16,6 +16,15 @@
+ 
+ #include "debug.h"
+ 
++#if defined(__AROS__)
++/*
++ * AROS exposes pthreads, but exec/types.h reserves BYTE as a signed ABI type
++ * while zstd uses BYTE as uint8_t. Keep zstd on its supported single-thread
++ * fallback until that namespace collision is isolated at the library seam.
++ */
++#  undef ZSTD_MULTITHREAD
++#endif
++
+ #if defined(ZSTD_MULTITHREAD) && defined(_WIN32)
+ 
+ /**
+--- node-v22.23.1/lib/internal/url.js	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/lib/internal/url.js	2026-07-26 09:10:18.096670051 -0500
+@@ -1572,7 +1572,17 @@
+     }
+   }
+   // Fast-path: if there is no percent-encoding, avoid decodeURIComponent.
+-  return StringPrototypeIncludes(pathname, '%') ? decodeURIComponent(pathname) : pathname;
++  const decodedPathname = StringPrototypeIncludes(pathname, '%') ?
++    decodeURIComponent(pathname) : pathname;
++  if (StringPrototypeCharCodeAt(decodedPathname, 0) === CHAR_FORWARD_SLASH) {
++    const volumeEnd = StringPrototypeIndexOf(decodedPathname, ':');
++    const firstSeparator = StringPrototypeIndexOf(decodedPathname, '/', 1);
++    if (volumeEnd > 1 &&
++        (firstSeparator === -1 || volumeEnd < firstSeparator)) {
++      return StringPrototypeSlice(decodedPathname, 1);
++    }
++  }
++  return decodedPathname;
+ }
+ 
+ function getPathBufferFromURLPosix(url) {
+@@ -1592,9 +1602,28 @@
+   // literally into the returned Buffer. We're going to do the best we can and
+   // just interpret the input url as a sequence of bytes.
+   const u8 = percentDecode(Buffer.from(pathname, 'utf8'));
+-  return Buffer.from(TypedArrayPrototypeGetBuffer(u8),
+-                     TypedArrayPrototypeGetByteOffset(u8),
+-                     TypedArrayPrototypeGetByteLength(u8));
++  let byteOffset = TypedArrayPrototypeGetByteOffset(u8);
++  let byteLength = TypedArrayPrototypeGetByteLength(u8);
++  if (byteLength > 2 && u8[0] === CHAR_FORWARD_SLASH) {
++    let volumeEnd = -1;
++    let firstSeparator = -1;
++    for (let n = 1; n < byteLength; n++) {
++      if (u8[n] === CHAR_COLON) {
++        volumeEnd = n;
++        break;
++      }
++      if (u8[n] === CHAR_FORWARD_SLASH) {
++        firstSeparator = n;
++        break;
++      }
++    }
++    if (volumeEnd > 1 &&
++        (firstSeparator === -1 || volumeEnd < firstSeparator)) {
++      byteOffset++;
++      byteLength--;
++    }
++  }
++  return Buffer.from(TypedArrayPrototypeGetBuffer(u8), byteOffset, byteLength);
+ }
+ 
+ function fileURLToPath(path, options = kEmptyObject) {
+--- node-v22.23.1/lib/path.js	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/lib/path.js	2026-07-26 23:47:19.157829723 -0500
+@@ -71,6 +71,14 @@
+   return code === CHAR_FORWARD_SLASH;
+ }
+ 
++function arosVolumeEnd(path) {
++  const volumeEnd = StringPrototypeIndexOf(path, ':');
++  const firstSeparator = StringPrototypeIndexOf(path, '/');
++  return volumeEnd > 0 &&
++    (firstSeparator === -1 || volumeEnd < firstSeparator) ?
++    volumeEnd : -1;
++}
++
+ const WINDOWS_RESERVED_NAMES = [
+   'CON', 'PRN', 'AUX', 'NUL',
+   'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+@@ -1266,6 +1274,7 @@
+     }
+     let resolvedPath = '';
+     let resolvedAbsolute = false;
++    let resolvedVolume = false;
+ 
+     for (let i = args.length - 1; i >= 0 && !resolvedAbsolute; i--) {
+       const path = args[i];
+@@ -1277,15 +1286,25 @@
+       }
+ 
+       resolvedPath = `${path}/${resolvedPath}`;
++      const volumeEnd = StringPrototypeIndexOf(path, ':');
++      const firstSeparator = StringPrototypeIndexOf(path, '/');
++      resolvedVolume = volumeEnd > 0 &&
++        (firstSeparator === -1 || volumeEnd < firstSeparator);
+       resolvedAbsolute =
+-        StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++        StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH ||
++        resolvedVolume;
+     }
+ 
+     if (!resolvedAbsolute) {
+       const cwd = posixCwd();
+       resolvedPath = `${cwd}/${resolvedPath}`;
++      const volumeEnd = StringPrototypeIndexOf(cwd, ':');
++      const firstSeparator = StringPrototypeIndexOf(cwd, '/');
++      resolvedVolume = volumeEnd > 0 &&
++        (firstSeparator === -1 || volumeEnd < firstSeparator);
+       resolvedAbsolute =
+-        StringPrototypeCharCodeAt(cwd, 0) === CHAR_FORWARD_SLASH;
++        StringPrototypeCharCodeAt(cwd, 0) === CHAR_FORWARD_SLASH ||
++        resolvedVolume;
+     }
+ 
+     // At this point the path should be resolved to a full absolute path, but
+@@ -1295,7 +1314,7 @@
+     resolvedPath = normalizeString(resolvedPath, !resolvedAbsolute, '/',
+                                    isPosixPathSeparator);
+ 
+-    if (resolvedAbsolute) {
++    if (resolvedAbsolute && !resolvedVolume) {
+       return `/${resolvedPath}`;
+     }
+     return resolvedPath.length > 0 ? resolvedPath : '.';
+@@ -1311,8 +1330,10 @@
+     if (path.length === 0)
+       return '.';
+ 
++    const volumeEnd = arosVolumeEnd(path);
++    const isVolume = volumeEnd !== -1;
+     const isAbsolute =
+-      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH || isVolume;
+     const trailingSeparator =
+       StringPrototypeCharCodeAt(path, path.length - 1) === CHAR_FORWARD_SLASH;
+ 
+@@ -1327,7 +1348,7 @@
+     if (trailingSeparator)
+       path += '/';
+ 
+-    return isAbsolute ? `/${path}` : path;
++    return isAbsolute && !isVolume ? `/${path}` : path;
+   },
+ 
+   /**
+@@ -1336,8 +1357,10 @@
+    */
+   isAbsolute(path) {
+     validateString(path, 'path');
++    const volumeEnd = arosVolumeEnd(path);
+     return path.length > 0 &&
+-           StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++      (StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH ||
++       volumeEnd !== -1);
+   },
+ 
+   /**
+@@ -1382,10 +1405,21 @@
+     if (from === to)
+       return '';
+ 
+-    const fromStart = 1;
++    const fromVolumeEnd = arosVolumeEnd(from);
++    const toVolumeEnd = arosVolumeEnd(to);
++    if (fromVolumeEnd !== -1 || toVolumeEnd !== -1) {
++      const fromVolume = StringPrototypeToLowerCase(
++        StringPrototypeSlice(from, 0, fromVolumeEnd + 1));
++      const toVolume = StringPrototypeToLowerCase(
++        StringPrototypeSlice(to, 0, toVolumeEnd + 1));
++      if (fromVolume !== toVolume)
++        return to;
++    }
++
++    const fromStart = fromVolumeEnd !== -1 ? fromVolumeEnd + 1 : 1;
+     const fromEnd = from.length;
+     const fromLen = fromEnd - fromStart;
+-    const toStart = 1;
++    const toStart = toVolumeEnd !== -1 ? toVolumeEnd + 1 : 1;
+     const toLen = to.length - toStart;
+ 
+     // Compare paths to find the longest common path from root
+@@ -1457,10 +1491,14 @@
+     validateString(path, 'path');
+     if (path.length === 0)
+       return '.';
+-    const hasRoot = StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++    const volumeEnd = arosVolumeEnd(path);
++    const hasVolume = volumeEnd !== -1;
++    const hasRoot =
++      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH || hasVolume;
++    const rootEnd = hasVolume ? volumeEnd + 1 : 1;
+     let end = -1;
+     let matchedSlash = true;
+-    for (let i = path.length - 1; i >= 1; --i) {
++    for (let i = path.length - 1; i >= rootEnd; --i) {
+       if (StringPrototypeCharCodeAt(path, i) === CHAR_FORWARD_SLASH) {
+         if (!matchedSlash) {
+           end = i;
+@@ -1472,9 +1510,12 @@
+       }
+     }
+ 
+-    if (end === -1)
++    if (end === -1) {
++      if (hasVolume)
++        return StringPrototypeSlice(path, 0, rootEnd);
+       return hasRoot ? '/' : '.';
+-    if (hasRoot && end === 1)
++    }
++    if (!hasVolume && hasRoot && end === 1)
+       return '//';
+     return StringPrototypeSlice(path, 0, end);
+   },
+@@ -1488,6 +1529,9 @@
+     if (suffix !== undefined)
+       validateString(suffix, 'suffix');
+     validateString(path, 'path');
++    const volumeEnd = arosVolumeEnd(path);
++    if (volumeEnd !== -1)
++      path = StringPrototypeSlice(path, volumeEnd + 1);
+ 
+     let start = 0;
+     let end = -1;
+@@ -1565,6 +1609,9 @@
+    */
+   extname(path) {
+     validateString(path, 'path');
++    const volumeEnd = arosVolumeEnd(path);
++    if (volumeEnd !== -1)
++      path = StringPrototypeSlice(path, volumeEnd + 1);
+     let startDot = -1;
+     let startPart = 0;
+     let end = -1;
+@@ -1633,10 +1680,15 @@
+     const ret = { root: '', dir: '', base: '', ext: '', name: '' };
+     if (path.length === 0)
+       return ret;
++    const volumeEnd = arosVolumeEnd(path);
++    const hasVolume = volumeEnd !== -1;
+     const isAbsolute =
+-      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
++      StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH || hasVolume;
+     let start;
+-    if (isAbsolute) {
++    if (hasVolume) {
++      ret.root = StringPrototypeSlice(path, 0, volumeEnd + 1);
++      start = volumeEnd + 1;
++    } else if (isAbsolute) {
+       ret.root = '/';
+       start = 1;
+     } else {
+@@ -1684,7 +1736,8 @@
+     }
+ 
+     if (end !== -1) {
+-      const start = startPart === 0 && isAbsolute ? 1 : startPart;
++      const componentStart =
++        startPart === 0 && isAbsolute ? start : startPart;
+       if (startDot === -1 ||
+           // We saw a non-dot character immediately before the dot
+           preDotState === 0 ||
+@@ -1692,10 +1745,11 @@
+           (preDotState === 1 &&
+           startDot === end - 1 &&
+           startDot === startPart + 1)) {
+-        ret.base = ret.name = StringPrototypeSlice(path, start, end);
++        ret.base = ret.name =
++          StringPrototypeSlice(path, componentStart, end);
+       } else {
+-        ret.name = StringPrototypeSlice(path, start, startDot);
+-        ret.base = StringPrototypeSlice(path, start, end);
++        ret.name = StringPrototypeSlice(path, componentStart, startDot);
++        ret.base = StringPrototypeSlice(path, componentStart, end);
+         ret.ext = StringPrototypeSlice(path, startDot, end);
+       }
+     }
+@@ -1703,7 +1757,7 @@
+     if (startPart > 0)
+       ret.dir = StringPrototypeSlice(path, 0, startPart - 1);
+     else if (isAbsolute)
+-      ret.dir = '/';
++      ret.dir = ret.root;
+ 
+     return ret;
+   },
+--- node-v22.23.1/node.gyp	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/node.gyp	2026-07-26 12:23:53.877007420 -0500
+@@ -598,7 +598,8 @@
+             }],
+           ],
+         }],
+-        [ 'node_intermediate_lib_type=="static_library" and node_shared=="false"', {
++        [ 'node_intermediate_lib_type=="static_library" and node_shared=="false" '
++            'and node_use_bundled_v8=="true"', {
+           'xcode_settings': {
+             'OTHER_LDFLAGS': [
+               '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
+@@ -614,6 +615,15 @@
+             },
+           },
+           'conditions': [
++            ['node_use_node_v8_library=="true"', {
++              'libraries!': [
++                '-lv8',
++              ],
++              'libraries': [
++                '-lnode-v8',
++                '-lv8',
++              ],
++            }],
+             ['OS != "aix" and OS != "os400" and OS != "mac" and OS != "ios"', {
+               'ldflags': [
+                 '-Wl,--whole-archive',
+@@ -627,6 +637,38 @@
+             }],
+           ],
+         }],
++        [ 'node_intermediate_lib_type=="static_library" and node_shared=="false" '
++            'and node_use_bundled_v8=="false"', {
++          'libraries': [
++            '<@(node_aros_libraries)',
++            '<@(node_v8_libraries)',
++            '-lv8',
++          ],
++          'xcode_settings': {
++            'OTHER_LDFLAGS': [
++              '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
++            ],
++          },
++          'msvs_settings': {
++            'VCLinkerTool': {
++              'AdditionalOptions': [
++                '/WHOLEARCHIVE:<(PRODUCT_DIR)/lib/<(node_lib_target_name)<(STATIC_LIB_SUFFIX)',
++              ],
++            },
++          },
++          'conditions': [
++            ['OS != "aix" and OS != "os400" and OS != "mac" and OS != "ios"', {
++              'ldflags': [
++                '-Wl,--whole-archive',
++                '<(obj_dir)/<(STATIC_LIB_PREFIX)<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
++                '-Wl,--no-whole-archive',
++              ],
++            }],
++            [ 'OS=="win"', {
++              'sources': [ 'src/res/node.rc' ],
++            }],
++          ],
++        }],
+         [ 'node_shared=="true"', {
+           'xcode_settings': {
+             'OTHER_LDFLAGS': [ '-Wl,-rpath,@loader_path', '-Wl,-rpath,@loader_path/../lib'],
+@@ -837,6 +879,7 @@
+ 
+       'include_dirs': [
+         'src',
++        'deps/v8/include',
+         'deps/postject',
+         '<(SHARED_INTERMEDIATE_DIR)' # for node_natives.h
+       ],
+@@ -1356,6 +1399,10 @@
+       'include_dirs': [
+         'tools',
+         'src',
++        'deps/uv/include',
++      ],
++      'dependencies': [
++        'deps/uv/uv.gyp:libuv#host',
+       ],
+       'sources': [
+         'tools/js2c.cc',
+@@ -1367,9 +1414,6 @@
+         [ 'node_shared_simdutf=="false"', {
+           'dependencies': [ 'deps/simdutf/simdutf.gyp:simdutf#host' ],
+         }],
+-        [ 'node_shared_libuv=="false"', {
+-          'dependencies': [ 'deps/uv/uv.gyp:libuv#host' ],
+-        }],
+         [ 'OS in "linux mac openharmony"', {
+           'defines': ['NODE_JS2C_USE_STRING_LITERALS'],
+         }],
+--- node-v22.23.1/node.gypi	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/node.gypi	2026-07-26 12:19:29.448409896 -0500
+@@ -313,8 +313,9 @@
+         'NODE_PLATFORM="sunos"',
+       ],
+     }],
+-    [ '(OS=="freebsd" or OS=="linux" or OS=="openharmony") and node_shared=="false"'
+-        ' and force_load=="true"', {
++    [ 'node_use_bundled_v8=="true" and '
++        '(OS=="freebsd" or OS=="linux" or OS=="openharmony") and '
++        'node_shared=="false" and force_load=="true"', {
+       'ldflags': [
+         '-Wl,-z,noexecstack',
+         '-Wl,--whole-archive <(v8_base)',
+@@ -389,9 +390,6 @@
+           ],
+           'dependencies': [
+             './deps/openssl/openssl.gyp:openssl',
+-
+-            # For tests
+-            './deps/openssl/openssl.gyp:openssl-cli',
+           ],
+           'conditions': [
+             # -force_load or --whole-archive are not applicable for
+--- node-v22.23.1/src/api/environment.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/api/environment.cc	2026-08-10 06:01:42.519989251 -0500
+@@ -1,4 +1,5 @@
+ #include <cstdlib>
++#include <cstring>
+ #if HAVE_OPENSSL
+ #include "crypto/crypto_util.h"
+ #endif  // HAVE_OPENSSL
+@@ -111,10 +112,18 @@
+   void* ret;
+   if (zero_fill_field_ || per_process::cli_options->zero_fill_all_buffers) {
+     COUNT_GENERIC_USAGE("NodeArrayBufferAllocator.Allocate.ZeroFilled");
++#if defined(__AROS__)
++    ret = std::calloc(1, size);
++#else
+     ret = allocator_->Allocate(size);
++#endif
+   } else {
+     COUNT_GENERIC_USAGE("NodeArrayBufferAllocator.Allocate.Uninitialized");
++#if defined(__AROS__)
++    ret = std::malloc(size);
++#else
+     ret = allocator_->AllocateUninitialized(size);
++#endif
+   }
+   if (ret != nullptr) [[likely]] {
+     total_mem_usage_.fetch_add(size, std::memory_order_relaxed);
+@@ -124,7 +133,11 @@
+ 
+ void* NodeArrayBufferAllocator::AllocateUninitialized(size_t size) {
+   COUNT_GENERIC_USAGE("NodeArrayBufferAllocator.Allocate.Uninitialized");
++#if defined(__AROS__)
++  void* ret = std::malloc(size);
++#else
+   void* ret = allocator_->AllocateUninitialized(size);
++#endif
+   if (ret != nullptr) [[likely]] {
+     total_mem_usage_.fetch_add(size, std::memory_order_relaxed);
+   }
+@@ -133,7 +146,11 @@
+ 
+ void NodeArrayBufferAllocator::Free(void* data, size_t size) {
+   total_mem_usage_.fetch_sub(size, std::memory_order_relaxed);
++#if defined(__AROS__)
++  std::free(data);
++#else
+   allocator_->Free(data, size);
++#endif
+ }
+ 
+ DebuggingArrayBufferAllocator::~DebuggingArrayBufferAllocator() {
+@@ -200,10 +217,18 @@
+ }
+ 
+ ArrayBufferAllocator* CreateArrayBufferAllocator() {
++#if defined(__AROS__)
++  static NodeArrayBufferAllocator AROSOwnedArrayBufferAllocator;
++  return &AROSOwnedArrayBufferAllocator;
++#else
+   return ArrayBufferAllocator::Create().release();
++#endif
+ }
+ 
+ void FreeArrayBufferAllocator(ArrayBufferAllocator* allocator) {
++#if defined(__AROS__)
++  return;
++#endif
+   delete allocator;
+ }
+ 
+@@ -493,7 +518,14 @@
+   }
+ #endif
+ 
+-  if (!use_snapshot && env->principal_realm()->RunBootstrapping().IsEmpty()) {
++  PrincipalRealm* principal_realm = env->principal_realm();
++#if defined(__AROS__)
++  fprintf(stderr,
++          "[NodeEnv:AROS] CreateEnvironment principal_realm=%p use_snapshot=%d\n",
++          principal_realm,
++          use_snapshot ? 1 : 0);
++#endif
++  if (!use_snapshot && principal_realm->RunBootstrapping().IsEmpty()) {
+     FreeEnvironment(env);
+     return nullptr;
+   }
+--- node-v22.23.1/src/async_wrap.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/async_wrap.cc	2026-08-10 07:03:19.274012059 -0500
+@@ -25,11 +25,16 @@
+ #include "env-inl.h"
+ #include "node_errors.h"
+ #include "node_external_reference.h"
++#include "node_realm-inl.h"
+ #include "tracing/traced_value.h"
+ #include "util-inl.h"
+ 
+ #include "v8.h"
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ using v8::Context;
+ using v8::DontDelete;
+ using v8::EscapableHandleScope;
+@@ -65,8 +70,45 @@
+ #undef V
+ };
+ 
++#ifdef __AROS__
++static Realm* ArosCurrentRealm(Environment* env, const char* where) {
++  Realm* realm = Realm::GetCurrent(env->isolate());
++  kprintf("[AsyncWrap:AROS] %s env=%p realm=%p\n", where, env, realm);
++  return realm;
++}
++
++static Local<Function> ArosAsyncHookFunction(Environment* env,
++                                            AsyncHooks::Fields type) {
++  Realm* realm = ArosCurrentRealm(env, "hook lookup");
++  if (realm == nullptr) return Local<Function>();
++
++  switch (type) {
++    case AsyncHooks::kInit:
++      return realm->async_hooks_init_function();
++    case AsyncHooks::kBefore:
++      return realm->async_hooks_before_function();
++    case AsyncHooks::kAfter:
++      return realm->async_hooks_after_function();
++    case AsyncHooks::kDestroy:
++      return realm->async_hooks_destroy_function();
++    case AsyncHooks::kPromiseResolve:
++      return realm->async_hooks_promise_resolve_function();
++    default:
++      return Local<Function>();
++  }
++}
++#endif
++
+ void AsyncWrap::DestroyAsyncIdsCallback(Environment* env) {
++#ifdef __AROS__
++  Local<Function> fn = ArosAsyncHookFunction(env, AsyncHooks::kDestroy);
++  if (fn.IsEmpty()) {
++    kprintf("[AsyncWrap:AROS] destroy hook missing; skipping queued destroy callbacks\n");
++    return;
++  }
++#else
+   Local<Function> fn = env->async_hooks_destroy_function();
++#endif
+ 
+   TryCatchScope try_catch(env,
+                           TryCatchScope::CatchMode::kFatalRethrowStackOverflow);
+@@ -96,6 +138,14 @@
+   if (async_hooks->fields()[type] == 0 || !env->can_call_into_js())
+     return;
+ 
++#ifdef __AROS__
++  if (fn.IsEmpty()) {
++    kprintf("[AsyncWrap:AROS] requested hook type=%d but function is empty\n",
++            static_cast<int>(type));
++    return;
++  }
++#endif
++
+   HandleScope handle_scope(env->isolate());
+   Local<Value> async_id_value = Number::New(env->isolate(), async_id);
+   TryCatchScope try_catch(env,
+@@ -105,8 +155,13 @@
+ 
+ 
+ void AsyncWrap::EmitPromiseResolve(Environment* env, double async_id) {
++#ifdef __AROS__
++  Emit(env, async_id, AsyncHooks::kPromiseResolve,
++       ArosAsyncHookFunction(env, AsyncHooks::kPromiseResolve));
++#else
+   Emit(env, async_id, AsyncHooks::kPromiseResolve,
+        env->async_hooks_promise_resolve_function());
++#endif
+ }
+ 
+ void AsyncWrap::EmitTraceAsyncStart() const {
+@@ -139,8 +194,13 @@
+ 
+ 
+ void AsyncWrap::EmitBefore(Environment* env, double async_id) {
++#ifdef __AROS__
++  Emit(env, async_id, AsyncHooks::kBefore,
++       ArosAsyncHookFunction(env, AsyncHooks::kBefore));
++#else
+   Emit(env, async_id, AsyncHooks::kBefore,
+        env->async_hooks_before_function());
++#endif
+ }
+ 
+ 
+@@ -163,12 +223,25 @@
+ void AsyncWrap::EmitAfter(Environment* env, double async_id) {
+   // If the user's callback failed then the after() hooks will be called at the
+   // end of _fatalException().
++#ifdef __AROS__
++  Emit(env, async_id, AsyncHooks::kAfter,
++       ArosAsyncHookFunction(env, AsyncHooks::kAfter));
++#else
+   Emit(env, async_id, AsyncHooks::kAfter,
+        env->async_hooks_after_function());
++#endif
+ }
+ 
+ static void SetupHooks(const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
++#ifdef __AROS__
++  Realm* realm = Realm::GetCurrent(args);
++  kprintf("[AsyncWrap:AROS] SetupHooks env=%p realm=%p argc=%d\n",
++          env,
++          realm,
++          args.Length());
++  CHECK_NOT_NULL(realm);
++#endif
+ 
+   CHECK(args[0]->IsObject());
+ 
+@@ -176,10 +249,25 @@
+   // async_hooks internally, so this should only ever be called once. At which
+   // time all the functions should be set. Detect this by checking if
+   // init !IsEmpty().
++#ifdef __AROS__
++  CHECK(realm->async_hooks_init_function().IsEmpty());
++#else
+   CHECK(env->async_hooks_init_function().IsEmpty());
++#endif
+ 
+   Local<Object> fn_obj = args[0].As<Object>();
+ 
++#ifdef __AROS__
++#define SET_HOOK_FN(name)                                                      \
++  do {                                                                         \
++    Local<Value> v =                                                           \
++        fn_obj->Get(env->context(),                                            \
++                    FIXED_ONE_BYTE_STRING(env->isolate(), #name))              \
++            .ToLocalChecked();                                                 \
++    CHECK(v->IsFunction());                                                    \
++    realm->set_async_hooks_##name##_function(v.As<Function>());                \
++  } while (0)
++#else
+ #define SET_HOOK_FN(name)                                                      \
+   do {                                                                         \
+     Local<Value> v =                                                           \
+@@ -189,6 +277,7 @@
+     CHECK(v->IsFunction());                                                    \
+     env->set_async_hooks_##name##_function(v.As<Function>());                  \
+   } while (0)
++#endif
+ 
+   SET_HOOK_FN(init);
+   SET_HOOK_FN(before);
+@@ -349,11 +438,25 @@
+ void AsyncWrap::SetCallbackTrampoline(const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
+ 
++#ifdef __AROS__
++  Realm* realm = Realm::GetCurrent(args);
++  kprintf("[AsyncWrap:AROS] SetCallbackTrampoline env=%p realm=%p arg0_is_function=%d\n",
++          env,
++          realm,
++          args.Length() > 0 && args[0]->IsFunction());
++  CHECK_NOT_NULL(realm);
++  if (args[0]->IsFunction()) {
++    realm->set_async_hooks_callback_trampoline(args[0].As<Function>());
++  } else {
++    realm->set_async_hooks_callback_trampoline(Local<Function>());
++  }
++#else
+   if (args[0]->IsFunction()) {
+     env->set_async_hooks_callback_trampoline(args[0].As<Function>());
+   } else {
+     env->set_async_hooks_callback_trampoline(Local<Function>());
+   }
++#endif
+ }
+ 
+ Local<FunctionTemplate> AsyncWrap::GetConstructorTemplate(
+@@ -639,7 +742,15 @@
+   }
+ 
+   HandleScope scope(env->isolate());
++#ifdef __AROS__
++  Local<Function> init_fn = ArosAsyncHookFunction(env, AsyncHooks::kInit);
++  if (init_fn.IsEmpty()) {
++    kprintf("[AsyncWrap:AROS] init hook requested but function is empty\n");
++    return;
++  }
++#else
+   Local<Function> init_fn = env->async_hooks_init_function();
++#endif
+ 
+   Local<Value> argv[] = {
+     Number::New(env->isolate(), async_id),
+--- node-v22.23.1/src/debug_utils.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/debug_utils.cc	2026-07-25 20:05:15.111399183 -0500
+@@ -12,7 +12,8 @@
+ #include <android/log.h>
+ #endif
+ 
+-#if defined(__linux__) && !defined(__GLIBC__) || \
++#if defined(__AROS__) || \
++    defined(__linux__) && !defined(__GLIBC__) || \
+     defined(__UCLIBC__) || \
+     defined(_AIX)
+ #define HAVE_EXECINFO_H 0
+--- node-v22.23.1/src/env.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/env.cc	2026-08-10 06:01:35.025051922 -0500
+@@ -985,8 +985,19 @@
+ 
+ void Environment::InitializeMainContext(Local<Context> context,
+                                         const EnvSerializeInfo* env_info) {
++#if defined(__AROS__)
++  fprintf(stderr,
++          "[NodeEnv:AROS] InitializeMainContext begin env=%p env_info=%p\n",
++          this,
++          env_info);
++#endif
+   principal_realm_ = std::make_unique<PrincipalRealm>(
+       this, context, MAYBE_FIELD_PTR(env_info, principal_realm));
++#if defined(__AROS__)
++  fprintf(stderr,
++          "[NodeEnv:AROS] InitializeMainContext realm=%p\n",
++          principal_realm_.get());
++#endif
+   if (env_info != nullptr) {
+     DeserializeProperties(env_info);
+   }
+--- node-v22.23.1/src/env-inl.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/env-inl.h	2026-08-10 07:09:38.046884396 -0500
+@@ -907,6 +907,31 @@
+   PER_ISOLATE_TEMPLATE_PROPERTIES(V)
+ #undef V
+ 
++#ifdef __AROS__
++#define V(PropertyName, TypeName)                                              \
++  inline v8::Local<TypeName> Environment::PropertyName() const {               \
++    Realm* realm = principal_realm_.get();                                     \
++    DCHECK_NOT_NULL(realm);                                                    \
++    if (realm == nullptr) [[unlikely]] {                                       \
++      realm = Realm::GetCurrent(isolate());                                    \
++    }                                                                          \
++    if (realm == nullptr) [[unlikely]] {                                       \
++      return v8::Local<TypeName>();                                            \
++    }                                                                          \
++    return realm->PropertyName();                                              \
++  }                                                                            \
++  inline void Environment::set_##PropertyName(v8::Local<TypeName> value) {     \
++    Realm* realm = principal_realm_.get();                                     \
++    DCHECK_NOT_NULL(realm);                                                    \
++    if (realm == nullptr) [[unlikely]] {                                       \
++      realm = Realm::GetCurrent(isolate());                                    \
++    }                                                                          \
++    if (realm == nullptr) [[unlikely]] {                                       \
++      return;                                                                  \
++    }                                                                          \
++    realm->set_##PropertyName(value);                                          \
++  }
++#else
+ #define V(PropertyName, TypeName)                                              \
+   inline v8::Local<TypeName> Environment::PropertyName() const {               \
+     DCHECK_NOT_NULL(principal_realm_);                                         \
+@@ -916,7 +941,8 @@
+     DCHECK_NOT_NULL(principal_realm_);                                         \
+     principal_realm_->set_##PropertyName(value);                               \
+   }
+-  PER_REALM_STRONG_PERSISTENT_VALUES(V)
++#endif
++PER_REALM_STRONG_PERSISTENT_VALUES(V)
+ #undef V
+ 
+ v8::Local<v8::Context> Environment::context() const {
+--- node-v22.23.1/src/large_pages/node_large_page.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/large_pages/node_large_page.cc	2026-07-25 21:09:16.494325095 -0500
+@@ -60,7 +60,8 @@
+ #include <cerrno>   // NOLINT(build/include)
+ 
+ // Besides returning ENOTSUP at runtime we do nothing if this define is missing.
+-#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES
++#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES && \
++    !defined(__AROS__)
+ #include "debug_utils-inl.h"
+ 
+ #if defined(__linux__) || defined(__FreeBSD__)
+@@ -106,7 +107,8 @@
+ 
+ #endif  // defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES
+ namespace node {
+-#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES
++#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES && \
++    !defined(__AROS__)
+ 
+ namespace {
+ 
+@@ -415,7 +417,8 @@
+ 
+ // This is the primary API called from main.
+ int MapStaticCodeToLargePages() {
+-#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES
++#if defined(NODE_ENABLE_LARGE_CODE_PAGES) && NODE_ENABLE_LARGE_CODE_PAGES && \
++    !defined(__AROS__)
+   bool have_thp = false;
+ #if defined(__linux__)
+   have_thp = IsTransparentHugePagesEnabled();
+--- node-v22.23.1/src/memory_tracker-inl.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/memory_tracker-inl.h	2026-07-25 19:51:30.296143787 -0500
+@@ -6,6 +6,10 @@
+ #include "memory_tracker.h"
+ #include "util-inl.h"
+ 
++#if defined(__AROS__) && defined(GetNodeName)
++#undef GetNodeName
++#endif
++
+ namespace node {
+ 
+ // Fallback edge_name if node_name is not available, or "" if edge_name
+--- node-v22.23.1/src/node_binding.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_binding.cc	2026-08-10 06:49:51.014426720 -0500
+@@ -8,6 +8,10 @@
+ 
+ #include <string>
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ #if HAVE_OPENSSL
+ #define NODE_BUILTIN_OPENSSL_BINDINGS(V) V(crypto) V(tls_wrap)
+ #else
+@@ -339,7 +343,7 @@
+ DLib::DLib(const char* filename, int flags)
+     : filename_(filename), flags_(flags), handle_(nullptr) {}
+ 
+-#ifdef __POSIX__
++#if defined(__POSIX__) && !defined(__AROS__)
+ bool DLib::Open() {
+   handle_ = dlopen(filename_.c_str(), flags_);
+   if (handle_ != nullptr) return true;
+@@ -395,7 +399,7 @@
+   if (0 == uv_dlsym(&lib_, name, &address)) return address;
+   return nullptr;
+ }
+-#endif  // !__POSIX__
++#endif  // defined(__POSIX__) && !defined(__AROS__)
+ 
+ void DLib::SaveInGlobalHandleMap(node_module* mp) {
+   has_entry_in_global_handle_map_ = true;
+@@ -641,11 +645,32 @@
+   node::Utf8Value module_v(isolate, module);
+   Local<Object> exports;
+ 
++#ifdef __AROS__
++  kprintf("[NodeBinding:AROS] GetInternalBinding name=%s realm=%p\n",
++          *module_v,
++          realm);
++#endif
+   node_module* mod = FindModule(modlist_internal, *module_v, NM_F_INTERNAL);
+   if (mod != nullptr) {
++#ifdef __AROS__
++    kprintf("[NodeBinding:AROS] InitInternalBinding enter name=%s mod=%p "
++            "ctx_func=%p priv=%p\n",
++            *module_v,
++            mod,
++            reinterpret_cast<void*>(mod->nm_context_register_func),
++            mod->nm_priv);
++#endif
+     exports = InitInternalBinding(realm, mod);
++#ifdef __AROS__
++    kprintf("[NodeBinding:AROS] InitInternalBinding leave name=%s\n",
++            *module_v);
++#endif
+     realm->internal_bindings.insert(mod);
+   } else {
++#ifdef __AROS__
++    kprintf("[NodeBinding:AROS] GetInternalBinding missing name=%s\n",
++            *module_v);
++#endif
+     return THROW_ERR_INVALID_MODULE(isolate, "No such binding: %s", *module_v);
+   }
+ 
+--- node-v22.23.1/src/node_binding.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_binding.h	2026-07-25 20:06:51.479822639 -0500
+@@ -3,7 +3,7 @@
+ 
+ #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
+ 
+-#if defined(__POSIX__)
++#if defined(__POSIX__) && !defined(__AROS__)
+ #include <dlfcn.h>
+ #endif
+ 
+@@ -115,7 +115,7 @@
+ 
+ class DLib {
+  public:
+-#ifdef __POSIX__
++#if defined(__POSIX__) && !defined(__AROS__)
+   static const int kDefaultFlags = RTLD_LAZY;
+ #else
+   static const int kDefaultFlags = 0;
+@@ -133,7 +133,7 @@
+   const int flags_;
+   std::string errmsg_;
+   void* handle_;
+-#ifndef __POSIX__
++#if !defined(__POSIX__) || defined(__AROS__)
+   uv_lib_t lib_;
+ #endif
+   bool has_entry_in_global_handle_map_ = false;
+--- node-v22.23.1/src/node_buffer.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_buffer.cc	2026-07-25 20:29:27.873241829 -0500
+@@ -36,6 +36,10 @@
+ #include "v8-fast-api-calls.h"
+ #include "v8.h"
+ 
++#if defined(__AROS__)
++#include <proto/node-v8.h>
++#endif
++
+ #include <stdint.h>
+ #include <climits>
+ #include <cstring>
+@@ -1436,8 +1440,13 @@
+       allocator == nullptr) {
+     buf = ArrayBuffer::New(isolate, size);
+   } else {
++#if defined(__AROS__)
++    std::unique_ptr<BackingStore> store(static_cast<BackingStore*>(
++        NodeV8NewBackingStoreForNodeLTS(isolate, size)));
++#else
+     std::unique_ptr<BackingStore> store =
+         ArrayBuffer::NewBackingStoreForNodeLTS(isolate, size);
++#endif
+     if (!store) {
+       return env->ThrowRangeError("Array buffer allocation failed");
+     }
+--- node-v22.23.1/src/node_builtins.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_builtins.cc	2026-08-10 06:37:37.810796645 -0500
+@@ -32,6 +32,16 @@
+ using v8::Undefined;
+ using v8::Value;
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++const BuiltinSourceMap& ArosGetBuiltinSourceMapDirect();
++MaybeLocal<String> ArosLoadBuiltinSourceDirect(Isolate* isolate, const char* id);
++
++static void ArosBuiltinTrace(const char* id, const char* step) {
++  kprintf("[NodeBuiltin:AROS] %s %s\n", id, step);
++}
++#endif
++
+ BuiltinLoader::BuiltinLoader()
+     : config_(GetConfig()), code_cache_(std::make_shared<BuiltinCodeCache>()) {
+   LoadJavaScriptSource();
+@@ -61,8 +71,13 @@
+ }
+ 
+ bool BuiltinLoader::Exists(const char* id) {
++#ifdef __AROS__
++  const BuiltinSourceMap& source = ArosGetBuiltinSourceMapDirect();
++  return source.find(id) != source.end();
++#else
+   auto source = source_.read();
+   return source->find(id) != source->end();
++#endif
+ }
+ 
+ bool BuiltinLoader::Add(const char* id, const UnionBytes& source) {
+@@ -77,8 +92,13 @@
+   Local<Context> context = env->context();
+ 
+   Local<Object> out = Object::New(isolate);
++#ifdef __AROS__
++  const BuiltinSourceMap& source = ArosGetBuiltinSourceMapDirect();
++  for (auto const& x : source) {
++#else
+   auto source = env->builtin_loader()->source_.read();
+   for (auto const& x : *source) {
++#endif
+     Local<String> key = OneByteString(isolate, x.first);
+     if (out->Set(context, key, x.second.ToStringChecked(isolate)).IsNothing()) {
+       return;
+@@ -93,9 +113,15 @@
+ 
+ std::vector<std::string_view> BuiltinLoader::GetBuiltinIds() const {
+   std::vector<std::string_view> ids;
++#ifdef __AROS__
++  const BuiltinSourceMap& source = ArosGetBuiltinSourceMapDirect();
++  ids.reserve(source.size());
++  for (auto const& x : source) {
++#else
+   auto source = source_.read();
+   ids.reserve(source->size());
+   for (auto const& x : *source) {
++#endif
+     ids.emplace_back(x.first);
+   }
+   return ids;
+@@ -153,8 +179,13 @@
+         "internal/v8_prof_processor",
+   };
+ 
++#ifdef __AROS__
++  const BuiltinSourceMap& source = ArosGetBuiltinSourceMapDirect();
++  for (auto const& x : source) {
++#else
+   auto source = source_.read();
+   for (auto const& x : *source) {
++#endif
+     const std::string& id = x.first;
+     for (auto const& prefix : prefixes) {
+       if (prefix.length() > id.length()) {
+@@ -167,7 +198,11 @@
+     }
+   }
+ 
++#ifdef __AROS__
++  for (auto const& x : source) {
++#else
+   for (auto const& x : *source) {
++#endif
+     const std::string& id = x.first;
+     if (0 == builtin_categories.cannot_be_required.count(id)) {
+       builtin_categories.can_be_required.emplace(id);
+@@ -196,13 +231,29 @@
+ 
+ MaybeLocal<String> BuiltinLoader::LoadBuiltinSource(Isolate* isolate,
+                                                     const char* id) const {
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "LoadBuiltinSource begin");
++  MaybeLocal<String> direct = ArosLoadBuiltinSourceDirect(isolate, id);
++  ArosBuiltinTrace(id, "LoadBuiltinSource direct returned");
++  return direct;
++#endif
+   auto source = source_.read();
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "LoadBuiltinSource source read");
++  kprintf("[NodeBuiltin:AROS] %s source map=%p size=%lu\n",
++          id,
++          &*source,
++          static_cast<unsigned long>(source->size()));
++#endif
+ #ifndef NODE_BUILTIN_MODULES_PATH
+   const auto source_it = source->find(id);
+   if (source_it == source->end()) [[unlikely]] {
+     fprintf(stderr, "Cannot find native builtin: \"%s\".\n", id);
+     ABORT();
+   }
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "LoadBuiltinSource found");
++#endif
+   return source_it->second.ToStringChecked(isolate);
+ #else   // !NODE_BUILTIN_MODULES_PATH
+   std::string filename = OnDiskFileName(id);
+@@ -279,15 +330,34 @@
+   EscapableHandleScope scope(isolate);
+ 
+   Local<String> source;
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "LookupAndCompile begin");
++#endif
+   if (!LoadBuiltinSource(isolate, id).ToLocal(&source)) {
+     return {};
+   }
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "source local ready");
++#endif
+ 
+   std::string filename_s = std::string("node:") + id;
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "filename string begin");
++#endif
+   Local<String> filename = OneByteString(isolate, filename_s);
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "filename string ready");
++#endif
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "ScriptOrigin begin");
++#endif
+   ScriptOrigin origin(filename, 0, 0, true);
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "ScriptOrigin ready");
++#endif
+ 
+   BuiltinCodeCacheData cached_data{};
++#ifndef __AROS__
+   {
+     // Note: The lock here should not extend into the
+     // `CompileFunction()` call below, because this function may recurse if
+@@ -300,6 +370,9 @@
+       cached_data = cache_it->second;
+     }
+   }
++#else
++  ArosBuiltinTrace(id, "code-cache bypass");
++#endif
+ 
+   const bool has_cache = cached_data.data != nullptr;
+   ScriptCompiler::CompileOptions options =
+@@ -312,10 +385,16 @@
+       options = ScriptCompiler::kEagerCompile;
+     }
+   }
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "ScriptCompiler::Source begin");
++#endif
+   ScriptCompiler::Source script_source(
+       source,
+       origin,
+       has_cache ? cached_data.AsCachedData().release() : nullptr);
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "ScriptCompiler::Source ready");
++#endif
+ 
+   per_process::Debug(
+       DebugCategory::CODE_CACHE,
+@@ -324,6 +403,9 @@
+       has_cache ? "with" : "without",
+       options == ScriptCompiler::kEagerCompile ? "eagerly" : "lazily");
+ 
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "CompileFunction begin");
++#endif
+   MaybeLocal<Function> maybe_fun =
+       ScriptCompiler::CompileFunction(context,
+                                       &script_source,
+@@ -332,6 +414,9 @@
+                                       0,
+                                       nullptr,
+                                       options);
++#ifdef __AROS__
++  ArosBuiltinTrace(id, "CompileFunction returned");
++#endif
+ 
+   // This could fail when there are early errors in the built-in modules,
+   // e.g. the syntax errors
+@@ -376,7 +461,11 @@
+     // This is only done when the isolate is not being serialized because
+     // V8 does not support serializing code cache with an unfinalized read-only
+     // space (which is what isolates pending to be serialized have).
++#ifndef __AROS__
+     SaveCodeCache(id, fun);
++#else
++    ArosBuiltinTrace(id, "SaveCodeCache bypass");
++#endif
+   }
+ 
+   return scope.Escape(fun);
+--- node-v22.23.1/src/node.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node.cc	2026-07-25 22:42:32.941252042 -0500
+@@ -134,6 +134,13 @@
+ #include <tuple>
+ #include <vector>
+ 
++#ifdef __AROS__
++#include <aros/debug.h>
++#define NODE_AROS_PHASE(name) bug("[Node] phase %s\n", name)
++#else
++#define NODE_AROS_PHASE(name) ((void) 0)
++#endif
++
+ namespace node {
+ 
+ using v8::Array;
+@@ -883,19 +890,25 @@
+     std::vector<std::string>* exec_argv,
+     std::vector<std::string>* errors,
+     ProcessInitializationFlags::Flags flags) {
++  NODE_AROS_PHASE("initialize-args check-once");
+   // Make sure InitializeNodeWithArgs() is called only once.
+   CHECK(!init_called.exchange(true));
+ 
+   // Initialize node_start_time to get relative uptime.
++  NODE_AROS_PHASE("initialize-args hrtime");
+   per_process::node_start_time = uv_hrtime();
+ 
+   // Register built-in bindings
++  NODE_AROS_PHASE("initialize-args register-bindings enter");
+   binding::RegisterBuiltinBindings();
++  NODE_AROS_PHASE("initialize-args register-bindings leave");
+ 
+   // Make inherited handles noninheritable.
+   if (!(flags & ProcessInitializationFlags::kEnableStdioInheritance) &&
+       !(flags & ProcessInitializationFlags::kNoStdioInitialization)) {
++    NODE_AROS_PHASE("initialize-args disable-stdio-inheritance enter");
+     uv_disable_stdio_inheritance();
++    NODE_AROS_PHASE("initialize-args disable-stdio-inheritance leave");
+   }
+ 
+   // Cache the original command line to be
+@@ -905,6 +918,7 @@
+   // Node provides a "v8.setFlagsFromString" method to dynamically change flags.
+   // Hence do not freeze flags when initializing V8. In a browser setting, this
+   // is security relevant, for Node it's less important.
++  NODE_AROS_PHASE("initialize-args v8-flags enter");
+   V8::SetFlagsFromString("--no-freeze-flags-after-init");
+ 
+ #if defined(NODE_V8_OPTIONS)
+@@ -923,6 +937,7 @@
+   // Specify this explicitly to avoid being affected by V8 changes to the
+   // default value.
+   V8::SetFlagsFromString("--rehash-snapshot");
++  NODE_AROS_PHASE("initialize-args v8-flags leave");
+ 
+ #if HAVE_OPENSSL
+   // TODO(joyeecheung): make this a per-env option and move the normalization
+@@ -933,10 +948,14 @@
+     per_process::cli_options->use_system_ca = true;
+   }
+ #endif  // HAVE_OPENSSL
++  NODE_AROS_PHASE("initialize-args env-options enter");
+   HandleEnvOptions(per_process::cli_options->per_isolate->per_env);
++  NODE_AROS_PHASE("initialize-args env-options leave");
+ 
+   std::string node_options;
++  NODE_AROS_PHASE("initialize-args dotenv-args enter");
+   auto env_files = node::Dotenv::GetDataFromArgs(*argv);
++  NODE_AROS_PHASE("initialize-args dotenv-args leave");
+ 
+   if (!env_files.empty()) {
+     CHECK(!per_process::v8_initialized);
+@@ -1035,8 +1054,10 @@
+ #endif
+ 
+   if (!(flags & ProcessInitializationFlags::kDisableCLIOptions)) {
++    NODE_AROS_PHASE("initialize-args global-args enter");
+     const ExitCode exit_code =
+         ProcessGlobalArgsInternal(argv, exec_argv, errors, kDisallowedInEnvvar);
++    NODE_AROS_PHASE("initialize-args global-args leave");
+     if (exit_code != ExitCode::kNoFailure) return exit_code;
+   }
+ 
+@@ -1112,6 +1133,7 @@
+ InitializeOncePerProcessInternal(const std::vector<std::string>& args,
+                                  ProcessInitializationFlags::Flags flags =
+                                      ProcessInitializationFlags::kNoFlags) {
++  NODE_AROS_PHASE("initialize-once enter");
+   auto result = std::make_shared<InitializationResultImpl>();
+   result->args_ = args;
+ 
+@@ -1121,12 +1143,16 @@
+     per_process::enabled_debug_list.Parse(nullptr);
+   }
+ 
++  NODE_AROS_PHASE("platform-init enter");
+   PlatformInit(flags);
++  NODE_AROS_PHASE("platform-init leave");
+ 
+   // This needs to run *before* V8::Initialize().
+   {
++    NODE_AROS_PHASE("initialize-args enter");
+     result->exit_code_ = InitializeNodeWithArgsInternal(
+         &result->args_, &result->exec_args_, &result->errors_, flags);
++    NODE_AROS_PHASE("initialize-args leave");
+     if (result->exit_code_enum() != ExitCode::kNoFailure) {
+       result->early_return_ = true;
+       return result;
+@@ -1283,13 +1309,17 @@
+   }
+ 
+   if (!(flags & ProcessInitializationFlags::kNoInitializeNodeV8Platform)) {
++    NODE_AROS_PHASE("v8-platform enter");
+     per_process::v8_platform.Initialize(
+         static_cast<int>(per_process::cli_options->v8_thread_pool_size));
+     result->platform_ = per_process::v8_platform.Platform();
++    NODE_AROS_PHASE("v8-platform leave");
+   }
+ 
+   if (!(flags & ProcessInitializationFlags::kNoInitializeV8)) {
++    NODE_AROS_PHASE("v8-initialize enter");
+     V8::Initialize();
++    NODE_AROS_PHASE("v8-initialize leave");
+ 
+     // Disable absl deadlock detection in V8 as it reports false-positive cases.
+     // TODO(legendecas): Replace this global disablement with case suppressions.
+@@ -1298,11 +1328,13 @@
+   }
+ 
+   if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
++    NODE_AROS_PHASE("cppgc-initialize enter");
+     v8::PageAllocator* allocator = nullptr;
+     if (result->platform_ != nullptr) {
+       allocator = result->platform_->GetPageAllocator();
+     }
+     cppgc::InitializeProcess(allocator);
++    NODE_AROS_PHASE("cppgc-initialize leave");
+   }
+ 
+ #if NODE_USE_V8_WASM_TRAP_HANDLER
+@@ -1568,14 +1600,19 @@
+ }
+ 
+ static ExitCode StartInternal(int argc, char** argv) {
++  NODE_AROS_PHASE("start-internal enter");
+   CHECK_GT(argc, 0);
+ 
+   // Hack around with the argv pointer. Used for process.title = "blah".
++  NODE_AROS_PHASE("uv-setup-args enter");
+   argv = uv_setup_args(argc, argv);
++  NODE_AROS_PHASE("uv-setup-args leave");
+ 
++  NODE_AROS_PHASE("initialize-once call");
+   std::shared_ptr<InitializationResultImpl> result =
+       InitializeOncePerProcessInternal(
+           std::vector<std::string>(argv, argv + argc));
++  NODE_AROS_PHASE("initialize-once returned");
+   for (const std::string& error : result->errors()) {
+     FPrintF(stderr, "%s: %s\n", result->args().at(0), error);
+   }
+--- node-v22.23.1/src/node_config.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_config.cc	2026-07-25 20:42:26.554181304 -0500
+@@ -7,6 +7,12 @@
+ #include "node_options.h"
+ #include "util-inl.h"
+ 
++#if defined(__AROS__)
++#include <proto/node-v8.h>
++
++#include <vector>
++#endif
++
+ #if HAVE_OPENSSL
+ #include "ncrypto.h"  // Ensure OPENSSL_IS_BORINGSSL is defined if applicable
+ #endif
+@@ -24,7 +30,20 @@
+ void GetDefaultLocale(const FunctionCallbackInfo<Value>& args) {
+   Isolate* isolate = args.GetIsolate();
+   Local<Context> context = isolate->GetCurrentContext();
++#if defined(__AROS__)
++  std::string locale;
++  IPTR locale_length = NodeV8GetDefaultLocale(isolate, nullptr, 0);
++  if (locale_length > 0) {
++    std::vector<char> locale_buffer(static_cast<size_t>(locale_length) + 1);
++    if (NodeV8GetDefaultLocale(
++            isolate, locale_buffer.data(), locale_buffer.size()) !=
++        static_cast<IPTR>(-1)) {
++      locale.assign(locale_buffer.data(), static_cast<size_t>(locale_length));
++    }
++  }
++#else
+   std::string locale = isolate->GetDefaultLocale();
++#endif
+   Local<Value> result;
+   if (ToV8Value(context, locale).ToLocal(&result)) {
+     args.GetReturnValue().Set(result);
+--- node-v22.23.1/src/node_constants.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_constants.cc	2026-08-10 06:56:45.834427004 -0500
+@@ -43,7 +43,7 @@
+ #endif  // !OPENSSL_NO_ENGINE
+ #endif  // HAVE_OPENSSL
+ 
+-#if defined(__POSIX__)
++#if defined(__POSIX__) && !defined(__AROS__)
+ #include <dlfcn.h>
+ #endif
+ 
+@@ -61,6 +61,10 @@
+ #include <csignal>
+ #include <limits>
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ namespace node {
+ 
+ using v8::Context;
+@@ -1280,111 +1284,243 @@
+                                 Local<Value> unused,
+                                 Local<Context> context,
+                                 void* priv) {
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] CreatePerContextProperties begin target=%p context=%p\n",
++          *target,
++          *context);
++#endif
+   Isolate* isolate = context->GetIsolate();
+   Environment* env = Environment::GetCurrent(context);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] env=%p isolate=%p\n", env, isolate);
++#endif
+ 
+   CHECK(target->SetPrototype(env->context(), Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] target prototype set\n");
++#endif
+ 
+   Local<Object> os_constants = Object::New(isolate);
+   CHECK(os_constants->SetPrototype(env->context(),
+                                    Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] os object ready\n");
++#endif
+ 
+   Local<Object> err_constants = Object::New(isolate);
+   CHECK(err_constants->SetPrototype(env->context(),
+                                     Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] errno object ready\n");
++#endif
+ 
+   Local<Object> sig_constants = Object::New(isolate);
+   CHECK(sig_constants->SetPrototype(env->context(),
+                                     Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] signal object ready\n");
++#endif
+ 
+   Local<Object> priority_constants = Object::New(isolate);
+   CHECK(priority_constants->SetPrototype(env->context(),
+                                          Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] priority object ready\n");
++#endif
+ 
+   Local<Object> fs_constants = Object::New(isolate);
+   CHECK(fs_constants->SetPrototype(env->context(),
+                                    Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] fs object ready\n");
++#endif
+ 
+   Local<Object> crypto_constants = Object::New(isolate);
+   CHECK(crypto_constants->SetPrototype(env->context(),
+                                        Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] crypto object ready\n");
++#endif
+ 
+   Local<Object> zlib_constants = Object::New(isolate);
+   CHECK(zlib_constants->SetPrototype(env->context(),
+                                      Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] zlib object ready\n");
++#endif
+ 
+   Local<Object> dlopen_constants = Object::New(isolate);
+   CHECK(dlopen_constants->SetPrototype(env->context(),
+                                        Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] dlopen object ready\n");
++#endif
+ 
+   Local<Object> trace_constants = Object::New(isolate);
+   CHECK(trace_constants->SetPrototype(env->context(),
+                                       Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] trace object ready\n");
++#endif
+ 
+   Local<Object> internal_constants = Object::New(isolate);
+   CHECK(internal_constants->SetPrototype(env->context(),
+                                          Null(env->isolate())).FromJust());
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] internal object ready\n");
++#endif
+ 
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineErrnoConstants enter\n");
++#endif
+   DefineErrnoConstants(err_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineErrnoConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefineWindowsErrorConstants enter\n");
++#endif
+   DefineWindowsErrorConstants(err_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineWindowsErrorConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefineSignalConstants enter\n");
++#endif
+   DefineSignalConstants(sig_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineSignalConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefinePriorityConstants enter\n");
++#endif
+   DefinePriorityConstants(priority_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefinePriorityConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefineFsConstants enter\n");
++#endif
+   DefineFsConstants(fs_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineFsConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefineCryptoConstants enter\n");
++#endif
+   DefineCryptoConstants(crypto_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineCryptoConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefineZlibConstants enter\n");
++#endif
+   DefineZlibConstants(zlib_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineZlibConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefineDLOpenConstants enter\n");
++#endif
+   DefineDLOpenConstants(dlopen_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineDLOpenConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefineTraceConstants enter\n");
++#endif
+   DefineTraceConstants(trace_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineTraceConstants leave\n");
++  kprintf("[NodeConstants:AROS] DefineInternalConstants enter\n");
++#endif
+   DefineInternalConstants(internal_constants);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] DefineInternalConstants leave\n");
++#endif
+ 
+   // Define libuv constants.
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] define UV_UDP_REUSEADDR enter\n");
++#endif
+   NODE_DEFINE_CONSTANT(os_constants, UV_UDP_REUSEADDR);
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] define UV_UDP_REUSEADDR leave\n");
++#endif
+ 
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export os.dlopen enter\n");
++#endif
+   os_constants
+       ->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(isolate, "dlopen"),
+             dlopen_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export os.dlopen leave\n");
++  kprintf("[NodeConstants:AROS] export os.errno enter\n");
++#endif
+   os_constants
+       ->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(isolate, "errno"),
+             err_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export os.errno leave\n");
++  kprintf("[NodeConstants:AROS] export os.signals enter\n");
++#endif
+   os_constants
+       ->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(isolate, "signals"),
+             sig_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export os.signals leave\n");
++  kprintf("[NodeConstants:AROS] export os.priority enter\n");
++#endif
+   os_constants
+       ->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(isolate, "priority"),
+             priority_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export os.priority leave\n");
++  kprintf("[NodeConstants:AROS] export target.os enter\n");
++#endif
+   target
+       ->Set(env->context(), FIXED_ONE_BYTE_STRING(isolate, "os"), os_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export target.os leave\n");
++  kprintf("[NodeConstants:AROS] export target.fs enter\n");
++#endif
+   target
+       ->Set(env->context(), FIXED_ONE_BYTE_STRING(isolate, "fs"), fs_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export target.fs leave\n");
++  kprintf("[NodeConstants:AROS] export target.crypto enter\n");
++#endif
+   target
+       ->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(isolate, "crypto"),
+             crypto_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export target.crypto leave\n");
++  kprintf("[NodeConstants:AROS] export target.zlib enter\n");
++#endif
+   target
+       ->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(isolate, "zlib"),
+             zlib_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export target.zlib leave\n");
++  kprintf("[NodeConstants:AROS] export target.trace enter\n");
++#endif
+   target
+       ->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(isolate, "trace"),
+             trace_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export target.trace leave\n");
++  kprintf("[NodeConstants:AROS] export target.internal enter\n");
++#endif
+   target
+       ->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(isolate, "internal"),
+             internal_constants)
+       .Check();
++#ifdef __AROS__
++  kprintf("[NodeConstants:AROS] export target.internal leave\n");
++  kprintf("[NodeConstants:AROS] CreatePerContextProperties end\n");
++#endif
+ }
+ 
+ }  // namespace constants
+--- node-v22.23.1/src/node_credentials.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_credentials.cc	2026-08-01 22:43:07.224254278 -0500
+@@ -12,6 +12,9 @@
+ #if !defined(_MSC_VER)
+ #include <unistd.h>  // setuid, getuid
+ #endif
++#ifdef __AROS__
++#include <proto/usergroup.h>  // setgroups(), initgroups()
++#endif
+ #ifdef __linux__
+ #include <dlfcn.h>  // dlsym()
+ #include <linux/capability.h>
+@@ -133,6 +136,19 @@
+     return;
+   }
+ 
++#ifdef __AROS__
++  // POSIXC may expose the native T: assignment as /T, /T/, or /T:/... .
++  // Returning that spelling to Node callers eventually sends it back to DOS,
++  // where it is interpreted as a request for a volume literally named "/T".
++  if (dir == "/T" || dir == "/T/") {
++    dir = "T:";
++  } else if (dir.starts_with("/T:/")) {
++    dir.erase(0, 1);
++  } else if (dir.starts_with("/T/")) {
++    dir.replace(0, 3, "T:");
++  }
++#endif
++
+   if (dir.size() > 1 && dir.ends_with("/")) {
+     dir.pop_back();
+   }
+--- node-v22.23.1/src/node_errors.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_errors.cc	2026-07-26 00:11:50.373843075 -0500
+@@ -3,6 +3,10 @@
+ #include <filesystem>
+ #include <sstream>
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ #include "debug_utils-inl.h"
+ #include "node_errors.h"
+ #include "node_external_reference.h"
+@@ -435,6 +439,16 @@
+   CHECK(!message.IsEmpty());
+   HandleScope scope(isolate);
+ 
++#ifdef __AROS__
++  {
++    node::Utf8Value detail(
++        isolate,
++        error->ToDetailString(env->context()).FromMaybe(Local<String>()));
++    kprintf("[Node:EXCEPTION] %s\n",
++            detail.length() > 0 ? detail.ToString().c_str() : "(unprintable)");
++  }
++#endif
++
+   AppendExceptionLine(env, error, message, FATAL_ERROR);
+ 
+   auto report_to_inspector = [&]() {
+@@ -570,6 +584,11 @@
+ }
+ 
+ [[noreturn]] void OnFatalError(const char* location, const char* message) {
++#ifdef __AROS__
++  kprintf("[Node:FATAL] location=%s message=%s\n",
++          location != nullptr ? location : "(null)",
++          message != nullptr ? message : "(null)");
++#endif
+   if (location) {
+     FPrintF(stderr, "FATAL ERROR: %s %s\n", location, message);
+   } else {
+--- node-v22.23.1/src/node_internals.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_internals.h	2026-08-10 05:58:17.445687692 -0500
+@@ -143,8 +143,16 @@
+   std::atomic<size_t> total_mem_usage_ {0};
+ 
+   // Delegate to V8's allocator for compatibility with the V8 memory cage.
++  // The AROS hosted bringup uses the plain C allocator here because creating
++  // V8's default ArrayBuffer allocator currently trips the hosted TLSF heap
++  // during Electron's owned-main bootstrap.
+   std::unique_ptr<v8::ArrayBuffer::Allocator> allocator_{
+-      v8::ArrayBuffer::Allocator::NewDefaultAllocator()};
++#if defined(__AROS__)
++      nullptr
++#else
++      v8::ArrayBuffer::Allocator::NewDefaultAllocator()
++#endif
++  };
+ };
+ 
+ class DebuggingArrayBufferAllocator final : public NodeArrayBufferAllocator {
+--- node-v22.23.1/src/node_main.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_main.cc	2026-07-25 22:33:51.711257693 -0500
+@@ -22,6 +22,10 @@
+ #include "node.h"
+ #include <cstdio>
+ 
++#ifdef __AROS__
++#include <aros/debug.h>
++#endif
++
+ #ifdef _WIN32
+ #include <windows.h>
+ #include <VersionHelpers.h>
+@@ -94,6 +98,11 @@
+ // UNIX
+ 
+ int main(int argc, char* argv[]) {
++#ifdef __AROS__
++  bug("[Node] main enter argc=%d\n", argc);
++#endif
++  fprintf(stderr, "NODE_MAIN_ENTER argc=%d\n", argc);
++  fflush(stderr);
+   return node::Start(argc, argv);
+ }
+ #endif
+--- node-v22.23.1/src/node_main_instance.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_main_instance.cc	2026-07-26 10:31:59.645901219 -0500
+@@ -22,6 +22,13 @@
+ #include "inspector/worker_inspector.h"  // ParentInspectorHandle
+ #endif
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#define NODE_MAIN_TRACE(...) kprintf("[NodeMain] " __VA_ARGS__)
++#else
++#define NODE_MAIN_TRACE(...) ((void) 0)
++#endif
++
+ namespace node {
+ 
+ using v8::Context;
+@@ -87,6 +94,7 @@
+ }
+ 
+ ExitCode NodeMainInstance::Run() {
++  NODE_MAIN_TRACE("Run enter\n");
+   Locker locker(isolate_);
+   Isolate::Scope isolate_scope(isolate_);
+   HandleScope handle_scope(isolate_);
+@@ -94,21 +102,46 @@
+   ExitCode exit_code = ExitCode::kNoFailure;
+   DeleteFnPtr<Environment, FreeEnvironment> env =
+       CreateMainEnvironment(&exit_code);
++  NODE_MAIN_TRACE("CreateMainEnvironment env=%p exit=%d\n",
++                  env.get(),
++                  static_cast<int>(exit_code));
+   CHECK_NOT_NULL(env);
+ 
++#ifdef __AROS__
++  SetProcessExitHandler(
++      env.get(), [&exit_code](Environment* exit_env, int requested_exit_code) {
++        exit_code = static_cast<ExitCode>(requested_exit_code);
++        Stop(exit_env, StopFlags::kDoNotTerminateIsolate);
++      });
++#endif
++
+   Context::Scope context_scope(env->context());
+   Run(&exit_code, env.get());
++  NODE_MAIN_TRACE("Run leave exit=%d\n", static_cast<int>(exit_code));
+   return exit_code;
+ }
+ 
+ void NodeMainInstance::Run(ExitCode* exit_code, Environment* env) {
+   if (*exit_code == ExitCode::kNoFailure) {
+     if (!sea::MaybeLoadSingleExecutableApplication(env)) {
+-      LoadEnvironment(env, StartExecutionCallback{});
++      NODE_MAIN_TRACE("LoadEnvironment enter\n");
++      auto load_result = LoadEnvironment(env, StartExecutionCallback{});
++      NODE_MAIN_TRACE("LoadEnvironment leave empty=%d\n",
++                      load_result.IsEmpty() ? 1 : 0);
+     }
+ 
+-    *exit_code =
+-        SpinEventLoopInternal(env).FromMaybe(ExitCode::kGenericUserError);
++    NODE_MAIN_TRACE("SpinEventLoop enter\n");
++    auto loop_result = SpinEventLoopInternal(env);
++    NODE_MAIN_TRACE("SpinEventLoop leave nothing=%d\n",
++                    loop_result.IsNothing() ? 1 : 0);
++    if (loop_result.IsJust()) {
++      *exit_code = loop_result.FromJust();
++    } else if (!env->is_stopping()) {
++      *exit_code = ExitCode::kGenericUserError;
++    } else {
++      NODE_MAIN_TRACE("SpinEventLoop preserved requested exit=%d\n",
++                      static_cast<int>(*exit_code));
++    }
+   }
+ 
+ #if defined(LEAK_SANITIZER)
+--- node-v22.23.1/src/node_messaging.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_messaging.cc	2026-08-10 07:00:00.775705210 -0500
+@@ -8,8 +8,13 @@
+ #include "node_errors.h"
+ #include "node_external_reference.h"
+ #include "node_process-inl.h"
++#include "node_realm-inl.h"
+ #include "util-inl.h"
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ using node::contextify::ContextifyContext;
+ using node::errors::TryCatchScope;
+ using v8::Array;
+@@ -1577,6 +1582,21 @@
+ static void SetDeserializerCreateObjectFunction(
+     const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
++#ifdef __AROS__
++  Realm* realm = Realm::GetCurrent(args);
++  kprintf("[NodeMessaging:AROS] SetDeserializerCreateObjectFunction env=%p realm=%p argc=%d arg0_is_function=%d\n",
++          env,
++          realm,
++          args.Length(),
++          args.Length() > 0 && args[0]->IsFunction());
++  CHECK(args[0]->IsFunction());
++  if (realm != nullptr) {
++    realm->set_messaging_deserialize_create_object(args[0].As<Function>());
++    kprintf("[NodeMessaging:AROS] SetDeserializerCreateObjectFunction stored via realm\n");
++    return;
++  }
++  kprintf("[NodeMessaging:AROS] SetDeserializerCreateObjectFunction falling back to env principal realm\n");
++#endif
+   CHECK(args[0]->IsFunction());
+   env->set_messaging_deserialize_create_object(args[0].As<Function>());
+ }
+--- node-v22.23.1/src/node_options-inl.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_options-inl.h	2026-07-26 13:44:33.690650459 -0500
+@@ -7,6 +7,10 @@
+ #include "node_options.h"
+ #include "util.h"
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char*, ...);
++#endif
++
+ namespace node {
+ 
+ PerIsolateOptions* PerProcessOptions::get_per_isolate_options() {
+--- node-v22.23.1/src/node_platform.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_platform.cc	2026-08-10 05:49:47.903665267 -0500
+@@ -231,6 +231,15 @@
+ WorkerThreadsTaskRunner::WorkerThreadsTaskRunner(
+     int thread_pool_size, PlatformDebugLogLevel debug_log_level)
+     : debug_log_level_(debug_log_level) {
++#if defined(__AROS__)
++  fprintf(stderr,
++          "[NodePlatform:AROS] foreground-only worker runner requested=%d\n",
++          thread_pool_size);
++  fflush(stderr);
++  (void) thread_pool_size;
++  return;
++#endif
++
+   Mutex platform_workers_mutex;
+   ConditionVariable platform_workers_ready;
+ 
+@@ -265,19 +274,40 @@
+ }
+ 
+ void WorkerThreadsTaskRunner::PostTask(std::unique_ptr<Task> task) {
++#if defined(__AROS__)
++  if (threads_.empty()) {
++    task->Run();
++    return;
++  }
++#endif
+   pending_worker_tasks_.Lock().Push(std::move(task));
+ }
+ 
+ void WorkerThreadsTaskRunner::PostDelayedTask(std::unique_ptr<Task> task,
+                                               double delay_in_seconds) {
++#if defined(__AROS__)
++  if (threads_.empty()) {
++    (void) delay_in_seconds;
++    task->Run();
++    return;
++  }
++#endif
+   delayed_task_scheduler_->PostDelayedTask(std::move(task), delay_in_seconds);
+ }
+ 
+ void WorkerThreadsTaskRunner::BlockingDrain() {
++#if defined(__AROS__)
++  if (threads_.empty())
++    return;
++#endif
+   pending_worker_tasks_.Lock().BlockingDrain();
+ }
+ 
+ void WorkerThreadsTaskRunner::Shutdown() {
++#if defined(__AROS__)
++  if (threads_.empty())
++    return;
++#endif
+   pending_worker_tasks_.Lock().Stop();
+   delayed_task_scheduler_->Stop();
+   for (size_t i = 0; i < threads_.size(); i++) {
+@@ -286,6 +316,10 @@
+ }
+ 
+ int WorkerThreadsTaskRunner::NumberOfWorkerThreads() const {
++#if defined(__AROS__)
++  if (threads_.empty())
++    return 1;
++#endif
+   return threads_.size();
+ }
+ 
+@@ -437,6 +471,13 @@
+   DCHECK_EQ(GetTracingController(), tracing_controller_);
+ 
+   thread_pool_size = GetActualThreadPoolSize(thread_pool_size);
++#if defined(__AROS__)
++  fprintf(stderr,
++          "[NodePlatform:AROS] foreground-only platform requested=%d\n",
++          thread_pool_size);
++  fflush(stderr);
++  return;
++#endif
+   worker_thread_task_runner_ = std::make_shared<WorkerThreadsTaskRunner>(
+       thread_pool_size, debug_log_level_);
+ }
+@@ -491,6 +532,13 @@
+ void NodePlatform::Shutdown() {
+   if (has_shut_down_) return;
+   has_shut_down_ = true;
++#if defined(__AROS__)
++  if (!worker_thread_task_runner_) {
++    Mutex::ScopedLock lock(per_isolate_mutex_);
++    per_isolate_.clear();
++    return;
++  }
++#endif
+   worker_thread_task_runner_->Shutdown();
+ 
+   {
+@@ -500,6 +548,10 @@
+ }
+ 
+ int NodePlatform::NumberOfWorkerThreads() {
++#if defined(__AROS__)
++  if (!worker_thread_task_runner_)
++    return 1;
++#endif
+   return worker_thread_task_runner_->NumberOfWorkerThreads();
+ }
+ 
+@@ -547,6 +599,9 @@
+ 
+   do {
+     // Worker tasks aren't associated with an Isolate.
++#if defined(__AROS__)
++    if (worker_thread_task_runner_)
++#endif
+     worker_thread_task_runner_->BlockingDrain();
+   } while (per_isolate->FlushForegroundTasksInternal());
+ }
+@@ -614,6 +669,12 @@
+     }
+     fflush(stderr);
+   }
++#if defined(__AROS__)
++  if (!worker_thread_task_runner_) {
++    task->Run();
++    return;
++  }
++#endif
+   worker_thread_task_runner_->PostTask(std::move(task));
+ }
+ 
+@@ -634,6 +695,13 @@
+     }
+     fflush(stderr);
+   }
++#if defined(__AROS__)
++  if (!worker_thread_task_runner_) {
++    (void) delay_in_seconds;
++    task->Run();
++    return;
++  }
++#endif
+   worker_thread_task_runner_->PostDelayedTask(std::move(task),
+                                               delay_in_seconds);
+ }
+--- node-v22.23.1/src/node_process_object.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_process_object.cc	2026-07-25 20:49:46.332402453 -0500
+@@ -75,7 +75,7 @@
+ 
+ static void GetParentProcessId(Local<Name> property,
+                                const PropertyCallbackInfo<Value>& info) {
+-  info.GetReturnValue().Set(uv_os_getppid());
++  info.GetReturnValue().Set(static_cast<int32_t>(uv_os_getppid()));
+ }
+ 
+ static void SetVersions(Isolate* isolate, Local<Object> versions) {
+--- node-v22.23.1/src/node_report.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_report.cc	2026-07-25 20:50:18.920197447 -0500
+@@ -15,8 +15,10 @@
+ #else  // !_WIN32
+ #include <cxxabi.h>
+ #include <sys/resource.h>
++#if !defined(__AROS__)
+ #include <dlfcn.h>
+ #endif
++#endif
+ 
+ #include <cstring>
+ #include <ctime>
+@@ -273,14 +275,14 @@
+   writer->json_keyvalue("nodejsVersion", buf.str());
+   buf.str("");
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__AROS__)
+   // Report compiler and runtime glibc versions where possible.
+   const char* (*libc_version)();
+   *(reinterpret_cast<void**>(&libc_version)) =
+       dlsym(RTLD_DEFAULT, "gnu_get_libc_version");
+   if (libc_version != nullptr)
+     writer->json_keyvalue("glibcVersionRuntime", (*libc_version)());
+-#endif /* _WIN32 */
++#endif /* !_WIN32 && !__AROS__ */
+ 
+ #ifdef __GLIBC__
+   buf << __GLIBC__ << "." << __GLIBC_MINOR__;
+@@ -734,16 +736,16 @@
+     {"core_file_size_blocks", RLIMIT_CORE},
+     {"data_seg_size_bytes", RLIMIT_DATA},
+     {"file_size_blocks", RLIMIT_FSIZE},
+-#if !(defined(_AIX) || defined(__sun))
++#if !(defined(_AIX) || defined(__sun) || defined(__AROS__))
+     {"max_locked_memory_bytes", RLIMIT_MEMLOCK},
+ #endif
+-#ifndef __sun
++#if !defined(__sun) && !defined(__AROS__)
+     {"max_memory_size_bytes", RLIMIT_RSS},
+ #endif
+     {"open_files", RLIMIT_NOFILE},
+     {"stack_size_bytes", RLIMIT_STACK},
+     {"cpu_time_seconds", RLIMIT_CPU},
+-#ifndef __sun
++#if !defined(__sun) && !defined(__AROS__)
+     {"max_user_processes", RLIMIT_NPROC},
+ #endif
+ #ifndef __OpenBSD__
+--- node-v22.23.1/src/node_sockaddr-inl.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_sockaddr-inl.h	2026-07-25 20:49:46.328402479 -0500
+@@ -31,7 +31,11 @@
+ 
+ bool SocketAddress::is_numeric_host(const char* hostname, int family) {
+   in6_addr dst;
++#if defined(__AROS__)
++  return uv_inet_pton(family, hostname, &dst) == 0;
++#else
+   return inet_pton(family, hostname, &dst) == 1;
++#endif
+ }
+ 
+ int SocketAddress::GetPort(const sockaddr* addr) {
+--- node-v22.23.1/src/node_sqlite.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_sqlite.cc	2026-07-30 19:01:25.796244693 -0500
+@@ -1785,6 +1785,13 @@
+ }
+ 
+ void DatabaseSync::LoadExtension(const FunctionCallbackInfo<Value>& args) {
++#ifdef __AROS__
++  Environment* env = Environment::GetCurrent(args);
++  return THROW_ERR_DLOPEN_DISABLED(
++      env,
++      "Cannot load SQLite extensions because dynamic loading is unavailable "
++      "on AROS.");
++#else
+   DatabaseSync* db;
+   ASSIGN_OR_RETURN_UNWRAP(&db, args.This());
+   Environment* env = Environment::GetCurrent(args);
+@@ -1818,6 +1825,7 @@
+   if (r != SQLITE_OK) {
+     isolate->ThrowException(ERR_LOAD_SQLITE_EXTENSION(isolate, errmsg));
+   }
++#endif
+ }
+ 
+ StatementSync::StatementSync(Environment* env,
+--- node-v22.23.1/src/node_symbols.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_symbols.cc	2026-08-10 06:45:37.449316465 -0500
+@@ -2,6 +2,10 @@
+ #include "node_binding.h"
+ #include "util.h"
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ namespace node {
+ 
+ using v8::Context;
+@@ -16,6 +20,20 @@
+                        Local<Context> context,
+                        void* priv) {
+   Environment* env = Environment::GetCurrent(context);
++#ifdef __AROS__
++  kprintf("[NodeSymbols:AROS] Initialize begin\n");
++#define V(PropertyName, StringValue)                                           \
++  do {                                                                         \
++    target                                                                     \
++        ->Set(env->context(),                                                  \
++              FIXED_ONE_BYTE_STRING(env->isolate(), StringValue),              \
++              env->PropertyName())                                             \
++        .Check();                                                              \
++  } while (0);
++  PER_ISOLATE_SYMBOL_PROPERTIES(V)
++#undef V
++  kprintf("[NodeSymbols:AROS] Initialize end\n");
++#else
+ #define V(PropertyName, StringValue)                                           \
+   target                                                                       \
+       ->Set(env->context(),                                                    \
+@@ -24,6 +42,7 @@
+       .Check();
+   PER_ISOLATE_SYMBOL_PROPERTIES(V)
+ #undef V
++#endif
+ }
+ 
+ }  // namespace symbols
+--- node-v22.23.1/src/node_task_queue.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_task_queue.cc	2026-08-10 06:52:33.328790113 -0500
+@@ -10,6 +10,10 @@
+ 
+ #include <atomic>
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ namespace node {
+ 
+ using errors::TryCatchScope;
+@@ -160,27 +164,65 @@
+                        Local<Value> unused,
+                        Local<Context> context,
+                        void* priv) {
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] Initialize begin target=%p\n", *target);
++#endif
+   Environment* env = Environment::GetCurrent(context);
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] Environment::GetCurrent env=%p\n", env);
++#endif
+   Isolate* isolate = env->isolate();
+ 
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] SetMethod enqueueMicrotask begin\n");
++#endif
+   SetMethod(context, target, "enqueueMicrotask", EnqueueMicrotask);
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] SetMethod enqueueMicrotask end\n");
++  kprintf("[NodeTaskQueue:AROS] SetMethod setTickCallback begin\n");
++#endif
+   SetMethod(context, target, "setTickCallback", SetTickCallback);
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] SetMethod setTickCallback end\n");
++  kprintf("[NodeTaskQueue:AROS] SetMethod runMicrotasks begin\n");
++#endif
+   SetMethod(context, target, "runMicrotasks", RunMicrotasks);
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] SetMethod runMicrotasks end\n");
++  kprintf("[NodeTaskQueue:AROS] export tickInfo begin\n");
++#endif
+   target->Set(env->context(),
+               FIXED_ONE_BYTE_STRING(isolate, "tickInfo"),
+               env->tick_info()->fields().GetJSArray()).Check();
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] export tickInfo end\n");
++  kprintf("[NodeTaskQueue:AROS] create promiseRejectEvents begin\n");
++#endif
+ 
+   Local<Object> events = Object::New(isolate);
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] define promise constants begin\n");
++#endif
+   NODE_DEFINE_CONSTANT(events, kPromiseRejectWithNoHandler);
+   NODE_DEFINE_CONSTANT(events, kPromiseHandlerAddedAfterReject);
+   NODE_DEFINE_CONSTANT(events, kPromiseResolveAfterResolved);
+   NODE_DEFINE_CONSTANT(events, kPromiseRejectAfterResolved);
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] define promise constants end\n");
++#endif
+ 
+   target->Set(env->context(),
+               FIXED_ONE_BYTE_STRING(isolate, "promiseRejectEvents"),
+               events).Check();
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] export promiseRejectEvents end\n");
++  kprintf("[NodeTaskQueue:AROS] SetMethod setPromiseRejectCallback begin\n");
++#endif
+   SetMethod(
+       context, target, "setPromiseRejectCallback", SetPromiseRejectCallback);
++#ifdef __AROS__
++  kprintf("[NodeTaskQueue:AROS] Initialize end\n");
++#endif
+ }
+ 
+ void RegisterExternalReferences(ExternalReferenceRegistry* registry) {
+--- node-v22.23.1/src/node_trace_events.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_trace_events.cc	2026-08-10 07:05:40.887830199 -0500
+@@ -4,10 +4,15 @@
+ #include "node.h"
+ #include "node_external_reference.h"
+ #include "node_internals.h"
++#include "node_realm-inl.h"
+ #include "node_v8_platform-inl.h"
+ #include "tracing/agent.h"
+ #include "util-inl.h"
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ #include <set>
+ #include <string>
+ 
+@@ -120,7 +125,16 @@
+     const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
+   CHECK(args[0]->IsFunction());
++#ifdef __AROS__
++  Realm* realm = Realm::GetCurrent(args);
++  kprintf("[TraceEvents:AROS] SetTraceCategoryStateUpdateHandler env=%p realm=%p\n",
++          env,
++          realm);
++  CHECK_NOT_NULL(realm);
++  realm->set_trace_category_state_function(args[0].As<Function>());
++#else
+   env->set_trace_category_state_function(args[0].As<Function>());
++#endif
+ }
+ 
+ static void GetCategoryEnabledBuffer(const FunctionCallbackInfo<Value>& args) {
+--- node-v22.23.1/src/node_url.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_url.cc	2026-07-26 08:55:46.470058735 -0500
+@@ -122,7 +122,19 @@
+ enum class OS { WINDOWS, POSIX };
+ 
+ std::string EncodePathChars(std::string_view input_str, OS operating_system) {
++#ifdef __AROS__
++  /*
++   * AROS absolute paths use a volume prefix (for example "System:lib/node")
++   * rather than a leading slash.  "file://" would make the volume name a URL
++   * host, so retain an empty host with the third slash.
++   */
++  const bool aros_volume_path =
++      operating_system == OS::POSIX && !input_str.empty() &&
++      input_str.front() != '/' && input_str.find(':') != std::string_view::npos;
++  std::string encoded = aros_volume_path ? "file:///" : "file://";
++#else
+   std::string encoded = "file://";
++#endif
+   encoded.reserve(input_str.size() +
+                   7);  // Reserve space for "file://" and input_str
+   for (size_t i : input_str) {
+@@ -665,7 +677,20 @@
+     }
+   }
+ 
+-  return ada::unicode::percent_decode(pathname, first_percent);
++  std::string decoded_pathname =
++      ada::unicode::percent_decode(pathname, first_percent);
++#ifdef __AROS__
++  if (decoded_pathname.size() > 2 && decoded_pathname.front() == '/') {
++    size_t volume_end = decoded_pathname.find(':', 1);
++    size_t first_separator = decoded_pathname.find('/', 1);
++    if (volume_end > 1 &&
++        (first_separator == std::string::npos ||
++         volume_end < first_separator)) {
++      decoded_pathname.erase(0, 1);
++    }
++  }
++#endif
++  return decoded_pathname;
+ #endif  // _WIN32
+ }
+ 
+--- node-v22.23.1/src/node_v8.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_v8.cc	2026-08-10 06:42:35.641650956 -0500
+@@ -29,6 +29,10 @@
+ #include "util-inl.h"
+ #include "v8.h"
+ 
++#ifdef __AROS__
++extern "C" int kprintf(const char* format, ...);
++#endif
++
+ namespace node {
+ namespace v8_utils {
+ using v8::Array;
+@@ -224,6 +228,16 @@
+ 
+ void UpdateHeapCodeStatisticsBuffer(const FunctionCallbackInfo<Value>& args) {
+   BindingData* data = Realm::GetBindingData<BindingData>(args);
++#ifdef __AROS__
++  kprintf("[NodeV8:AROS] updateHeapCodeStatisticsBuffer bypass\n");
++  {
++    AliasedFloat64Array& buffer = data->heap_code_statistics_buffer;
++#define V(index, name, _) buffer[index] = 0.0;
++    HEAP_CODE_STATISTICS_PROPERTIES(V)
++#undef V
++  }
++  return;
++#endif
+   HeapCodeStatistics s;
+   args.GetIsolate()->GetHeapCodeAndMetadataStatistics(&s);
+   AliasedFloat64Array& buffer = data->heap_code_statistics_buffer;
+--- node-v22.23.1/src/util.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/util.cc	2026-07-25 20:57:02.845662270 -0500
+@@ -323,7 +323,8 @@
+ #else  // UNIX, macOS
+   struct timeval time_val;
+   gettimeofday(&time_val, nullptr);
+-  localtime_r(&time_val.tv_sec, tm_struct);
++  time_t seconds = static_cast<time_t>(time_val.tv_sec);
++  localtime_r(&seconds, tm_struct);
+ #endif
+ }
+ 
