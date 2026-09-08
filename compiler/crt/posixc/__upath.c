@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <errno.h>
 
@@ -139,6 +140,11 @@ int __path_volume_exists(const char *path)
         return 1;
 
     if (strcmp(volume, "PROGDIR") == 0)
+        return 1;
+
+    /* NIL: is resolved inside dos.library and never appears on the DosList
+       (the /dev/null translation in __path_u2a lands here). */
+    if (strcasecmp(volume, "NIL") == 0)
         return 1;
 
     entry = LockDosList(LDF_ALL | LDF_READ);
