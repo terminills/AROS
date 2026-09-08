@@ -1,0 +1,86 @@
+#
+# node.library -- native AROS resident Node 22 runtime.
+#
+# Node is first built as the proven static target with bundled V8 and libuv
+# disabled.  This module engulfs Node's own archive and static support
+# archives, while keeping uv1.library, node-v8.library and v8.library external.
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+NODE_BUILD_ROOT ?= $(SRCDIR)/../node-aros-hosted-build/node-v22.23.1
+NODE_RELEASE := $(NODE_BUILD_ROOT)/out/Release
+NODE_OBJ := $(NODE_RELEASE)/obj.target
+NODE_ARCHIVE := $(NODE_OBJ)/libnode.a
+NODE_TEXT_START := $(NODE_OBJ)/node_text_start/src/large_pages/node_text_start.o
+NODE_SNAPSHOT_STUB := $(NODE_OBJ)/node/src/node_snapshot_stub.o
+
+NODE_SUPPORT_ARCHIVES := \
+    $(NODE_OBJ)/node_v8_abi/libnode-v8-abi.a \
+    $(NODE_OBJ)/uv1_abi/libuv1-abi.a \
+    $(NODE_OBJ)/node_absl_compat/libnode-absl-compat.a \
+    $(NODE_OBJ)/deps/histogram/libhistogram.a \
+    $(NODE_OBJ)/deps/llhttp/libllhttp.a \
+    $(NODE_OBJ)/deps/cares/libcares.a \
+    $(NODE_OBJ)/deps/uvwasi/libuvwasi.a \
+    $(NODE_OBJ)/deps/nghttp2/libnghttp2.a \
+    $(NODE_OBJ)/deps/ada/libada.a \
+    $(NODE_OBJ)/deps/simdjson/libsimdjson.a \
+    $(NODE_OBJ)/deps/simdutf/libsimdutf.a \
+    $(NODE_OBJ)/deps/brotli/libbrotli.a \
+    $(NODE_OBJ)/deps/sqlite/libsqlite.a \
+    $(NODE_OBJ)/deps/zstd/libzstd.a \
+    $(NODE_OBJ)/deps/openssl/libopenssl.a \
+    $(NODE_OBJ)/deps/inspector_protocol/libcrdtp.a \
+    $(NODE_OBJ)/deps/ncrypto/libncrypto.a \
+    $(NODE_OBJ)/deps/nbytes/libnbytes.a \
+    $(NODE_OBJ)/tools/v8_gypfiles/libabseil.a
+
+NODE_INPUTS := $(NODE_ARCHIVE) $(NODE_SNAPSHOT_STUB) $(NODE_SUPPORT_ARCHIVES)
+
+USER_CXXFLAGS := -std=gnu++20 -fno-pic -fno-PIE \
+    -fno-exceptions -fno-rtti -fno-strict-aliasing
+USER_INCLUDES := -I$(NODE_BUILD_ROOT)/src \
+    -I$(NODE_BUILD_ROOT)/deps/v8/include \
+    -I$(NODE_BUILD_ROOT)/deps/uv/include
+USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
+    $(NODE_TEXT_START) \
+    $(NODE_SNAPSHOT_STUB) \
+    -Wl,--start-group \
+    -Wl,--whole-archive $(NODE_ARCHIVE) -Wl,--no-whole-archive \
+    $(NODE_SUPPORT_ARCHIVES) \
+    -Wl,--end-group
+
+NODE_USELIBS := z1 uv1 usergroup node-v8 v8 \
+    stdc++ stdc stdcio posixc pthread m atomic debug dos exec
+
+NODE_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
+
+#MM workbench-libs-node-public-includes
+%copy_includes mmake=workbench-libs-node-public-includes \
+    path=libraries dir=include/libraries includes=$(NODE_PUBLIC_INCLUDES)
+
+#MM workbench-libs-node-archive-check
+workbench-libs-node-archive-check:
+	@test -f "$(NODE_ARCHIVE)" || { \
+	    $(ECHO) "Missing Node archive: $(NODE_ARCHIVE)"; \
+	    $(ECHO) "Build the external-V8/shared-uv Node 22 target first."; \
+	    exit 1; \
+	}
+	@test -f "$(NODE_TEXT_START)" || { \
+	    $(ECHO) "Missing Node text-start object: $(NODE_TEXT_START)"; \
+	    exit 1; \
+	}
+
+#MM workbench-libs-node : workbench-libs-node-archive-check \
+#MM     workbench-libs-node-public-includes workbench-libs-node-v8 \
+#MM     workbench-libs-uv workbench-libs-v8
+%build_module mmake=workbench-libs-node \
+    modname=node modtype=library \
+    conffile=node.conf \
+    cxxfiles=node_bridge \
+    uselibs="$(NODE_USELIBS)"
+
+$(AROSDIR)/Libs/node.library: $(NODE_TEXT_START) $(NODE_INPUTS)
+
+%common
