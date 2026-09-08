@@ -1108,28 +1108,47 @@ void * tlsf_allocabs(struct MemHeaderExt * mhe, IPTR size, void * ptr)
                     /* begin of the block != begin of the block header of requested region? */
                     if (b0 != breg)
                     {
+                        IPTR head_size = (IPTR)breg - (IPTR)b0->mem;
+
                         /*
-                         Adjust region's block header. Mark in size that previous (aka b0) is free.
-                         Reduce the size of b0 as well as size of breg too.
+                         Adjust region's block header. Reduce the size of b0 as well as
+                         size of breg too.
                          */
                         breg->header.prev = b0;
-                        SET_SIZE_AND_FLAGS(breg, GET_SIZE(b0)-((IPTR)breg - (IPTR)b0), PREV_FREE | THIS_BUSY);
+                        SET_SIZE_AND_FLAGS(breg, GET_SIZE(b0)-((IPTR)breg - (IPTR)b0), THIS_BUSY);
 
                         /* Update the next block. Mark in size that previous (breg) is used */
                         b1->header.prev = breg;
                         SET_BUSY_PREV_BLOCK(b1);
 
-                        /* b0's prev state is keept. b0 itself is marked as free block */
-                        SET_FREE_BLOCK(b0);
-                        SET_SIZE(b0, (IPTR)breg - (IPTR)b0->mem);
+                        SET_SIZE(b0, head_size);
 
-                        /* Insert b0 to free list */
-                        MAPPING_INSERT(GET_SIZE(b0), &fl, &sl);
-                        INSERT_FREE_BLOCK(mhe, tlsf, b0);
+                        if (head_size >= sizeof(free_node_t))
+                        {
+                            /* b0's prev state is keept. b0 itself is marked as free block */
+                            SET_FREE_BLOCK(b0);
+                            SET_FREE_PREV_BLOCK(breg);
+
+                            /* Insert b0 to free list */
+                            MAPPING_INSERT(GET_SIZE(b0), &fl, &sl);
+                            INSERT_FREE_BLOCK(mhe, tlsf, b0);
+                        }
+                        /*
+                         Otherwise the gap in front of the requested region is only the
+                         header b0 itself: a free block needs room for its free_node, and
+                         inserting one here would write that node over breg's header.
+                         Keep b0 as an empty busy block (SET_BUSY_BLOCK above) so neither
+                         neighbour ever merges into it.
+                         */
                     }
 
-                    /* Is it necessary to split the requested region at the end? */
-                    if ((SIZE_ALIGN + GET_SIZE(breg)) > region_size)
+                    /*
+                     Is it necessary to split the requested region at the end? Only if the
+                     remainder can hold a block header plus a free block, as tlsf_malloc
+                     does; an exact fit (the AllocAbs-back-what-was-freed idiom) must not
+                     split, or the remainder size underflows and its header lands on b1.
+                     */
+                    if (GET_SIZE(breg) > region_size + SIZE_ALIGN)
                     {
                         IPTR tmp_size = GET_SIZE(breg) - region_size - SIZE_ALIGN;
 
