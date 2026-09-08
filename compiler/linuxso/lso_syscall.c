@@ -428,8 +428,8 @@ long lso_syscall(long nr, long a1, long a2, long a3, long a4, long a5, long a6)
         break;
     }
     case SYS_munmap:    r = ret_or_errno(lx_munmap((void *)a1, (size_t)a2)); break;
-    case SYS_mprotect:  r = 0; break;
-    case SYS_madvise:   r = 0; break;
+    case SYS_mprotect:  r = ret_or_errno(lx_mprotect((void *)a1, (size_t)a2, (int)a3)); break;
+    case SYS_madvise:   r = ret_or_errno(lx_madvise((void *)a1, (size_t)a2, (int)a3)); break;
     case SYS_brk:       r = -LX_ENOMEM; break;
     case SYS_rt_sigaction:
     case SYS_rt_sigprocmask:
