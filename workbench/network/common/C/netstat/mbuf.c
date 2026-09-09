@@ -77,7 +77,13 @@ static struct mbtypes {
 	{ 0, 0 }
 };
 
-int nmbtypes = sizeof(mbstat.m_mtypes) / sizeof(short);
+/*
+ * 4.4BSD's mbstat carried short m_mtypes[256]; this stack sizes the array by
+ * MTCOUNT instead, so derive the bound from the array itself.  Dividing by
+ * sizeof(short) gave 16 here and the "!= 256" check below then refused to
+ * print anything at all - "netstat -m" was dead on AROS.
+ */
+int nmbtypes = sizeof(mbstat.m_mtypes) / sizeof(mbstat.m_mtypes[0]);
 bool seen[256];			/* "have we seen this type yet?" */
 
 /*
@@ -91,10 +97,13 @@ mbpr(mbaddr)
 	register int i;
 	register struct mbtypes *mp;
 
-	if (nmbtypes != 256) {
-		warnx("unexpected change to mbstat; check source");
-		return;
-	}
+	/* What the old "!= 256" test was really guarding: every type named in
+	 * mbtypes[] has to be a valid index into mbstat.m_mtypes[]. */
+	for (mp = mbtypes; mp->mt_name; mp++)
+		if (mp->mt_type < 0 || mp->mt_type >= nmbtypes) {
+			warnx("unexpected change to mbstat; check source");
+			return;
+		}
 	if (mbaddr == 0) {
 		warnx("mbstat: symbol not in namelist");
 		return;
@@ -122,7 +131,8 @@ mbpr(mbaddr)
 	totmem = totmbufs * MSIZE + mbstat.m_clusters * MCLBYTES;
 	totfree = mbstat.m_clfree * MCLBYTES;
 	printf("%u Kbytes allocated to network (%d%% in use)\n",
-		totmem / 1024, (totmem - totfree) * 100 / totmem);
+		totmem / 1024,
+		totmem ? (totmem - totfree) * 100 / totmem : 0);
 	printf("%u requests for memory denied\n", mbstat.m_drops);
 	printf("%u requests for memory delayed\n", mbstat.m_wait);
 	printf("%u calls to protocol drain routines\n", mbstat.m_drain);
