@@ -1,0 +1,35 @@
+; $VER: AROSTCP-netautoconf 1.0 (9.9.2026)
+; AROSTCP-netautoconf (c) The AROS Dev Team.
+;
+; Build a usable configuration in ENV: when the machine has none.
+;
+; Nothing populates ENVARC:AROSTCP on a fresh install, and a Live CD has no
+; writable ENVARC: at all, so ${AROSTCP/AutoRun} is empty and the stack never
+; starts - the system comes up with a browser and no network. ENV: is RAM on
+; every AROS system, so a configuration written here works on read-only media
+; too; it simply does not survive a reboot, which is what Prefs/Network and
+; ENVARC: are for.
+;
+; Only called when ENV:AROSTCP/Config does not exist, so a machine configured
+; through Prefs/Network keeps its own settings.
+;
+If NOT EXISTS ENV:AROSTCP
+  MakeDir >NIL: ENV:AROSTCP
+EndIf
+If NOT EXISTS ENV:AROSTCP/db
+  MakeDir >NIL: ENV:AROSTCP/db
+EndIf
+
+; The shipped db carries hosts/protocols/services and friends but no
+; interfaces file - that is the one netdetect writes.
+Copy >NIL: SYS:System/Network/AROSTCP/db ENV:AROSTCP/db ALL QUIET NOREQ
+
+netdetect INTERFACES ENV:AROSTCP/db/interfaces IFNAME eth0 QUIET
+
+If NOT WARN
+  ; SetEnv, not Echo: Echo appends a newline, and Package-Startup's
+  ; ${AROSTCP/AutoRun} eq "True" then compares against "True\n" and never
+  ; matches - the config looks right on disk and the stack still never starts.
+  SetEnv AROSTCP/Config "ENV:AROSTCP/db"
+  SetEnv AROSTCP/AutoRun "True"
+EndIf
