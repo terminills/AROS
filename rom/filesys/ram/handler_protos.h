@@ -112,6 +112,10 @@ struct Lock *LockObject(struct Handler *handler,
 BOOL ExamineObject(struct Handler *handler, struct Object *object,
    struct FileInfoBlock *info);
 VOID AdjustExaminations(struct Handler *handler, struct Object *object);
+struct Object *LockedObject(struct Handler *handler, struct Lock *lock);
+BOOL ValidObject(struct Handler *handler, struct Object *object);
+BOOL ValidExamination(struct Handler *handler, struct Examination *examination);
+BOOL ValidOpening(struct Handler *handler, struct Opening *opening);
 BOOL SetName(struct Handler *handler, struct Object *object,
    const TEXT *name);
 UPINT GetBlockLength(struct Object *file, struct Block *block);

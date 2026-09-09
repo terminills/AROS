@@ -513,6 +513,14 @@ BOOL CmdEnd(struct Handler *handler, struct Opening *opening)
    struct Lock *lock;
    LONG error = 0;
 
+   /* The opening arrives in the caller's FileHandle (fh_Arg1); a stale or
+      foreign one must fail the packet, not fault the handler. */
+   if(!ValidOpening(handler, opening))
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return FALSE;
+   }
+
    /* Close file and update its date and flags */
 
    file = opening->file;
@@ -581,6 +589,14 @@ UPINT CmdRead(struct Handler *handler, struct Opening *opening, UBYTE *buffer, U
    LONG error = 0;
    struct Object *file;
 
+   /* The opening arrives in the caller's FileHandle (fh_Arg1); a stale or
+      foreign one must fail the packet, not fault the handler. */
+   if(!ValidOpening(handler, opening))
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return 0;
+   }
+
    /* Read file if it isn't read protected */
 
    file = opening->file;
@@ -640,6 +656,14 @@ UPINT CmdWrite(struct Handler *handler, struct Opening *opening,
    LONG error = 0;
    struct Object *file;
    struct Lock *lock;
+
+   /* The opening arrives in the caller's FileHandle (fh_Arg1); a stale or
+      foreign one must fail the packet, not fault the handler. */
+   if(!ValidOpening(handler, opening))
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return 0;
+   }
 
    /* Write to file if it isn't write protected */
 
@@ -705,6 +729,14 @@ UPINT CmdSeek(struct Handler *handler, struct Opening *opening, PINT offset, LON
    struct Block *block;
    struct Object *file;
    UPINT block_pos, block_length, remainder, old_pos, new_pos;
+
+   /* The opening arrives in the caller's FileHandle (fh_Arg1); a stale or
+      foreign one must fail the packet, not fault the handler. */
+   if(!ValidOpening(handler, opening))
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return -1;
+   }
 
    /* Get starting point */
 
@@ -816,6 +848,14 @@ PINT CmdSetFileSize(struct Handler *handler, struct Opening *opening,
    LONG error = 0, new_size;
    struct Object *file;
    struct Lock *lock;
+
+   /* The opening arrives in the caller's FileHandle (fh_Arg1); a stale or
+      foreign one must fail the packet, not fault the handler. */
+   if(!ValidOpening(handler, opening))
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return -1;
+   }
 
    /* Change file size if it's open for writing */
 
@@ -989,11 +1029,17 @@ BOOL CmdFreeLock(struct Handler *handler, struct Lock *lock)
 
 struct Lock *CmdCopyDir(struct Handler *handler, struct Lock *lock)
 {
-   lock = FIXLOCK(handler, lock);
-   lock = LockObject(handler, (APTR)((struct FileLock *)lock)->fl_Key,
-      ACCESS_READ);
+   struct Object *object;
 
-   return lock;
+   lock = FIXLOCK(handler, lock);
+   object = LockedObject(handler, lock);
+   if(object == NULL)
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return NULL;
+   }
+
+   return LockObject(handler, object, ACCESS_READ);
 }
 
 
@@ -1069,7 +1115,16 @@ struct Lock *CmdParent(struct Handler *handler, struct Lock *lock)
 
    lock = FIXLOCK(handler, lock);
 
-   parent = ((struct Object *)((struct FileLock *)lock)->fl_Key)->parent;
+   {
+      struct Object *object = LockedObject(handler, lock);
+
+      if(object == NULL)
+      {
+         SetIoErr(ERROR_INVALID_LOCK);
+         return NULL;
+      }
+      parent = object->parent;
+   }
    if(parent != NULL)
    {
       lock = LockObject(handler, parent, ACCESS_READ);
@@ -1281,9 +1336,17 @@ struct Lock *CmdCreateDir(struct Handler *handler,
 BOOL CmdExamineObject(struct Handler *handler, struct Lock *lock,
    struct FileInfoBlock *info)
 {
+   struct Object *object;
+
    lock = FIXLOCK(handler, lock);
-   return ExamineObject(handler, (APTR)((struct FileLock *)lock)->fl_Key,
-      info);
+   object = LockedObject(handler, lock);
+   if(object == NULL)
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return FALSE;
+   }
+
+   return ExamineObject(handler, object, info);
 }
 
 
@@ -1321,7 +1384,25 @@ BOOL CmdExamineObject(struct Handler *handler, struct Lock *lock,
 BOOL CmdExamineFH(struct Handler *handler, struct Opening *opening,
    struct FileInfoBlock *info)
 {
-   return ExamineObject(handler, opening->file, info);
+   struct Object *file;
+
+   /* The opening comes out of the caller's FileHandle (fh_Arg1). A stale one
+      - a handle used after it was closed, say - used to be dereferenced
+      blind, and the handler died on it instead of failing the packet. */
+   if(opening == NULL || TypeOfMem(opening) == 0)
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return FALSE;
+   }
+
+   file = opening->file;
+   if(!ValidObject(handler, file))
+   {
+      SetIoErr(ERROR_INVALID_LOCK);
+      return FALSE;
+   }
+
+   return ExamineObject(handler, file, info);
 }
 
 
@@ -1367,10 +1448,35 @@ BOOL CmdExamineNext(struct Handler *handler, struct FileInfoBlock *info)
       /* This is done only for ExNext calls, doing it for every Examine call would
          leave a growing list of abandoned and not freed examinations, as there is
          no quarantee that ExNext will be called after Examine */
+
+      /* fib_DiskKey is whatever the caller's FileInfoBlock happens to hold -
+         our own Examine() put an Object there, but a program that reuses,
+         copies or never filled the block hands us something else, and the
+         handler used to take it on trust and die dereferencing it. */
+      if(!ValidObject(handler, (struct Object *)info->fib_DiskKey))
+      {
+         info->fib_DiskKey = 0;
+         SetIoErr(ERROR_NO_MORE_ENTRIES);
+         return FALSE;
+      }
+
       examination = AllocPooled(handler->clear_pool, sizeof(struct Examination));
+      if(examination == NULL)
+      {
+         info->fib_DiskKey = 0;
+         SetIoErr(ERROR_NO_FREE_STORE);
+         return FALSE;
+      }
       AddTail((APTR)&handler->examinations, (APTR)examination);
       examination->next_object = (struct Object *)info->fib_DiskKey;
       info->fib_DiskKey = (IPTR)examination;
+   }
+   else if(!ValidExamination(handler, examination))
+   {
+      /* Continuation pointer from the caller's block, same story. */
+      info->fib_DiskKey = 0;
+      SetIoErr(ERROR_NO_MORE_ENTRIES);
+      return FALSE;
    }
 
    BOOL result = ExamineObject(handler, NULL, info);
@@ -1457,11 +1563,23 @@ BOOL CmdExamineAll(struct Handler *handler, struct Lock *lock,
 
    if(examination != NULL)
    {
+      /* eac_LastKey comes back from the caller's ExAllControl; only follow it
+         if it is a continuation we actually handed out. */
+      if(!ValidExamination(handler, examination))
+      {
+         SetIoErr(ERROR_NO_MORE_ENTRIES);
+         return FALSE;
+      }
       object = examination->next_object;
    }
    else
    {
-      object = (APTR)((struct FileLock *)lock)->fl_Key;
+      object = LockedObject(handler, lock);
+      if(object == NULL)
+      {
+         SetIoErr(ERROR_INVALID_LOCK);
+         return FALSE;
+      }
       object = (APTR)object->elements.mlh_Head;
    }
 

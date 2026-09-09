@@ -1139,6 +1139,143 @@ BOOL ExamineObject(struct Handler *handler, struct Object *object,
 
 
 
+/****i* ram.handler/LockedObject *******************************************
+*
+*   NAME
+*	LockedObject -- Validate a lock from a packet and return its object.
+*
+*   SYNOPSIS
+*	object = LockedObject(handler, lock)
+*
+*	struct Object *LockedObject(struct Handler *, struct Lock *);
+*
+*   FUNCTION
+*	A lock arrives in a DOS packet from another program, and the commands
+*	used to dereference its fl_Key with no checking at all. A stale or
+*	wild lock therefore faulted inside the handler itself - a privilege
+*	violation in StrSize() on a non-canonical name pointer - which takes
+*	the RAM disk down and with it every program using it. A filesystem
+*	has to fail such a packet, not die on it.
+*
+*	Every lock this handler issues satisfies fl_Task == our own port and
+*	object->lock == lock, because LockObject() keeps exactly one Lock per
+*	Object, so the round trip identifies a lock we really handed out.
+*	TypeOfMem() range-checks a pointer against the system memory list
+*	*without* dereferencing it, which is what makes it safe to apply to a
+*	pointer that is not trusted yet.
+*
+*   RESULT
+*	object - the locked object, or NULL if the lock is not ours. IoErr()
+*	         is not set; the caller decides which error suits it.
+*
+****************************************************************************
+*
+*/
+
+/* TRUE if <object> really is one of this handler's objects. Walks the parent
+   chain to the root, which is a genuine membership test rather than a guess,
+   and bounded so a corrupt chain cannot loop forever. TypeOfMem() is used at
+   every step because it range-checks an address against the system memory
+   list without dereferencing it - the pointer is not trusted yet. */
+BOOL ValidObject(struct Handler *handler, struct Object *object)
+{
+   UWORD depth;
+
+   for(depth = 0; depth < 256; depth++)
+   {
+      if(object == NULL || TypeOfMem(object) == 0)
+         return FALSE;
+      if(object == handler->root_dir)
+         return TRUE;
+      object = object->parent;
+   }
+
+   return FALSE;
+}
+
+
+/* TRUE if <opening> is a file this handler still has open. The opening comes
+   out of the caller's FileHandle (fh_Arg1), so a handle used after it was
+   closed - or never opened by us at all - reaches the handler as a pointer
+   into freed or foreign memory. Check the object first, then look the
+   opening up in that object's own list, which is a real membership test. */
+BOOL ValidOpening(struct Handler *handler, struct Opening *opening)
+{
+   struct Opening *node, *tail;
+   struct Object *file;
+   struct Lock *lock;
+
+   if(opening == NULL || TypeOfMem(opening) == 0)
+      return FALSE;
+
+   file = opening->file;
+   if(!ValidObject(handler, file))
+      return FALSE;
+
+   lock = GetRealObject(file)->lock;
+   if(lock == NULL || TypeOfMem(lock) == 0)
+      return FALSE;
+
+   node = (APTR)lock->openings.mlh_Head;
+   tail = (APTR)&lock->openings.mlh_Tail;
+
+   while(node != tail)
+   {
+      if(node == opening)
+         return TRUE;
+      node = (APTR)((struct MinNode *)node)->mln_Succ;
+   }
+
+   return FALSE;
+}
+
+
+/* TRUE if <examination> is an ExNext()/ExAll() continuation this handler
+   issued. It arrives from the caller's FileInfoBlock or ExAllControl, so it
+   is only ever as trustworthy as the program that passes it back. */
+BOOL ValidExamination(struct Handler *handler, struct Examination *examination)
+{
+   struct Examination *node, *tail;
+
+   if(examination == NULL || TypeOfMem(examination) == 0)
+      return FALSE;
+
+   node = (APTR)handler->examinations.mlh_Head;
+   tail = (APTR)&handler->examinations.mlh_Tail;
+
+   while(node != tail)
+   {
+      if(node == examination)
+         return TRUE;
+      node = (APTR)((struct MinNode *)node)->mln_Succ;
+   }
+
+   return FALSE;
+}
+
+
+struct Object *LockedObject(struct Handler *handler, struct Lock *lock)
+{
+   struct Object *object;
+
+   if(lock == NULL || TypeOfMem(lock) == 0)
+      return NULL;
+
+   if(((struct FileLock *)lock)->fl_Task != handler->proc_port)
+      return NULL;
+
+   object = (struct Object *)(PINT)((struct FileLock *)lock)->fl_Key;
+
+   if(object == NULL || TypeOfMem(object) == 0)
+      return NULL;
+
+   if(object->lock != lock)
+      return NULL;
+
+   return object;
+}
+
+
 /****i* ram.handler/AdjustExaminations *************************************
 *
 *   NAME
