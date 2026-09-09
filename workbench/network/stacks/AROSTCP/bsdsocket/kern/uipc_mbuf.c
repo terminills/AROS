@@ -242,12 +242,21 @@ mb_check_conf(void *dp, IPTR newvalue)
  * interface MTU and the memory currently available.
  *
  * A jumbo frame occupies several clusters, so for a comparable working set the
- * pool has to scale with the per-frame cluster count.  The requirement is
- * clamped to a fraction of free memory so a small machine is never
- * over-committed, and the cap is only ever raised - several interfaces simply
- * leave the largest requirement in force, and an explicit KW_MBUF_CONF value
- * that is already larger is preserved.  Called from each interface as it is
- * attached (and safe to call before or after mbinit()).
+ * pool has to scale with the per-frame cluster count.  The pool also scales
+ * with the size of the machine: the baseline is a 1990s figure, and a single
+ * modern connection can hold far more than that on its own.  For comparison,
+ * Linux sizes its equivalents from RAM at boot - tcp_mem (global) lands near
+ * 9% of RAM and one socket's receive buffer autotunes into the tens of
+ * megabytes - whereas this pool used to stay at MB_MAXMEM_BASE on every
+ * Ethernet machine, 128 MB or 12 GB alike.  A browser opens dozens of sockets
+ * against it, exhausts it, and every later send fails with ENOBUFS while the
+ * interface still reports UP.
+ *
+ * The requirement is clamped to a fraction of free memory so a small machine
+ * is never over-committed, and the cap is only ever raised - several
+ * interfaces simply leave the largest requirement in force, and an explicit
+ * KW_MBUF_CONF value that is already larger is preserved.  Called from each
+ * interface as it is attached (and safe to call before or after mbinit()).
  */
 #if defined(__mc68000__)
 #define MB_MAXMEM_BASE  1024		/* matches the mbconf default above */
@@ -256,11 +265,17 @@ mb_check_conf(void *dp, IPTR newvalue)
 #endif
 #define MB_STD_MTU      1500		/* standard Ethernet payload */
 #define MB_MEM_DIVISOR  8		/* use at most 1/8 of free RAM for clusters */
+#define MB_RAM_DIVISOR  64		/* aim for 1/64 of RAM before that cap */
+#if defined(__mc68000__)
+#define MB_MAXMEM_CEIL  4096		/* 4 MB is already generous on m68k */
+#else
+#define MB_MAXMEM_CEIL  65536		/* never auto-size past 64 MB */
+#endif
 
 void
 mb_autosize(ULONG mtu)
 {
-    ULONG clusters_per_frame, want_kb, avail_kb, cap_kb;
+    ULONG clusters_per_frame, want_kb, avail_kb, cap_kb, ram_kb;
 
     if(mtu < MB_STD_MTU)
         mtu = MB_STD_MTU;
@@ -272,6 +287,17 @@ mb_autosize(ULONG mtu)
 
     /* scale the fixed baseline pool by the per-frame cluster count */
     want_kb = MB_MAXMEM_BASE * clusters_per_frame;
+
+    /*
+     * ...and by the size of the machine, so a large-memory system gets a pool
+     * a modern workload can actually use.  Bounded by MB_MAXMEM_CEIL: past
+     * that the stack is no longer the thing running out of memory.
+     */
+    ram_kb = (ULONG)(AvailMem(MEMF_ANY | MEMF_TOTAL) >> 10);
+    if(ram_kb / MB_RAM_DIVISOR > want_kb)
+        want_kb = ram_kb / MB_RAM_DIVISOR;
+    if(want_kb > MB_MAXMEM_CEIL)
+        want_kb = MB_MAXMEM_CEIL;
 
     /* never commit more than a fraction of the memory actually free */
     avail_kb = (ULONG)(AvailMem(MEMF_ANY) >> 10);
