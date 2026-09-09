@@ -198,8 +198,13 @@ extern "C" {
 #define MUIV_NList_Font_Little          ((IPTR)-21)
 #define MUIV_NList_Font_Fixed           ((IPTR)-22)
 
-#define MUIV_NList_ConstructHook_String  -1
-#define MUIV_NList_DestructHook_String   -1
+/* Pointer-sized: these reach NList through a tag list, and a bare -1 is an
+   int - a varargs caller then passes 0x00000000ffffffff on 64-bit while
+   NList compares against (IPTR)-1, so the sentinel is not recognised and
+   0xffffffff is called as a struct Hook *.  NListtree's equivalents and
+   MUIV_NList_Font already carry the cast for this reason. */
+#define MUIV_NList_ConstructHook_String  ((IPTR)-1)
+#define MUIV_NList_DestructHook_String   ((IPTR)-1)
 
 #define MUIV_NList_Active_Off            -1
 #define MUIV_NList_Active_Top            -2
@@ -329,9 +334,12 @@ extern "C" {
 #define MUIV_NList_DoMethod_Selected     -2
 #define MUIV_NList_DoMethod_All          -3
 
-#define MUIV_NList_DoMethod_Entry        -1
-#define MUIV_NList_DoMethod_Self         -2
-#define MUIV_NList_DoMethod_App          -3
+/* Pointer-sized for the same reason as the *Hook_String sentinels above:
+   these are passed as the DestObj of MUIM_NList_DoMethod and compared with
+   (IPTR) casts in NList_func.c. */
+#define MUIV_NList_DoMethod_Entry        ((IPTR)-1)
+#define MUIV_NList_DoMethod_Self         ((IPTR)-2)
+#define MUIV_NList_DoMethod_App          ((IPTR)-3)
 
 #define MUIV_NList_EntryValue             (MUIV_TriggerValue+0x100)
 #define MUIV_NList_EntryPosValue          (MUIV_TriggerValue+0x102)
