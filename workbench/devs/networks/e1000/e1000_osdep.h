@@ -336,6 +336,12 @@ struct e1000Unit {
 
     UWORD		    e1ku_PCIeCap;
     int                     e1ku_open_count;
+    /* The hardware bring-up in Open() (ring allocation, e1000func_configure,
+     * request_irq) must happen once for the unit, not once per opener:
+     * running it again on a live unit installs a second interrupt handler
+     * and the machine livelocks. Close() cannot undo it either - it has
+     * never stopped the unit - so this stays set for the unit's lifetime. */
+    BOOL                    e1ku_started;
     struct SignalSemaphore  e1ku_unit_lock;
     
     LONG                    e1ku_range_count;

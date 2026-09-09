@@ -346,7 +346,7 @@ static int GM_UNIQUENAME(Open)
 
         if (error != 0)
             CloseDevice((struct IORequest *)req);
-        else
+        else if (!unit->e1ku_started)
         {
             ULONG rx_ring_count, tx_ring_count;
             enum e1000_mac_type mac_type;
@@ -400,6 +400,9 @@ static int GM_UNIQUENAME(Open)
             {
                 D(bug("[%s] %s: IRQ Attached\n", unit->e1ku_name, __func__));
             }
+
+            if (error == 0)
+                unit->e1ku_started = TRUE;
         }
     }
     else
@@ -435,6 +438,24 @@ static int GM_UNIQUENAME(Close)
         Remove((struct Node *)opener);
         Enable();
         FreeVec(opener);
+    }
+
+    /* Open() counts every opener and refuses an exclusive open while the
+     * count is non-zero, but nothing ever counted back down: after any
+     * open/close cycle the unit stayed "in use" for the rest of the boot,
+     * and the next SANA2OPF_MINE open - or any open at all once the
+     * shared flag had been cleared - failed with IOERR_UNITBUSY. AROSTCP
+     * reports that as "Fatal error in NetDB file interfaces ... Memory
+     * exhausted" and quits, so probing the device once made it
+     * unconfigurable until reboot. */
+    if (unit != NULL)
+    {
+        Disable();
+        if (unit->e1ku_open_count > 0)
+            unit->e1ku_open_count--;
+        if (unit->e1ku_open_count == 0)
+            unit->e1ku_ifflags &= ~(IFF_SHARED | IFF_PROMISC);
+        Enable();
     }
 
     return TRUE;
