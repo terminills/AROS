@@ -329,6 +329,18 @@ VOID DeleteObject(struct Handler *handler, struct Object *object)
       object_type = ((struct Node *)object)->ln_Pri;
       real_object = GetRealObject(object);
 
+      /* Any ExAll() that was about to examine this object has to be moved on
+       * before the object is unlinked and its memory returned to the pool -
+       * otherwise the next ExAll() packet walks freed memory and reads a
+       * garbage ln_Name (seen as a privilege violation in StrSize() with a
+       * non-canonical pointer).  AttemptDeleteObject() already does this, but
+       * CreateObject()'s error path and CmdCreateDir()'s lock-failure path
+       * call us directly on an object that is already linked into its parent,
+       * so do it here where every deletion passes.  Calling it twice is
+       * harmless: the second pass finds no examination still pointing here. */
+      if(object->parent != NULL)
+         AdjustExaminations(handler, object);
+
       /* Remove the object from its directory */
 
       if(object->parent != NULL)

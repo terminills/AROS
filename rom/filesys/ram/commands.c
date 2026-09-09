@@ -1942,12 +1942,17 @@ BOOL CmdRenameObject(struct Handler *handler, struct Lock *old_lock,
    {
       if(object->parent != parent)
       {
-         /* Remove object from old parent and place it in new parent */
+         /* Remove object from old parent and place it in new parent.
+          * AdjustExaminations() must run BEFORE the move: it advances any
+          * in-flight ExAll() to object->ln_Succ, and once the object has been
+          * relinked into the new parent that successor belongs to the new
+          * directory - which would silently redirect a scan of the old
+          * directory into the new one. */
 
+         AdjustExaminations(handler, object);
          Remove((struct Node *)object);
          AddTail((struct List *)&parent->elements, (struct Node *)object);
          object->parent = parent;
-         AdjustExaminations(handler, object);
       }
 
       if(object != duplicate)
