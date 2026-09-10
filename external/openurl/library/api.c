@@ -379,6 +379,20 @@ LIBPROTO(URL_LaunchPrefsAppA, ULONG, REG(a6, UNUSED __BASE_OR_IFACE), REG(a0, UN
 
       #if defined(__amigaos4__)
       #define NP_STACKSIZE 48000
+      #elif defined(__AROS__)
+      // A modern browser needs orders of magnitude more stack than the classic
+      // ones this library was written for. Chromium will not reach main() on
+      // 16000 bytes - launched from a shell it needs "Stack 10485760" first,
+      // and from Workbench the icon's STACK tooltype supplies it. Neither
+      // applies here: SystemTags() creates the process with NP_StackSize, so
+      // whatever we pass is what the browser gets.
+      //
+      // The cost is real - this stack is allocated for the lifetime of every
+      // browser SystemTags() launches, including a lightweight one - but a
+      // system whose default browser is Chromium has to be able to start it,
+      // and a browser that fails to launch is worse than one that launches
+      // with more stack than it needs.
+      #define NP_STACKSIZE 10485760
       #else
       #define NP_STACKSIZE 16000
       #endif

@@ -170,6 +170,16 @@ void setDefaultPrefs(struct URL_Prefs *p)
   p->up_DefNewWindow    = DEF_DefNewWindow;
   p->up_DefLaunch       = DEF_DefLaunch;
 
+  // Browsers: Chromium
+  // First in the list, so it is the default on a system that ships it. It has
+  // no ARexx port, so the port/show/tofront/open fields are empty and every
+  // request goes through the launch command - which is what we want anyway:
+  // Chromium's own single-instance handling takes a URL on an existing
+  // instance rather than starting a second browser.
+  // NOTE: this only works because the launcher below asks for a stack big
+  // enough for Chromium; see NP_STACKSIZE in api.c.
+  addBrowser(p, "Chromium", "SYS:Applications/Internet/Chromium/Chromium \"%u\"", "", "", "", "", "");
+
   // Browsers: OWB
   addBrowser(p, "OWB", "OWB \"%u\"", "OWB", "", "SCREENTOFRONT", "OPENURL \"%u\"", "OPENURL \"%u\"");
 
