@@ -126,7 +126,16 @@ NODE_CONFIGURE_FLAGS := \
     --shared-zlib-includes=$(AROS_DEVELOPER)/include \
     --shared-zlib-libpath=$(AROS_DEVELOPER)/lib
 
-#MM workbench-libs-node-configure : node-fetch libuv-fetch workbench-libs-uv workbench-libs-z
+# node's own sources include proto/node-v8.h (node_config.cc, node_buffer.cc
+# and others), which %build_module generates from node-v8.conf under the
+# node-v8 -includes target. Without it the compile dies with
+#   fatal error: proto/node-v8.h: No such file or directory
+# because workbench-libs-node-v8-abi depends on workbench-libs-node-build, so
+# node-v8 otherwise runs strictly after the compile that needs its header.
+# It must be -includes, not -public-includes: the latter only copies
+# include/*.h into libraries/ and never emits a proto header.
+#MM workbench-libs-node-configure : node-fetch libuv-fetch workbench-libs-uv workbench-libs-z \
+#MM     workbench-libs-node-v8-includes
 workbench-libs-node-configure : $(NODE_OUT)/Makefile
 
 $(NODE_OUT)/Makefile :
@@ -141,12 +150,37 @@ $(NODE_OUT)/Makefile :
 # pulls in, the text-start object and the snapshot stub.  The node executable
 # target is not built; C:Node is workbench/libs/node/test/node_cli.c on top of
 # node.library.
+# Unsetting MAKEFLAGS/MAKEOVERRIDES/TARGET here is load-bearing, not tidiness.
+# mmake invokes us with TARGET=<mmake target> on its command line. Command-line
+# variables beat makefile assignments and propagate to every sub-make, and
+# node's GYP-generated node.target.mk does:
+#     TARGET := node
+#     ... $(obj).target/$(TARGET)/src/node_snapshot_stub.o
+# so the inherited TARGET overrides GYP's own and every object lands in
+# obj.target/workbench-libs-node-build/ instead of obj.target/node/. The stub
+# is then never built at the path the archive step below expects:
+#   make[2]: *** No rule to make target
+#            'Release/obj.target/node/src/node_snapshot_stub.o'.  Stop.
+#
+# Passing MAKEOVERRIDES= on the sub-make command line does NOT fix this - make
+# rebuilds MAKEOVERRIDES from the command-line assignments, so clearing it
+# there is self-defeating. The propagation travels in the environment, so the
+# environment is where it has to be cut. -j is restored explicitly because
+# dropping MAKEFLAGS drops it too. env's options must precede NODE_CROSS_ENV's
+# assignments: env stops parsing options at the first VAR=value.
+#
+# The stub is also asked for by its absolute path via $(NODE_SNAPSHOT_STUB).
+# GYP builds it as $(obj).target/$(TARGET)/... where obj := $(builddir)/obj is
+# absolute, and make matches targets by string - so requesting the relative
+# "Release/obj.target/node/src/node_snapshot_stub.o" matches no rule even
+# though it names the same file.
 #MM workbench-libs-node-build : workbench-libs-node-configure
 workbench-libs-node-build :
 	@$(ECHO) "Building   $(ARCHBASE) (libnode, node_text_start) ..."
-	$(Q)env $(NODE_CROSS_ENV) $(MAKE) -C $(NODE_OUT) BUILDTYPE=Release \
+	$(Q)env -u MAKEFLAGS -u MAKEOVERRIDES -u TARGET $(NODE_CROSS_ENV) \
+	    $(MAKE) -C $(NODE_OUT) -j$$(nproc) BUILDTYPE=Release \
 	    libnode node_text_start \
-	    Release/obj.target/node/src/node_snapshot_stub.o
+	    $(NODE_SNAPSHOT_STUB)
 
 #------------------------------------------------------------------------------
 # Generated support archives.
@@ -175,15 +209,19 @@ NODE_TARGET_AS := env $(NODE_CROSS_ENV) $(AROS_TARGET_CPU)-aros-gcc
 # stays out of v8.library.
 NODE_ABSL_COMPAT_SRC := $(SRCDIR)/workbench/libs/node-v8/nodev8abslcompat.cc
 NODE_ABSL_COMPAT_OBJ := $(NODE_OBJ)/node_absl_compat/nodev8abslcompat.o
+# -DABSL_HAVE_MMAP is rejected by current Abseil; the shim sets it after
+# config.h has run. See workbench/libs/node-v8/abslmmapshim.h.
+NODE_ABSL_COMPAT_SHIM := $(SRCDIR)/workbench/libs/node-v8/abslmmapshim.h
 
 #MM workbench-libs-node-absl-compat : workbench-libs-node-build
 workbench-libs-node-absl-compat : $(NODE_ABSL_COMPAT_ARCHIVE)
 
-$(NODE_ABSL_COMPAT_OBJ) : $(NODE_ABSL_COMPAT_SRC) $(NODE_ARCHIVE)
+$(NODE_ABSL_COMPAT_OBJ) : $(NODE_ABSL_COMPAT_SRC) $(NODE_ABSL_COMPAT_SHIM) $(NODE_ARCHIVE)
 	@$(ECHO) "Compiling  $(notdir $<) ..."
 	$(Q)$(MKDIR) $(dir $@)
-	$(Q)$(NODE_TARGET_CXX) -DABSL_HAVE_MMAP \
+	$(Q)$(NODE_TARGET_CXX) \
 	    -I$(NODE_BUILD_ROOT)/deps/v8/third_party/abseil-cpp \
+	    -include $(NODE_ABSL_COMPAT_SHIM) \
 	    -c $< -o $@
 
 $(NODE_ABSL_COMPAT_ARCHIVE) : $(NODE_ABSL_COMPAT_OBJ)
