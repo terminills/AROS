@@ -14,7 +14,24 @@
 
 #include "node_libdefs.h"
 
+/*
+ * Diagnostics.
+ *
+ * kprintf() lives in the kernel's debug output path and pulls in
+ * _arosdebuglock, which no linklib in a non-debug tree defines - node.library
+ * then fails to link with a single undefined symbol after everything else has
+ * built. Route the bridge's diagnostics through NodeBridgeLog() instead, which
+ * is a no-op unless the library is built with -DNODE_AROS_BRIDGE_DEBUG.
+ *
+ * These are error and lifecycle messages rather than hot-path logging, so
+ * turning them on costs nothing but a debug-capable tree.
+ */
+#ifdef NODE_AROS_BRIDGE_DEBUG
 extern "C" int kprintf(const char *format, ...);
+#define NodeBridgeLog(...) kprintf(__VA_ARGS__)
+#else
+#define NodeBridgeLog(...) ((void)0)
+#endif
 extern "C" int getentropy(void *buffer, size_t length);
 
 /*
@@ -179,7 +196,7 @@ static void NodeCleanupFailedAttach()
       NodeEmbedLoop = nullptr;
       NodeEmbedLoopInitialized = false;
     } else {
-      kprintf("[NodeEmbed] failed-attach uv_loop_close rc=%d\n", loop_rc);
+      NodeBridgeLog("[NodeEmbed] failed-attach uv_loop_close rc=%d\n", loop_rc);
     }
   }
 }
@@ -242,7 +259,7 @@ static LONG NodeAttachV8Context(v8::Isolate *isolate,
             NodeEmbedEnvironment, reinterpret_cast<const char *>(script))
             .IsEmpty()) {
       v8::String::Utf8Value exception(isolate, try_catch.Exception());
-      kprintf("[NodeEmbed] startup exception: %s\n",
+      NodeBridgeLog("[NodeEmbed] startup exception: %s\n",
               *exception != nullptr ? *exception : "<unavailable>");
       auto stack_trace_fn = reinterpret_cast<NodeV8TryCatchStackTraceFn>(
           NodeV8ResolveEngineSymbol(
@@ -251,7 +268,7 @@ static LONG NodeAttachV8Context(v8::Isolate *isolate,
       if (stack_trace_fn != nullptr &&
           stack_trace_fn(&try_catch, context).ToLocal(&stack_trace)) {
         v8::String::Utf8Value stack(isolate, stack_trace);
-        kprintf("[NodeEmbed] startup stack: %s\n",
+        NodeBridgeLog("[NodeEmbed] startup stack: %s\n",
                 *stack != nullptr ? *stack : "<unavailable>");
       }
       goto fail;
@@ -260,7 +277,7 @@ static LONG NodeAttachV8Context(v8::Isolate *isolate,
 
   NodeEmbedIsolate = isolate;
   NodeEmbedContext = new v8::Global<v8::Context>(isolate, context);
-  kprintf("[NodeEmbed] attached isolate=%p context=%p env=%p\n",
+  NodeBridgeLog("[NodeEmbed] attached isolate=%p context=%p env=%p\n",
           isolate,
           *context,
           NodeEmbedEnvironment);
@@ -286,7 +303,7 @@ static void NodeTraceOpenUvHandle(uv_handle_t *handle, void *arg)
   (void)arg;
   uv_handle_type type = handle->type;
 
-  kprintf("[NodeLibrary] uv handle=%p type=%d active=%d closing=%d\n",
+  NodeBridgeLog("[NodeLibrary] uv handle=%p type=%d active=%d closing=%d\n",
           handle,
           static_cast<int>(type),
           uv_is_active(handle),
@@ -317,7 +334,7 @@ AROS_LH2(LONG, NodeStart,
   int loop_rc = uv_loop_close(loop);
 
   if (loop_rc != 0) {
-    kprintf("[NodeLibrary] uv_loop_close failed rc=%d; open handles follow\n",
+    NodeBridgeLog("[NodeLibrary] uv_loop_close failed rc=%d; open handles follow\n",
             loop_rc);
     uv_walk(loop, NodeTraceOpenUvHandle, nullptr);
   }
@@ -367,14 +384,14 @@ AROS_LH0(LONG, NodePrepareEmbedder,
   if (!NodeEmbedInitialization)
     return 20;
   for (const std::string& error : NodeEmbedInitialization->errors())
-    kprintf("[NodeEmbed] initialize: %s\n", error.c_str());
+    NodeBridgeLog("[NodeEmbed] initialize: %s\n", error.c_str());
   if (NodeEmbedInitialization->early_return()) {
     LONG rc = NodeEmbedInitialization->exit_code();
     NodeEmbedInitialization.reset();
     return rc != 0 ? rc : 20;
   }
 
-  kprintf("[NodeEmbed] process state prepared without V8 ownership\n");
+  NodeBridgeLog("[NodeEmbed] process state prepared without V8 ownership\n");
   return 0;
   AROS_LIBFUNC_EXIT
 }
@@ -470,7 +487,7 @@ AROS_LH0(void, NodeDetachEmbedder,
     if (NodeEmbedLoopInitialized) {
       int loop_rc = uv_loop_close(NodeEmbedLoop);
       if (loop_rc != 0)
-        kprintf("[NodeEmbed] uv_loop_close rc=%d\n", loop_rc);
+        NodeBridgeLog("[NodeEmbed] uv_loop_close rc=%d\n", loop_rc);
       else {
         std::free(NodeEmbedLoop);
         NodeEmbedLoop = nullptr;
@@ -490,7 +507,7 @@ AROS_LH0(void, NodeDetachEmbedder,
   NodeEmbedArrayBufferAllocator = nullptr;
   NodeEmbedOwnsIsolate = false;
   NodeEmbedIsolate = nullptr;
-  kprintf("[NodeEmbed] detached environment owned_isolate=%d\n",
+  NodeBridgeLog("[NodeEmbed] detached environment owned_isolate=%d\n",
           owned_isolate ? 1 : 0);
   AROS_LIBFUNC_EXIT
 }
@@ -609,7 +626,7 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
    * owned isolate.
    */
   if (V8Initialize() == nullptr) {
-    kprintf("[NodeEmbed] shared v8.library platform initialization failed\n");
+    NodeBridgeLog("[NodeEmbed] shared v8.library platform initialization failed\n");
     return 20;
   }
 
@@ -632,7 +649,7 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
   NodeEmbedPlatform = node::MultiIsolatePlatform::Create(node_pool_size);
   if (!NodeEmbedPlatform)
     return 20;
-  kprintf("[NodeEmbed] platform workers configured=%ld browser=%d node=%d\n",
+  NodeBridgeLog("[NodeEmbed] platform workers configured=%ld browser=%d node=%d\n",
           NodeEmbedConfiguredWorkerThreads,
           browser_platform != nullptr
               ? browser_platform->NumberOfWorkerThreads() : -1,
@@ -710,7 +727,7 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
     return result;
   }
   NodeEmbedOwnsIsolate = true;
-  kprintf("[NodeEmbed] owns dedicated embedder isolate=%p\n", isolate);
+  NodeBridgeLog("[NodeEmbed] owns dedicated embedder isolate=%p\n", isolate);
   return 0;
   AROS_LIBFUNC_EXIT
 }
