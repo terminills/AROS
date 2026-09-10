@@ -39,6 +39,7 @@ BASEFILES := \
 
 MIAMIFILES := \
     hostname \
+    nettest \
     ifconfig \
     logger \
     ping \
