@@ -26,8 +26,12 @@
 #include <dos/dosextens.h>
 #include <dos/rdargs.h>
 
+#include <oop/oop.h>
+#include <hidd/pci.h>
+
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <proto/oop.h>
 
 #include <string.h>
 
@@ -195,6 +199,177 @@ static BOOL WriteInterfaces(CONST_STRPTR file, CONST_STRPTR ifname,
 
 /* First usable device in DEVS:Networks, or NULL. The name is copied into
    <found>. */
+/* ------------------------------------------------------------------------
+   PCI-based detection.
+
+   Opening a card to find out whether it is there costs more than it looks:
+   e1000's Close() does not stop the unit (its own FIXME), so a probe's
+   open/close cycle consumes the driver's one-time bring-up and the stack that
+   opens afterwards inherits an unconfigured unit and moves no traffic.
+
+   The card can be identified without touching the driver at all. Every AROS
+   network driver finds its own hardware by enumerating PCI and matching
+   vendor/product IDs; do the same here and map the match to the driver that
+   claims it. No OpenDevice, so nothing is consumed and AROSTCP remains the
+   card's first opener.
+
+   A product of 0 matches any device from that vendor whose PCI class says
+   network controller, which is what lets one entry cover a whole family. -->
+   ------------------------------------------------------------------------ */
+
+struct NicMatch
+{
+    UWORD vendor;
+    UWORD product;      /* 0 = any network-class device from this vendor */
+    CONST_STRPTR driver;
+};
+
+static const struct NicMatch nic_table[] =
+{
+    { 0x10ec, 0x8139, "rtl8139.device"     },  /* Realtek 8139 (QEMU rtl8139) */
+    { 0x10ec, 0x8136, "rtl816x.device"     },  /* Realtek 8101E/8102E */
+    { 0x10ec, 0x8167, "rtl816x.device"     },
+    { 0x10ec, 0x8168, "rtl816x.device"     },  /* Realtek 8111/8168 */
+    { 0x10ec, 0x8169, "rtl816x.device"     },
+    { 0x1022, 0x2000, "pcnet32.device"     },  /* AMD PCnet (QEMU pcnet) */
+    { 0x1106, 0x3106, "rhine.device"       },  /* VIA Rhine */
+    { 0x1039, 0x0900, "sis900.device"      },  /* SiS 900 */
+    { 0x14e4, 0x4401, "broadcom4400.device"},  /* Broadcom 440x */
+    { 0x14e4, 0x4400, "broadcom4400.device"},
+    { 0x10b7, 0x0000, "etherlink3.device"  },  /* 3Com */
+    { 0x10de, 0x0000, "nvidianet.device"   },  /* nForce */
+    { 0x8086, 0x1229, "intelpro100.device" },  /* Intel PRO/100 */
+    { 0x8086, 0x0000, "e1000.device"       },  /* Intel gigabit (QEMU e1000) */
+    { 0x0000, 0x0000, NULL                 }
+};
+
+struct PciScan
+{
+    OOP_AttrBase   devattr;
+    CONST_STRPTR   driver;      /* set when a match is found */
+    UWORD          vendor;
+    UWORD          product;
+};
+
+AROS_UFH3(void, NicEnumerator,
+    AROS_UFHA(struct Hook *,  hook,      A0),
+    AROS_UFHA(OOP_Object *,   pciDevice, A2),
+    AROS_UFHA(APTR,           message,   A1))
+{
+    AROS_USERFUNC_INIT
+
+    struct PciScan *scan = (struct PciScan *)hook->h_Data;
+    IPTR vendor = 0, product = 0;
+    int i;
+
+    /* No early return: AROS_USERFUNC_EXIT closes the function's scope, so it
+       has to appear exactly once, at the end. First match wins. */
+    if (scan->driver == NULL)
+    {
+        OOP_GetAttr(pciDevice, scan->devattr + aoHidd_PCIDevice_VendorID, &vendor);
+        OOP_GetAttr(pciDevice, scan->devattr + aoHidd_PCIDevice_ProductID, &product);
+
+        for (i = 0; nic_table[i].driver != NULL; i++)
+        {
+            if (nic_table[i].vendor != (UWORD)vendor)
+                continue;
+            if (nic_table[i].product != 0 && nic_table[i].product != (UWORD)product)
+                continue;
+
+            scan->driver  = nic_table[i].driver;
+            scan->vendor  = (UWORD)vendor;
+            scan->product = (UWORD)product;
+            break;
+        }
+    }
+
+    AROS_USERFUNC_EXIT
+}
+
+/* Returns TRUE and fills `found` when a known NIC is present in PCI and its
+   driver exists in DEVS:Networks. */
+static BOOL FindDeviceByPCI(STRPTR found, ULONG size, BOOL quiet)
+{
+    struct Library *OOPBase;
+    OOP_Object *pci;
+    struct PciScan scan = { 0, NULL, 0, 0 };
+    BOOL got = FALSE;
+
+    OOPBase = OpenLibrary("oop.library", 0);
+    if (OOPBase == NULL)
+    {
+        if (!quiet)
+            PutStr("netdetect: no oop.library\n");
+        return FALSE;
+    }
+
+    scan.devattr = OOP_ObtainAttrBase(IID_Hidd_PCIDevice);
+    if (scan.devattr != 0)
+    {
+        pci = OOP_NewObject(NULL, CLID_Hidd_PCI, NULL);
+        if (pci != NULL)
+        {
+            struct Hook FindHook;
+            /* Class 0x02 is "network controller"; restricting the enumeration
+               keeps us away from every other device on the bus. */
+            struct TagItem reqs[] =
+            {
+                { tHidd_PCI_Class, 0x02 },
+                { TAG_DONE,        0    }
+            };
+
+            memset(&FindHook, 0, sizeof(FindHook));
+            FindHook.h_Entry = (IPTR (*)())NicEnumerator;
+            FindHook.h_Data  = &scan;
+
+            HIDD_PCI_EnumDevices(pci, &FindHook, reqs);
+            OOP_DisposeObject(pci);
+        }
+        else if (!quiet)
+            PutStr("netdetect: no PCI subsystem\n");
+
+        OOP_ReleaseAttrBase(IID_Hidd_PCIDevice);
+    }
+
+    if (scan.driver != NULL)
+    {
+        TEXT path[256];
+
+        /* A driver named in the table still has to be installed. */
+        strlcpy(path, NETWORKS_DIR, sizeof(path));
+        strlcat(path, "/", sizeof(path));
+        strlcat(path, scan.driver, sizeof(path));
+
+        if (!IsSkipped(scan.driver))
+        {
+            BPTR lock = Lock(path, SHARED_LOCK);
+            if (lock != BNULL)
+            {
+                UnLock(lock);
+                strlcpy(found, scan.driver, size);
+                got = TRUE;
+                if (!quiet)
+                {
+                    Printf("netdetect: PCI %04lx:%04lx -> %s\n",
+                           (IPTR)scan.vendor, (IPTR)scan.product,
+                           (IPTR)scan.driver);
+                }
+            }
+            else if (!quiet)
+            {
+                Printf("netdetect: PCI %04lx:%04lx wants %s, which is not installed\n",
+                       (IPTR)scan.vendor, (IPTR)scan.product, (IPTR)scan.driver);
+            }
+        }
+    }
+    else if (!quiet)
+        PutStr("netdetect: no known network controller on PCI\n");
+
+    CloseLibrary(OOPBase);
+
+    return got;
+}
+
 static BOOL FindDevice(STRPTR found, ULONG size, BOOL quiet)
 {
     struct FileInfoBlock *fib;
@@ -282,7 +457,7 @@ int main(void)
             rc = RETURN_OK;
         }
     }
-    else if (FindDevice(device, sizeof(device), quiet))
+    else if (FindDeviceByPCI(device, sizeof(device), quiet))
     {
         rc = RETURN_OK;
     }
