@@ -697,6 +697,23 @@ skip_sack:
         win = (long)TCP_MAXWIN << tp->rcv_scale;
     if(win < (long)(tp->rcv_adv - tp->rcv_nxt))
         win = (long)(tp->rcv_adv - tp->rcv_nxt);
+    /*
+     * ti_win is 16 bits, so the largest window that can be expressed is
+     * TCP_MAXWIN << rcv_scale. The don't-shrink rule immediately above can
+     * raise win back past that limit, and (u_short)win then WRAPS: with
+     * tcp_recvspace at 128K and no window scaling negotiated, win=131400
+     * became an advertised window of 328 bytes.
+     *
+     * That is not a slow window, it is a broken one - the peer fills 328
+     * bytes, hits a zero window, and stops until its persist timer fires a
+     * probe seconds later. Every connection to a peer that does not offer
+     * window scaling paid two of those stalls before any data moved.
+     *
+     * So clamp last, after every rule that can raise win, rather than in the
+     * middle where a later line can undo it.
+     */
+    if(win > (long)TCP_MAXWIN << tp->rcv_scale)
+        win = (long)TCP_MAXWIN << tp->rcv_scale;
     ti->ti_win = htons((u_short)(win >> tp->rcv_scale));
     if(SEQ_GT(tp->snd_up, tp->snd_nxt)) {
         ti->ti_urp = htons((u_short)(tp->snd_up - tp->snd_nxt));
