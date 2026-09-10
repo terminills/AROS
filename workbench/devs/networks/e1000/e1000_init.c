@@ -454,7 +454,25 @@ static int GM_UNIQUENAME(Close)
         if (unit->e1ku_open_count > 0)
             unit->e1ku_open_count--;
         if (unit->e1ku_open_count == 0)
+        {
             unit->e1ku_ifflags &= ~(IFF_SHARED | IFF_PROMISC);
+            /* The unit is no longer started once the last opener has gone,
+             * so the next open configures the hardware again.
+             *
+             * e1ku_started exists to stop a SECOND CONCURRENT opener
+             * reconfiguring a live unit and attaching another interrupt
+             * handler. It must not survive the unit going idle: Close() does
+             * not stop the hardware (the FIXME above), so a stale TRUE here
+             * makes the next open inherit whatever state the previous opener
+             * left, with no e1000func_configure() and no request_irq().
+             *
+             * That is exactly what netdetect's boot-time probe produces - it
+             * opens the card, closes it, and the stack that opens afterwards
+             * silently gets an unconfigured unit and no traffic. Before
+             * netdetect existed, AROSTCP was always the first opener and this
+             * never showed. */
+            unit->e1ku_started = FALSE;
+        }
         Enable();
     }
 
