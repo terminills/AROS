@@ -1,4 +1,4 @@
-; $VER: AROSTCP-netautoconf 1.0 (9.9.2026)
+; $VER: AROSTCP-netautoconf 1.1 (10.9.2026)
 ; AROSTCP-netautoconf (c) The AROS Dev Team.
 ;
 ; Build a usable configuration in ENV: when the machine has none.
@@ -21,15 +21,30 @@ If NOT EXISTS ENV:AROSTCP/db
 EndIf
 
 ; The shipped db carries hosts/protocols/services and friends but no
-; interfaces file - that is the one netdetect writes.
+; interfaces file - that is the one we write here.
 Copy >NIL: SYS:System/Network/AROSTCP/db ENV:AROSTCP/db ALL QUIET NOREQ
 
-netdetect INTERFACES ENV:AROSTCP/db/interfaces IFNAME eth0 QUIET
+; Configure e1000 directly rather than probing for a card.
+;
+; This used to call netdetect, which opened each DEVS:Networks/*.device in
+; turn to find a live Ethernet card. Probing is the better answer in the long
+; run - it is the only way to configure a machine whose NIC we cannot guess -
+; but opening the card here has a cost that is not worth paying yet: e1000's
+; Close() does not stop the unit (its own FIXME), so the probe's open/close
+; cycle consumes the driver's one-time bring-up and the stack that opens
+; afterwards inherits an unconfigured unit and moves no traffic.
+;
+; Until Close() genuinely stops the unit, leave AROSTCP as the card's first
+; and only opener. e1000 is what QEMU presents and what the test machines
+; have; anything else still configures through Prefs/Network exactly as it
+; did before any of this existed.
+If EXISTS DEVS:Networks/e1000.device
+  Echo >ENV:AROSTCP/db/interfaces "eth0 DEV=DEVS:Networks/e1000.device UNIT=0 IP=DHCP UP"
 
-If NOT WARN
   ; SetEnv, not Echo: Echo appends a newline, and Package-Startup's
   ; ${AROSTCP/AutoRun} eq "True" then compares against "True\n" and never
   ; matches - the config looks right on disk and the stack still never starts.
+  ; (A trailing newline in the interfaces file above is correct and wanted.)
   SetEnv AROSTCP/Config "ENV:AROSTCP/db"
   SetEnv AROSTCP/AutoRun "True"
 EndIf
