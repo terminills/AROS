@@ -185,6 +185,23 @@ static AROS_INTH1(e1000func_TX_Int, struct e1000Unit *,  unit)
             txd_upper |= (tx_flags & E1000_TX_FLAGS_VLAN_MASK);
     }
 
+    /*
+     * Two cores entering here at once both read next_to_use, both build into
+     * the same descriptor slot and both publish next_to_use + 1, so one
+     * request is consumed without a descriptor behind it.  next_to_clean then
+     * walks one slot past next_to_use, E1000_DESC_UNUSED() returns 0 for ever
+     * and the unit wedges: software sees a full ring, the hardware sits idle
+     * with TDH == TDT, and no completion is left to re-Cause this softint.
+     */
+    if (__sync_lock_test_and_set(&unit->e1ku_txBusy, 1))
+    {
+        unit->e1ku_txAgain = 1;	/* the producer in progress will re-drain */
+        return 0;
+    }
+
+again:
+    unit->e1ku_txAgain = 0;
+
     i = tx_ring->next_to_use;
 
     proceed = TRUE; /* Success by default */
@@ -307,6 +324,10 @@ static AROS_INTH1(e1000func_TX_Int, struct e1000Unit *,  unit)
     tx_ring->next_to_use = i;
 
     MMIO_W32((APTR)(((struct e1000_hw *)unit->e1ku_Private00)->hw_addr + tx_ring->tdt), tx_ring->next_to_use);
+
+    if (unit->e1ku_txAgain)
+        goto again;		/* a write arrived on another core while we ran */
+    __sync_lock_release(&unit->e1ku_txBusy);
 
     return 0;
 

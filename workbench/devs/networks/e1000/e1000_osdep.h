@@ -382,6 +382,20 @@ struct e1000Unit {
     UBYTE                   e1ku_org_addr[6];
 
     struct Interrupt        e1ku_tx_int;
+    /*
+     * Serialises the Tx producer against itself across cores.  Exec's
+     * Disable() cannot do this: on EXECSMP builds it only masks interrupts on
+     * the calling processor (rom/exec/disable.c), so it serialises nothing
+     * between CPUs.  A spinlock is not an option either - the producer
+     * replies requests and calls back into the opener's buffer management,
+     * which takes semaphores, and doing that with a lock held and interrupts
+     * off trips "ObtainSemaphore called in supervisor mode".
+     *
+     * So the second core never blocks: it sets e1ku_txAgain and returns, and
+     * the core already producing re-runs the drain loop before it leaves.
+     */
+    volatile ULONG          e1ku_txBusy;
+    volatile ULONG          e1ku_txAgain;
 
 /* Start : Intel e1000 specific */
 
