@@ -158,7 +158,7 @@ static void *load_block
     return NULL;
 }
 
-static ULONG read_shnum(BPTR file, struct elfheader *eh, SIPTR *funcarray, struct SRBuffer *srb, struct DosLibrary *DOSBase)
+static ULONG read_shnum(BPTR file, struct elfheader *eh, ULONG *shstrndx, SIPTR *funcarray, struct SRBuffer *srb, struct DosLibrary *DOSBase)
 {
     ULONG shnum = eh->shnum;
 
@@ -171,8 +171,15 @@ static ULONG read_shnum(BPTR file, struct elfheader *eh, SIPTR *funcarray, struc
      * index is found in the first section header also.
      *
      * see the System V ABI 2001-04-24 draft for more details.
+     *
+     * Both values are returned to the caller rather than written back into
+     * the header: eh->shnum and eh->shstrndx are 16-bit fields and cannot
+     * hold them. Anything downstream that reads those two fields directly is
+     * therefore wrong for such a file, and must use these instead.
      */
-    if (eh->shnum == 0)
+    *shstrndx = eh->shstrndx;
+
+    if (eh->shnum == 0 || eh->shstrndx == SHN_XINDEX)
     {
         struct sheader sh;
 
@@ -186,7 +193,12 @@ static ULONG read_shnum(BPTR file, struct elfheader *eh, SIPTR *funcarray, struc
             return 0;
 
         /* wider section header count is in the size field */
-        shnum = sh.size;
+        if (eh->shnum == 0)
+            shnum = sh.size;
+
+        /* wider section header string table index is in the link field */
+        if (eh->shstrndx == SHN_XINDEX)
+            *shstrndx = sh.link;
 
         /* sanity, if they're still invalid then this isn't elf */
         if (shnum == 0) {
@@ -430,6 +442,7 @@ static int relocate
 (
     struct elfheader  *eh,
     struct sheader    *sh,
+    IPTR               got_base,
     ULONG              shrel_idx,
     struct sheader    *symtab_shndx,
     BOOL              *reloc_out_of_range,
@@ -460,16 +473,8 @@ static int relocate
     ULONG numrel = shrel->size / shrel->entsize;
     ULONG entsize = shrel->entsize;
     ULONG i;
-#if defined(__i386__) || defined(__x86_64__)
-    IPTR got_base = 0;
-
-    for (int i = 0; i < eh->shnum; ++i) {
-        const char *name = (const char *)((UBYTE *)sh[eh->shstrndx].addr + sh[i].name);
-        if (strcmp(name, ".got") == 0) {
-            got_base = (IPTR)sh[i].addr;
-            break;
-        }
-    }
+#if !defined(__i386__) && !defined(__x86_64__)
+    (void)got_base;     /* only the x86 GOT relocations consume it */
 #endif
 
     for (i=0; i<numrel; i++)
@@ -1582,6 +1587,7 @@ static BPTR load_seg_elf_int
     ULONG  i;
     BOOL   exec_hunk_seen = FALSE;
     ULONG  int_shnum;
+    ULONG  int_shstrndx;
     struct SRBuffer srb = { 0 };
     UBYTE *arena = NULL;
     UBYTE *arena_cursor = NULL;
@@ -1592,7 +1598,7 @@ static BPTR load_seg_elf_int
     if (!load_header(file, &eh, funcarray, &srb, DOSBase))
         return 0;
 
-    int_shnum = read_shnum(file, &eh, funcarray, &srb, DOSBase);
+    int_shnum = read_shnum(file, &eh, &int_shstrndx, funcarray, &srb, DOSBase);
     if (!int_shnum)
         return 0;
 
@@ -1641,7 +1647,7 @@ static BPTR load_seg_elf_int
             if (!sh[i].addr)
                 goto error;
 
-            if (sh[i].type == SHT_STRTAB && i == eh.shstrndx) {
+            if (sh[i].type == SHT_STRTAB && i == int_shstrndx) {
                 if (strtab == NULL) {
                     strtab = &sh[i];
                 } else {
@@ -1774,6 +1780,34 @@ static BPTR load_seg_elf_int
     }
 #endif
 
+    /* Locate .got ONCE, now that every hunk has an address.
+     *
+     * This search used to live inside relocate(), which runs once per
+     * relocation section, and its result cannot change between them. The
+     * cost of leaving it there is quadratic in the section count: for
+     * cef-blink.library that is 238642 relocation sections times 800521
+     * section names, ~1.9e11 strcmp() calls, which simply does not finish.
+     * It went unnoticed because the loop was bounded by the 16-bit
+     * eh->shnum, which reads 0 for an extended-numbering object - so the
+     * search silently did nothing at all for exactly the modules large
+     * enough to make it ruinous. */
+    IPTR got_base = 0;
+#if defined(__i386__) || defined(__x86_64__)
+    if (int_shstrndx < int_shnum && sh[int_shstrndx].addr)
+    {
+        for (i = 0; i < int_shnum; i++)
+        {
+            const char *name = (const char *)((UBYTE *)sh[int_shstrndx].addr + sh[i].name);
+
+            if (strcmp(name, ".got") == 0)
+            {
+                got_base = (IPTR)sh[i].addr;
+                break;
+            }
+        }
+    }
+#endif
+
     /* Relocate the sections */
     for (i = 0; i < int_shnum; i++)
     {
@@ -1785,7 +1819,7 @@ static BPTR load_seg_elf_int
         if ((sh[i].type == SHT_REL || sh[i].type == SHT_RELA) && sh[sh[i].info].addr)
         {
             sh[i].addr = load_block(file, sh[i].offset, sh[i].size, funcarray, &srb, DOSBase);
-            if (!sh[i].addr || !relocate(&eh, sh, i, symtab_shndx, reloc_out_of_range, DOSBase))
+            if (!sh[i].addr || !relocate(&eh, sh, got_base, i, symtab_shndx, reloc_out_of_range, DOSBase))
                 goto error;
 
             ilsFreeMem(sh[i].addr, sh[i].size);
