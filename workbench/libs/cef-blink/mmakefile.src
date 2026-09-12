@@ -9,7 +9,16 @@
 include $(SRCDIR)/config/aros.cfg
 
 CEF_SOURCE ?= $(SRCDIR)/../chromium-aros/src
-CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap
+# out/aros-cef-bootstrap is built against the OPAL sysroot
+# (aros-opal-hosted-clean) with the OPAL crosstools (aros-crosstools), so its
+# libcef.a is not a valid artifact for this tree: linking it here mixes two
+# toolchains' libstdc++ in one module, which is the ABI hazard that bakes
+# differing pthread_mutex_t/semaphore sizes into a single binary. The -adt
+# output is the same CEF configuration with only aros_sysroot and
+# aros_toolchain_root repointed at aros-adt-hosted-clean and
+# aros-adt-crosstools, matching what out/aros-chrome-adt-clean and
+# out/aros-v8-library-adt already do.
+CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
 CEF_ARCHIVE := $(CEF_OUTPUT)/obj/cef/libcef.a
 
 USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
@@ -42,8 +51,12 @@ CEF_ENGINE_DIR := $(SRCDIR)/workbench/libs/v8/engine
 CEF_INTERPOSERS := $(CEF_ENGINE_DIR)/pthread-abi-aros \
                    $(CEF_ENGINE_DIR)/emutls-aros
 
+# linuxso: base/native_library_aros.cc reaches linuxso.library for
+# linuxso_open/linuxso_sym/linuxso_close, which is how the Widevine CDM is
+# loaded natively. Without it the module links with exactly those three
+# symbols undefined.
 CEF_BLINK_USELIBS := stdc++ stdc stdcio posixc pthread m atomic \
-    debug net cybergraphics graphics intuition oop v8
+    debug net cybergraphics graphics intuition oop v8 linuxso
 
 #MM workbench-libs-cef-blink-public-includes
 CEF_BLINK_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
