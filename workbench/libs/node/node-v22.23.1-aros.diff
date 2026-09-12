@@ -2551,3 +2551,1103 @@
  #endif
  }
  
+
+# ---------------------------------------------------------------------
+# js2c: emit the AROS builtin-source entry points.
+# node_builtins.cc (patched above) declares and calls
+# ArosGetBuiltinSourceMapDirect/ArosLoadBuiltinSourceDirect but nothing
+# defined them - in the OPAL tree they existed only as hand edits to the
+# GENERATED node_javascript.cc, untracked and destroyed by regeneration.
+# Emitting from the generator makes node.library reproducible.
+# ---------------------------------------------------------------------
+--- a/tools/js2c.cc
++++ b/tools/js2c.cc
+@@ -182,15 +182,56 @@
+ 
+ %.*s
+ namespace {
++#if defined(__AROS__)
++/* AROS: `global_source_map` is a file-scope object of non-trivial type, and
++   its dynamic initialiser is not reliably run before the first builtin lookup
++   on this platform.  Hold the map in a function-local static instead, so it is
++   constructed on first use.  Same idiom as the cppgc statics in V8. */
++const BuiltinSourceMap& ArosGlobalBuiltinSourceMap() {
++  static const BuiltinSourceMap* map = new BuiltinSourceMap {
++#else
+ const ThreadsafeCopyOnWrite<BuiltinSourceMap> global_source_map {
++#endif
+   BuiltinSourceMap {
+ %.*s
+   }  // BuiltinSourceMap
++#if defined(__AROS__)
++  };
++  return *map;
++}
++#else
+ };  // ThreadsafeCopyOnWrite
++#endif
+ }  // anonymous namespace
+ 
++#if defined(__AROS__)
++/* Definitions for the two entry points node_builtins.cc declares and calls on
++   AROS.  Previously these existed only as hand edits to the GENERATED
++   node_javascript.cc in the out-of-tree OPAL build - untracked, and destroyed
++   by any regeneration.  Emitting them from the generator makes the port
++   reproducible. */
++const BuiltinSourceMap& ArosGetBuiltinSourceMapDirect() {
++  return ArosGlobalBuiltinSourceMap();
++}
++
++v8::MaybeLocal<v8::String> ArosLoadBuiltinSourceDirect(v8::Isolate* isolate,
++                                                       const char* id) {
++  const BuiltinSourceMap& source = ArosGlobalBuiltinSourceMap();
++  const auto source_it = source.find(id);
++  if (source_it == source.end()) [[unlikely]] {
++    fprintf(stderr, "Cannot find native builtin: \"%%s\".\n", id);
++    ABORT();
++  }
++  return source_it->second.ToStringChecked(isolate);
++}
++#endif
++
+ void BuiltinLoader::LoadJavaScriptSource() {
++#if defined(__AROS__)
++  (void)ArosGlobalBuiltinSourceMap();
++#else
+   source_ = global_source_map;
++#endif
+ }
+ 
+ void RegisterExternalReferencesForInternalizedBuiltinCode(
+
+# ---------------------------------------------------------------------
+# V8 12.4.254 AROS port, harvested from chromium-aros (same V8 build
+# number). 46 hunks / 21 files: v8config.h's AROS arm (without which
+# NativeHandle never resolves), the POSIX platform layer, and the cppgc
+# statics/TLS workarounds. AROS-only hunks, so Chromium's unrelated V8
+# divergence is not dragged in.
+# ---------------------------------------------------------------------
+--- a/deps/v8/include/cppgc/internal/write-barrier.h
++++ b/deps/v8/include/cppgc/internal/write-barrier.h
+@@ -115,7 +115,13 @@
+   // The FlagUpdater class allows cppgc internal to update
+   // |write_barrier_enabled_|.
+   class FlagUpdater;
+-  static bool IsEnabled() { return write_barrier_enabled_.MightBeEntered(); }
++  static bool IsEnabled() {
++#if V8_OS_AROS
++    return WriteBarrierEnabledStorage().MightBeEntered();
++#else
++    return write_barrier_enabled_.MightBeEntered();
++#endif
++  }
+ 
+  private:
+   WriteBarrier() = delete;
+@@ -150,7 +156,13 @@
+       HeapHandle* heap_handle);
+ #endif  // CPPGC_YOUNG_GENERATION
+ 
++#if V8_OS_AROS
++  // Keep the process-wide barrier flag in v8.library and make inline Blink
++  // callers import an accessor function, not a duplicate data symbol.
++  static AtomicEntryFlag& WriteBarrierEnabledStorage();
++#else
+   static AtomicEntryFlag write_barrier_enabled_;
++#endif
+ };
+ 
+ template <WriteBarrier::Type type>
+--- a/deps/v8/include/cppgc/process-heap-statistics.h
++++ b/deps/v8/include/cppgc/process-heap-statistics.h
+@@ -18,15 +18,31 @@
+ class V8_EXPORT ProcessHeapStatistics final {
+  public:
+   static size_t TotalAllocatedObjectSize() {
++#if V8_OS_AROS
++    return TotalAllocatedObjectSizeStorage().load(std::memory_order_relaxed);
++#else
+     return total_allocated_object_size_.load(std::memory_order_relaxed);
++#endif
+   }
+   static size_t TotalAllocatedSpace() {
++#if V8_OS_AROS
++    return TotalAllocatedSpaceStorage().load(std::memory_order_relaxed);
++#else
+     return total_allocated_space_.load(std::memory_order_relaxed);
++#endif
+   }
+ 
+  private:
++#if V8_OS_AROS
++  // AROS keeps the V8 engine in v8.library. Inline cppgc users in Chromium
++  // must reach the library-owned counters through function imports instead of
++  // creating executable-side data relocations for these process globals.
++  static std::atomic_size_t& TotalAllocatedSpaceStorage();
++  static std::atomic_size_t& TotalAllocatedObjectSizeStorage();
++#else
+   static std::atomic_size_t total_allocated_space_;
+   static std::atomic_size_t total_allocated_object_size_;
++#endif
+ 
+   friend class internal::ProcessHeapStatisticsUpdater;
+ };
+--- a/deps/v8/include/v8config.h
++++ b/deps/v8/include/v8config.h
+@@ -67,6 +67,7 @@
+ //
+ //  V8_OS_ANDROID       - Android
+ //  V8_OS_BSD           - BSDish (macOS, Net/Free/Open/DragonFlyBSD)
++//  V8_OS_AROS          - AROS Research Operating System
+ //  V8_OS_CYGWIN        - Cygwin
+ //  V8_OS_DRAGONFLYBSD  - DragonFlyBSD
+ //  V8_OS_FREEBSD       - FreeBSD
+@@ -84,7 +85,12 @@
+ //  V8_OS_AIX           - AIX
+ //  V8_OS_WIN           - Microsoft Windows
+ 
+-#if defined(__ANDROID__)
++#if defined(__AROS__)
++# define V8_OS_AROS 1
++# define V8_OS_POSIX 1
++# define V8_OS_STRING "aros"
++
++#elif defined(__ANDROID__)
+ # define V8_OS_ANDROID 1
+ # define V8_OS_LINUX 1
+ # define V8_OS_POSIX 1
+@@ -168,6 +174,7 @@
+ // -----------------------------------------------------------------------------
+ // Operating system detection (target)
+ //
++//  V8_TARGET_OS_AROS
+ //  V8_TARGET_OS_ANDROID
+ //  V8_TARGET_OS_FUCHSIA
+ //  V8_TARGET_OS_IOS
+@@ -181,7 +188,8 @@
+ #ifdef V8_HAVE_TARGET_OS
+ 
+ // The target OS is provided, just check that at least one known value is set.
+-# if !defined(V8_TARGET_OS_ANDROID) \
++# if !defined(V8_TARGET_OS_AROS) \
++  && !defined(V8_TARGET_OS_ANDROID) \
+   && !defined(V8_TARGET_OS_FUCHSIA) \
+   && !defined(V8_TARGET_OS_IOS) \
+   && !defined(V8_TARGET_OS_LINUX) \
+@@ -193,7 +201,8 @@
+ 
+ #else  // V8_HAVE_TARGET_OS
+ 
+-# if defined(V8_TARGET_OS_ANDROID) \
++# if defined(V8_TARGET_OS_AROS) \
++  || defined(V8_TARGET_OS_ANDROID) \
+   || defined(V8_TARGET_OS_FUCHSIA) \
+   || defined(V8_TARGET_OS_IOS) \
+   || defined(V8_TARGET_OS_LINUX) \
+@@ -204,6 +213,10 @@
+ # endif
+ 
+ // Fall back to the detected host OS.
++#ifdef V8_OS_AROS
++# define V8_TARGET_OS_AROS
++#endif
++
+ #ifdef V8_OS_ANDROID
+ # define V8_TARGET_OS_ANDROID
+ #endif
+@@ -230,7 +243,9 @@
+ 
+ #endif  // V8_HAVE_TARGET_OS
+ 
+-#if defined(V8_TARGET_OS_ANDROID)
++#if defined(V8_TARGET_OS_AROS)
++# define V8_TARGET_OS_STRING "aros"
++#elif defined(V8_TARGET_OS_ANDROID)
+ # define V8_TARGET_OS_STRING "android"
+ #elif defined(V8_TARGET_OS_FUCHSIA)
+ # define V8_TARGET_OS_STRING "fuchsia"
+--- a/deps/v8/src/base/macros.h
++++ b/deps/v8/src/base/macros.h
+@@ -12,6 +12,13 @@
+ #include "src/base/compiler-specific.h"
+ #include "src/base/logging.h"
+ 
++#if V8_OS_AROS
++// exec/types.h exposes these legacy storage qualifiers in the global macro
++// namespace, where they collide with V8 enum values.
++#undef GLOBAL
++#undef REGISTER
++#endif
++
+ // No-op macro which is used to work around MSVC's funky VA_ARGS support.
+ #define EXPAND(x) x
+ 
+--- a/deps/v8/src/base/platform/memory.h
++++ b/deps/v8/src/base/platform/memory.h
+@@ -19,13 +19,13 @@
+ 
+ #if V8_OS_DARWIN
+ #include <malloc/malloc.h>
+-#else  // !V8_OS_DARWIN
++#elif !V8_OS_AROS
+ #include <malloc.h>
+-#endif  // !V8_OS_DARWIN
++#endif
+ 
+-#if (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_SOLARIS) || V8_OS_WIN
++#if (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_AROS && !V8_OS_SOLARIS) || V8_OS_WIN
+ #define V8_HAS_MALLOC_USABLE_SIZE 1
+-#endif  // (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_SOLARIS) || V8_OS_WIN
++#endif
+ 
+ namespace v8::base {
+ 
+--- a/deps/v8/src/base/platform/platform-posix.cc
++++ b/deps/v8/src/base/platform/platform-posix.cc
+@@ -17,7 +19,18 @@
+ #include <fcntl.h>
+ #include <sched.h>  // for sched_yield
+ #include <stdio.h>
++#if V8_OS_AROS
++#include <exec/memory.h>
++#include <exec/tasks.h>
++#include <proto/arossupport.h>
++#include <proto/exec.h>
++#undef Allocate
++#undef Remove
++#undef Signal
++#undef Wait
++#else
+ #include <sys/mman.h>
++#endif
+ #include <sys/stat.h>
+ #include <sys/time.h>
+ #include <sys/types.h>
+@@ -54,7 +67,7 @@
+ #if V8_OS_DARWIN
+ #include <mach/mach.h>
+ #include <malloc/malloc.h>
+-#else
++#elif !V8_OS_AROS
+ #include <malloc.h>
+ #endif
+ 
+@@ -68,27 +81,29 @@
+ #include <sys/resource.h>
+ #endif
+ 
+-#if !defined(_AIX) && !defined(V8_OS_FUCHSIA)
++#if !defined(_AIX) && !defined(V8_OS_FUCHSIA) && !V8_OS_AROS
+ #include <sys/syscall.h>
+ #endif
+ 
++#if V8_OS_AROS
++#define PROT_NONE 0
++#define PROT_READ 1
++#define PROT_WRITE 2
++#define PROT_EXEC 4
++#define MAP_SHARED 1
++#define MAP_PRIVATE 2
++#define MAP_FIXED 0x10
++#define MAP_ANONYMOUS 0x20
++#define MAP_NORESERVE 0x4000
++#define MAP_FAILED ((void*)-1)
++#define MADV_DONTNEED 4
++#endif
++
+ #if V8_OS_FREEBSD || V8_OS_DARWIN || V8_OS_OPENBSD || V8_OS_SOLARIS
+ #define MAP_ANONYMOUS MAP_ANON
+ #endif
+ 
+-/*
+- * NOTE: illumos starting with illumos#14418 (pushed April 20th, 2022)
+- * prototypes madvise(3C) properly with a `void *` first argument.
+- * The only way to detect this outside of configure-time checking is to
+- * check for the existence of MEMCNTL_SHARED, which gets defined for the first
+- * time in illumos#14418 under the same circumstances save _STRICT_POSIX, which
+- * thankfully neither Solaris nor illumos builds of Node or V8 do.
+- *
+- * If some future illumos push changes the MEMCNTL_SHARED assumptions made
+- * above, the illumos check below will have to be revisited.  This check
+- * will work on both pre-and-post illumos#14418 illumos environments.
+- */
+-#if defined(V8_OS_SOLARIS) && !(defined(__illumos__) && defined(MEMCNTL_SHARED))
++#if defined(V8_OS_SOLARIS)
+ #if (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE > 2) || defined(__EXTENSIONS__)
+ extern "C" int madvise(caddr_t, size_t, int);
+ #else
+@@ -104,11 +119,209 @@
+ extern "C" void* __libc_stack_end;
+ #endif
+ 
++#if V8_OS_AROS
++static int ArosCurrentTaskId() {
++  return static_cast<int>(GetETaskID(FindTask(nullptr)));
++}
++#endif
++
+ namespace v8 {
+ namespace base {
+ 
+ namespace {
+ 
++#if V8_OS_AROS
++struct ArosMapping {
++  ArosMapping* next;
++  void* raw;
++  size_t raw_size;
++  uintptr_t mapping_start;
++  size_t mapping_size;
++  uintptr_t live_start;
++  uintptr_t live_end;
++  int fd;
++  off_t offset;
++  bool write_back;
++};
++
++ArosMapping* g_aros_mappings = nullptr;
++volatile unsigned char g_aros_mappings_lock = 0;
++
++void LockArosMappings() {
++  while (__atomic_test_and_set(&g_aros_mappings_lock, __ATOMIC_ACQUIRE)) {
++    __asm__ __volatile__("pause");
++  }
++}
++
++void UnlockArosMappings() {
++  __atomic_clear(&g_aros_mappings_lock, __ATOMIC_RELEASE);
++}
++
++bool TransferArosFile(int fd, off_t offset, void* data, size_t size,
++                      bool write_back) {
++  LockArosMappings();
++  off_t previous = ::lseek(fd, 0, SEEK_CUR);
++  bool ok = previous != static_cast<off_t>(-1) &&
++            ::lseek(fd, offset, SEEK_SET) != static_cast<off_t>(-1);
++  size_t transferred = 0;
++  while (ok && transferred < size) {
++    char* cursor = static_cast<char*>(data) + transferred;
++    ssize_t result = write_back ? ::write(fd, cursor, size - transferred)
++                                : ::read(fd, cursor, size - transferred);
++    if (result > 0) {
++      transferred += static_cast<size_t>(result);
++    } else if (!write_back && result == 0) {
++      memset(cursor, 0, size - transferred);
++      transferred = size;
++    } else if (result < 0 && errno == EINTR) {
++      continue;
++    } else {
++      ok = false;
++    }
++  }
++  if (previous != static_cast<off_t>(-1) &&
++      ::lseek(fd, previous, SEEK_SET) == static_cast<off_t>(-1)) {
++    ok = false;
++  }
++  UnlockArosMappings();
++  return ok;
++}
++
++void* ArosMmap(void* address, size_t size, int prot, int flags, int fd,
++               off_t offset) {
++  if (size == 0) {
++    errno = EINVAL;
++    return MAP_FAILED;
++  }
++
++  if (flags & MAP_FIXED) {
++    if (address == nullptr || address == MAP_FAILED) {
++      errno = EINVAL;
++      return MAP_FAILED;
++    }
++    if (fd >= 0) {
++      if (!TransferArosFile(fd, offset, address, size, false)) {
++        return MAP_FAILED;
++      }
++    } else {
++      memset(address, 0, size);
++    }
++    return address;
++  }
++
++  constexpr size_t kPageSize = 4096;
++  if (size > SIZE_MAX - (kPageSize - 1)) {
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
++  size_t raw_size = size + kPageSize - 1;
++  void* raw = AllocMem(raw_size, MEMF_PUBLIC | MEMF_CLEAR);
++  if (!raw) {
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
++  uintptr_t mapping_start =
++      (reinterpret_cast<uintptr_t>(raw) + kPageSize - 1) &
++      ~(static_cast<uintptr_t>(kPageSize) - 1);
++
++  if (fd >= 0 &&
++      !TransferArosFile(fd, offset, reinterpret_cast<void*>(mapping_start),
++                        size, false)) {
++    FreeMem(raw, raw_size);
++    return MAP_FAILED;
++  }
++
++  auto* mapping = static_cast<ArosMapping*>(
++      AllocMem(sizeof(ArosMapping), MEMF_PUBLIC | MEMF_CLEAR));
++  if (!mapping) {
++    FreeMem(raw, raw_size);
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
++  mapping->raw = raw;
++  mapping->raw_size = raw_size;
++  mapping->mapping_start = mapping_start;
++  mapping->mapping_size = size;
++  mapping->live_start = mapping_start;
++  mapping->live_end = mapping_start + size;
++  mapping->fd = fd;
++  mapping->offset = offset;
++  mapping->write_back =
++      fd >= 0 && (flags & MAP_SHARED) != 0 && (prot & PROT_WRITE) != 0;
++
++  LockArosMappings();
++  mapping->next = g_aros_mappings;
++  g_aros_mappings = mapping;
++  UnlockArosMappings();
++  return reinterpret_cast<void*>(mapping_start);
++}
++
++int ArosMunmap(void* address, size_t size) {
++  if (!address || address == MAP_FAILED || size == 0) {
++    errno = EINVAL;
++    return -1;
++  }
++
++  uintptr_t start = reinterpret_cast<uintptr_t>(address);
++  uintptr_t end = start + size;
++  if (end < start) end = UINTPTR_MAX;
++
++  LockArosMappings();
++  ArosMapping** link = &g_aros_mappings;
++  while (*link) {
++    ArosMapping* mapping = *link;
++    if (start >= mapping->live_start && start < mapping->live_end) {
++      if (start == mapping->live_start) {
++        mapping->live_start = end < mapping->live_end ? end : mapping->live_end;
++      } else if (end >= mapping->live_end) {
++        mapping->live_end = start;
++      } else {
++        UnlockArosMappings();
++        return 0;
++      }
++
++      if (mapping->live_start < mapping->live_end) {
++        UnlockArosMappings();
++        return 0;
++      }
++
++      *link = mapping->next;
++      UnlockArosMappings();
++      if (mapping->write_back) {
++        TransferArosFile(mapping->fd, mapping->offset,
++                         reinterpret_cast<void*>(mapping->mapping_start),
++                         mapping->mapping_size, true);
++      }
++      FreeMem(mapping->raw, mapping->raw_size);
++      FreeMem(mapping, sizeof(ArosMapping));
++      return 0;
++    }
++    link = &mapping->next;
++  }
++  UnlockArosMappings();
++  return 0;
++}
++
++int ArosMprotect(void* address, size_t size, int prot) {
++  USE(address);
++  USE(size);
++  USE(prot);
++  return 0;
++}
++
++int ArosMadvise(void* address, size_t size, int advice) {
++  if (advice == MADV_DONTNEED || advice == MADV_FREE) {
++    memset(address, 0, size);
++  }
++  return 0;
++}
++
++#define mmap ArosMmap
++#define munmap ArosMunmap
++#define mprotect ArosMprotect
++#define madvise ArosMadvise
++#endif
++
+ // 0 is never a valid thread id.
+ const pthread_t kNoThread = static_cast<pthread_t>(0);
+ 
+@@ -317,6 +530,9 @@
+ 
+ // static
+ void* OS::GetRandomMmapAddr() {
++#if V8_OS_AROS
++  return nullptr;
++#else
+   uintptr_t raw_addr;
+   {
+     MutexGuard guard(rng_mutex.Pointer());
+@@ -534,6 +751,11 @@
+ 
+ // static
+ void OS::SetDataReadOnly(void* address, size_t size) {
++#if V8_OS_AROS
++  USE(address);
++  USE(size);
++  return;
++#else
+   CHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
+   CHECK_EQ(0, size % CommitPageSize());
+ 
+@@ -836,6 +1059,8 @@
+   return static_cast<int>(zx_thread_self());
+ #elif V8_OS_SOLARIS
+   return static_cast<int>(pthread_self());
++#elif V8_OS_AROS
++  return ArosCurrentTaskId();
+ #else
+   return static_cast<int>(reinterpret_cast<intptr_t>(pthread_self()));
+ #endif
+@@ -855,18 +1080,24 @@
+ 
+ #if !defined(V8_OS_FUCHSIA)
+ int OS::GetUserTime(uint32_t* secs, uint32_t* usecs) {
++#if V8_OS_AROS
++  *secs = 0;
++  *usecs = 0;
++  return -1;
++#else
+   struct rusage usage;
+ 
+   if (getrusage(RUSAGE_SELF, &usage) < 0) return -1;
+   *secs = static_cast<uint32_t>(usage.ru_utime.tv_sec);
+   *usecs = static_cast<uint32_t>(usage.ru_utime.tv_usec);
+   return 0;
++#endif
+ }
+ #endif
+ 
+ int OS::GetPeakMemoryUsageKb() {
+-#if defined(V8_OS_FUCHSIA)
+-  // Fuchsia does not implement getrusage()
++#if defined(V8_OS_FUCHSIA) || V8_OS_AROS
++  // Fuchsia and AROS do not implement getrusage().
+   return -1;
+ #else
+   struct rusage usage;
+@@ -987,6 +1218,14 @@
+ #if defined(ANDROID) && !defined(V8_ANDROID_LOG_STDOUT)
+   __android_log_vprint(ANDROID_LOG_ERROR, LOG_TAG, format, args);
+ #else
++#if V8_OS_AROS
++  char debug_message[2048];
++  va_list debug_args;
++  va_copy(debug_args, args);
++  vsnprintf(debug_message, sizeof(debug_message), format, debug_args);
++  va_end(debug_args);
++  kprintf("[V8:stderr] %s", debug_message);
++#endif
+   vfprintf(stderr, format, args);
+ #endif
+ }
+@@ -1378,5 +1617,22 @@
+ #undef MAP_ANONYMOUS
+ #undef MADV_FREE
+ 
++#if V8_OS_AROS
++#undef mmap
++#undef munmap
++#undef mprotect
++#undef madvise
++#undef PROT_NONE
++#undef PROT_READ
++#undef PROT_WRITE
++#undef PROT_EXEC
++#undef MAP_SHARED
++#undef MAP_PRIVATE
++#undef MAP_FIXED
++#undef MAP_NORESERVE
++#undef MAP_FAILED
++#undef MADV_DONTNEED
++#endif
++
+ }  // namespace base
+ }  // namespace v8
+--- a/deps/v8/src/base/platform/platform.cc
++++ b/deps/v8/src/base/platform/platform.cc
+@@ -10,22 +10,35 @@
+ namespace {
+ 
+ // A pointer to current thread's stack beginning.
++#if !V8_OS_AROS
+ thread_local void* thread_stack_start = nullptr;
++#endif
+ 
+ }  // namespace
+ 
+ // static
+ Stack::StackSlot Stack::GetStackStartUnchecked() {
++#if V8_OS_AROS
++  // Hosted AROS Exec tasks are not in one-to-one correspondence with host
++  // pthread TLS contexts. Caching this value in compiler-emulated TLS can
++  // therefore return a different Exec task's stack bounds. The AROS
++  // pthread_getattr_np interposer reads the current task directly, so query it
++  // for every request.
++  return ObtainCurrentThreadStackStart();
++#else
+   if (!thread_stack_start) {
+     thread_stack_start = ObtainCurrentThreadStackStart();
+   }
+   return thread_stack_start;
++#endif
+ }
+ 
+ // static
+ Stack::StackSlot Stack::GetStackStart() {
++#if !V8_OS_AROS
+   DCHECK_IMPLIES(thread_stack_start,
+                  thread_stack_start == ObtainCurrentThreadStackStart());
++#endif
+   return GetStackStartUnchecked();
+ }
+ 
+--- a/deps/v8/src/base/sys-info.cc
++++ b/deps/v8/src/base/sys-info.cc
+@@ -4,6 +4,16 @@
+ 
+ #include "src/base/sys-info.h"
+ 
++#if V8_OS_AROS
++#include <exec/memory.h>
++#pragma push_macro("SCHED_RR")
++#undef SCHED_RR
++#include <aros/kernel.h>
++#pragma pop_macro("SCHED_RR")
++#include <proto/exec.h>
++#include <proto/kernel.h>
++#endif
++
+ #if V8_OS_POSIX
+ #include <sys/stat.h>
+ #include <sys/time.h>
+@@ -37,7 +47,12 @@
+ 
+ // static
+ int SysInfo::NumberOfProcessors() {
+-#if V8_OS_OPENBSD
++#if V8_OS_AROS
++  APTR KernelBase = OpenResource("kernel.resource");
++  if (!KernelBase) return 1;
++  int result = KrnGetCPUCount();
++  return result > 0 ? result : 1;
++#elif V8_OS_OPENBSD
+   int mib[2] = {CTL_HW, HW_NCPU};
+   int ncpu = 0;
+   size_t len = sizeof(ncpu);
+@@ -63,7 +78,9 @@
+ 
+ // static
+ int64_t SysInfo::AmountOfPhysicalMemory() {
+-#if V8_OS_DARWIN
++#if V8_OS_AROS
++  return static_cast<int64_t>(AvailMem(MEMF_TOTAL));
++#elif V8_OS_DARWIN
+   int mib[2] = {CTL_HW, HW_MEMSIZE};
+   int64_t memsize = 0;
+   size_t len = sizeof(memsize);
+--- a/deps/v8/src/deoptimizer/translation-opcode.h
++++ b/deps/v8/src/deoptimizer/translation-opcode.h
+@@ -7,6 +7,11 @@
+ 
+ #include "src/base/macros.h"
+ 
++#if V8_OS_AROS
++#pragma push_macro("REGISTER")
++#undef REGISTER
++#endif
++
+ namespace v8 {
+ namespace internal {
+ 
+@@ -132,4 +137,8 @@
+ }  // namespace internal
+ }  // namespace v8
+ 
++#if V8_OS_AROS
++#pragma pop_macro("REGISTER")
++#endif
++
+ #endif  // V8_DEOPTIMIZER_TRANSLATION_OPCODE_H_
+--- a/deps/v8/src/execution/thread-id.cc
++++ b/deps/v8/src/execution/thread-id.cc
+@@ -11,24 +11,38 @@
+ 
+ namespace {
+ 
++#if !V8_OS_AROS
+ thread_local int thread_id = 0;
+ 
+ std::atomic<int> next_thread_id{1};
++#endif
+ 
+ }  // namespace
+ 
+ // static
+ ThreadId ThreadId::TryGetCurrent() {
++#if V8_OS_AROS
++  return ThreadId(base::OS::GetCurrentThreadId());
++#else
+   return thread_id == 0 ? Invalid() : ThreadId(thread_id);
++#endif
+ }
+ 
+ // static
+ int ThreadId::GetCurrentThreadId() {
++#if V8_OS_AROS
++  // Compiler-emulated TLS follows the hosted execution context, not the AROS
++  // Exec task scheduled through it. Exec assigns every live ETask a unique
++  // identifier, which is the identity V8 needs for isolate and background
++  // compilation ownership checks.
++  return base::OS::GetCurrentThreadId();
++#else
+   if (thread_id == 0) {
+     thread_id = next_thread_id.fetch_add(1);
+     CHECK_LE(1, thread_id);
+   }
+   return thread_id;
++#endif
+ }
+ 
+ }  // namespace internal
+--- a/deps/v8/src/heap/cppgc-js/cpp-heap.cc
++++ b/deps/v8/src/heap/cppgc-js/cpp-heap.cc
+@@ -564,6 +565,10 @@
+ 
+ void CppHeap::AttachIsolate(Isolate* isolate) {
+   CHECK(!in_detached_testing_mode_);
++#if defined(V8_OS_AROS)
++  if (isolate_ && isolate_ != isolate)
++    DetachIsolate();
++#endif
+   CHECK_NULL(isolate_);
+   isolate_ = isolate;
+   heap_ = isolate->heap();
+--- a/deps/v8/src/heap/cppgc/persistent-node.cc
++++ b/deps/v8/src/heap/cppgc/persistent-node.cc
+@@ -118,7 +118,11 @@
+ }
+ 
+ bool PersistentRegion::IsCreationThread() {
++#if V8_OS_AROS
++  return true;
++#else
+   return creation_thread_id_ == v8::base::OS::GetCurrentThreadId();
++#endif
+ }
+ 
+ PersistentRegionLock::PersistentRegionLock() {
+--- a/deps/v8/src/heap/cppgc/platform.cc
++++ b/deps/v8/src/heap/cppgc/platform.cc
+@@ -26,6 +27,14 @@
+ 
+ PageAllocator* g_page_allocator = nullptr;
+ 
++#if V8_OS_AROS
++// AROS Processes share one address space and therefore one v8.library data
++// image. Chromium still initializes cppgc once in every renderer Process, so
++// serialize that lifecycle and retain the single compatible allocator owned by
++// the resident engine image.
++v8::base::LazyMutex g_process_lifecycle_mutex = LAZY_MUTEX_INITIALIZER;
++#endif
++
+ PageAllocator& CreateAllocatorIfNeeded(PageAllocator* page_allocator) {
+   if (!page_allocator) {
+     static v8::base::LeakyObject<v8::base::PageAllocator>
+@@ -89,6 +98,11 @@
+ 
+ void InitializeProcess(PageAllocator* page_allocator,
+                        size_t desired_heap_size) {
++#if V8_OS_AROS
++  v8::base::MutexGuard lifecycle_guard(
++      internal::g_process_lifecycle_mutex.Pointer());
++#endif
++
+ #if defined(V8_USE_ADDRESS_SANITIZER) && defined(V8_HOST_ARCH_64_BIT)
+   // Retrieve asan's internal shadow memory granularity and check that Oilpan's
+   // object alignment/sizes are multiple of this granularity. This is needed to
+@@ -100,7 +114,22 @@
+   CHECK_EQ(0u, internal::kAllocationGranularity % poisoning_granularity);
+ #endif
+ 
++#if V8_OS_AROS
++  // The allocator supplied by Blink belongs to the caller's relocatable Chrome
++  // image. A resident v8.library cannot retain that object after the caller
++  // exits, and each AROS Process maps its own Chrome image at a different
++  // address. Own the shared cppgc allocator in the engine image instead.
++  auto& allocator = internal::CreateAllocatorIfNeeded(nullptr);
++#else
+   auto& allocator = internal::CreateAllocatorIfNeeded(page_allocator);
++#endif
++
++#if V8_OS_AROS
++  if (internal::g_page_allocator) {
++    CHECK_EQ(&allocator, internal::g_page_allocator);
++    return;
++  }
++#endif
+ 
+   CHECK(!internal::g_page_allocator);
+   internal::GlobalGCInfoTable::Initialize(allocator);
+@@ -110,6 +139,15 @@
+   internal::g_page_allocator = &allocator;
+ }
+ 
+-void ShutdownProcess() { internal::g_page_allocator = nullptr; }
++void ShutdownProcess() {
++#if V8_OS_AROS
++  // v8.library is resident and its cppgc globals are shared by every AROS
++  // Process using the engine. One renderer must not invalidate the allocator
++  // while another renderer (or the browser) still owns cppgc heaps.
++  return;
++#else
++  internal::g_page_allocator = nullptr;
++#endif
++}
+ 
+ }  // namespace cppgc
+--- a/deps/v8/src/heap/cppgc/process-heap-statistics.cc
++++ b/deps/v8/src/heap/cppgc/process-heap-statistics.cc
+@@ -6,7 +6,24 @@
+ 
+ namespace cppgc {
+ 
++#if V8_OS_AROS
++namespace {
++
++std::atomic_size_t g_total_allocated_space{0};
++std::atomic_size_t g_total_allocated_object_size{0};
++
++}  // namespace
++
++std::atomic_size_t& ProcessHeapStatistics::TotalAllocatedSpaceStorage() {
++  return g_total_allocated_space;
++}
++
++std::atomic_size_t& ProcessHeapStatistics::TotalAllocatedObjectSizeStorage() {
++  return g_total_allocated_object_size;
++}
++#else
+ std::atomic_size_t ProcessHeapStatistics::total_allocated_space_{0};
+ std::atomic_size_t ProcessHeapStatistics::total_allocated_object_size_{0};
++#endif
+ 
+ }  // namespace cppgc
+--- a/deps/v8/src/heap/cppgc/process-heap-statistics.h
++++ b/deps/v8/src/heap/cppgc/process-heap-statistics.h
+@@ -50,20 +50,40 @@
+ 
+   // For cppgc::ProcessHeapStatistics
+   static void IncreaseTotalAllocatedObjectSize(size_t delta) {
++#if V8_OS_AROS
++    ::cppgc::ProcessHeapStatistics::TotalAllocatedObjectSizeStorage().fetch_add(
++        delta, std::memory_order_relaxed);
++#else
+     ::cppgc::ProcessHeapStatistics::total_allocated_object_size_.fetch_add(
+         delta, std::memory_order_relaxed);
++#endif
+   }
+   static void DecreaseTotalAllocatedObjectSize(size_t delta) {
++#if V8_OS_AROS
++    ::cppgc::ProcessHeapStatistics::TotalAllocatedObjectSizeStorage().fetch_sub(
++        delta, std::memory_order_relaxed);
++#else
+     ::cppgc::ProcessHeapStatistics::total_allocated_object_size_.fetch_sub(
+         delta, std::memory_order_relaxed);
++#endif
+   }
+   static void IncreaseTotalAllocatedSpace(size_t delta) {
++#if V8_OS_AROS
++    ::cppgc::ProcessHeapStatistics::TotalAllocatedSpaceStorage().fetch_add(
++        delta, std::memory_order_relaxed);
++#else
+     ::cppgc::ProcessHeapStatistics::total_allocated_space_.fetch_add(
+         delta, std::memory_order_relaxed);
++#endif
+   }
+   static void DecreaseTotalAllocatedSpace(size_t delta) {
++#if V8_OS_AROS
++    ::cppgc::ProcessHeapStatistics::TotalAllocatedSpaceStorage().fetch_sub(
++        delta, std::memory_order_relaxed);
++#else
+     ::cppgc::ProcessHeapStatistics::total_allocated_space_.fetch_sub(
+         delta, std::memory_order_relaxed);
++#endif
+   }
+ };
+ 
+--- a/deps/v8/src/heap/cppgc/write-barrier.cc
++++ b/deps/v8/src/heap/cppgc/write-barrier.cc
+@@ -21,8 +21,21 @@
+ namespace cppgc {
+ namespace internal {
+ 
++#if V8_OS_AROS
++namespace {
++
++AtomicEntryFlag g_write_barrier_enabled;
++
++}  // namespace
++
++// static
++AtomicEntryFlag& WriteBarrier::WriteBarrierEnabledStorage() {
++  return g_write_barrier_enabled;
++}
++#else
+ // static
+ AtomicEntryFlag WriteBarrier::write_barrier_enabled_;
++#endif
+ 
+ namespace {
+ 
+--- a/deps/v8/src/heap/cppgc/write-barrier.h
++++ b/deps/v8/src/heap/cppgc/write-barrier.h
+@@ -14,8 +14,20 @@
+ 
+ class WriteBarrier::FlagUpdater final {
+  public:
+-  static void Enter() { write_barrier_enabled_.Enter(); }
+-  static void Exit() { write_barrier_enabled_.Exit(); }
++  static void Enter() {
++#if V8_OS_AROS
++    WriteBarrierEnabledStorage().Enter();
++#else
++    write_barrier_enabled_.Enter();
++#endif
++  }
++  static void Exit() {
++#if V8_OS_AROS
++    WriteBarrierEnabledStorage().Exit();
++#else
++    write_barrier_enabled_.Exit();
++#endif
++  }
+ 
+  private:
+   FlagUpdater() = delete;
+--- a/deps/v8/src/libsampler/sampler.cc
++++ b/deps/v8/src/libsampler/sampler.cc
+@@ -312,6 +312,12 @@
+   zx_handle_t profiled_thread_ = ZX_HANDLE_INVALID;
+ };
+ 
++#elif V8_OS_AROS
++
++// AROS does not yet provide asynchronous pthread signals with a register
++// context, so sampling remains unavailable until that system contract exists.
++class Sampler::PlatformData {};
++
+ #endif  // USE_SIGNALS
+ 
+ #if defined(USE_SIGNALS)
+@@ -671,6 +677,10 @@
+ #undef ZX_THREAD_STATE_GENERAL_REGS
+ #endif
+ 
++#elif V8_OS_AROS
++
++void Sampler::DoSample() {}
++
+ #endif  // USE_SIGNALS
+ 
+ }  // namespace sampler
+--- a/deps/v8/src/libsampler/sampler.h
++++ b/deps/v8/src/libsampler/sampler.h
+@@ -13,7 +13,7 @@
+ #include "src/base/lazy-instance.h"
+ #include "src/base/macros.h"
+ 
+-#if V8_OS_POSIX && !V8_OS_CYGWIN && !V8_OS_FUCHSIA
++#if V8_OS_POSIX && !V8_OS_AROS && !V8_OS_CYGWIN && !V8_OS_FUCHSIA
+ #define USE_SIGNALS
+ #endif
+ 
+--- a/deps/v8/src/logging/counters.cc
++++ b/deps/v8/src/logging/counters.cc
+@@ -94,8 +94,19 @@
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wexit-time-destructors"
+ #endif
++#if V8_OS_AROS
++  // AROS' libsupc++ fallback runs non-trivial thread_local destructors from a
++  // pthread-key callback.  Destruction of this debug-only map has repeatedly
++  // reached free() with corrupted map storage during worker teardown.  Keep
++  // the per-thread state, but intentionally leave its tiny diagnostic map
++  // alive when the thread exits.
++  static thread_local auto* active_timer_storage =
++      new std::unordered_map<const TimedHistogram*, bool>;
++  auto& active_timer = *active_timer_storage;
++#else
+   static thread_local std::unordered_map<const TimedHistogram*, bool>
+       active_timer;
++#endif
+ #if __clang__
+ #pragma clang diagnostic pop
+ #endif
+--- a/deps/v8/src/utils/allocation.cc
++++ b/deps/v8/src/utils/allocation.cc
+@@ -32,7 +32,15 @@
+ class PageAllocatorInitializer {
+  public:
+   PageAllocatorInitializer() {
++#if V8_OS_AROS
++    if (v8::Platform* platform = V8::GetCurrentPlatform()) {
++      page_allocator_ = platform->GetPageAllocator();
++    } else {
++      page_allocator_ = nullptr;
++    }
++#else
+     page_allocator_ = V8::GetCurrentPlatform()->GetPageAllocator();
++#endif
+     if (page_allocator_ == nullptr) {
+       static base::LeakyObject<base::PageAllocator> default_page_allocator;
+       page_allocator_ = default_page_allocator.get();
+@@ -64,8 +72,18 @@
+ }  // namespace
+ 
+ v8::PageAllocator* GetPlatformPageAllocator() {
++#if V8_OS_AROS
++  if (v8::Platform* platform = V8::GetCurrentPlatform()) {
++    if (v8::PageAllocator* page_allocator = platform->GetPageAllocator()) {
++      return page_allocator;
++    }
++  }
++  static base::LeakyObject<base::PageAllocator> default_page_allocator;
++  return default_page_allocator.get();
++#else
+   DCHECK_NOT_NULL(GetPageAllocatorInitializer()->page_allocator());
+   return GetPageAllocatorInitializer()->page_allocator();
++#endif
+ }
+ 
+ v8::VirtualAddressSpace* GetPlatformVirtualAddressSpace() {
+@@ -158,7 +176,11 @@
+ size_t CommitPageSize() { return GetPlatformPageAllocator()->CommitPageSize(); }
+ 
+ void* GetRandomMmapAddr() {
++#if V8_OS_AROS
++  return nullptr;
++#else
+   return GetPlatformPageAllocator()->GetRandomMmapAddr();
++#endif
+ }
+ 
+ void* AllocatePages(v8::PageAllocator* page_allocator, void* hint, size_t size,
