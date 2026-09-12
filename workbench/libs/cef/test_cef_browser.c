@@ -58,11 +58,24 @@ static cef_char_t resources_path[] = u"Developer:CEF";
 static cef_char_t locales_path[] = u"Developer:CEF/locales";
 static cef_char_t root_cache_path[] = u"T:CEFSharedLibrary";
 static cef_char_t cache_path[] = u"T:CEFSharedLibrary/Default";
+/*
+ * The panel geometry is what frame_has_test_content() keys on, so it stays
+ * exactly 480x180 with the 24px border. The text is additive: solid colour
+ * proves layout, compositing and presentation, but says nothing about glyph
+ * rasterisation, and every interesting consumer of this stack (VS Code above
+ * all) is almost entirely text. "Open Sans" is named because FONTS:TrueType
+ * really does ship OpenSans-*.ttf; the sans-serif fallback keeps the document
+ * meaningful if family matching fails, in which case the panel renders empty
+ * and that is itself the result.
+ */
 static cef_char_t test_url[] =
     u"data:text/html,<html><body style='margin:0;background:%23151a22;"
     u"display:flex;align-items:center;justify-content:center;height:100vh'>"
     u"<div style='width:480px;height:180px;background:%23f5f7fa;"
-    u"border:24px solid %2300c7f2'></div></body></html>";
+    u"border:24px solid %2300c7f2;display:flex;align-items:center;"
+    u"justify-content:center'>"
+    u"<span style='color:%23151a22;font:bold 44px \"Open Sans\",sans-serif'>"
+    u"AROS</span></div></body></html>";
 
 static size_t append_decimal(char *output, ULONG value)
 {
