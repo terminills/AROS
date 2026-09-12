@@ -666,7 +666,30 @@ uv_handle_type uv_guess_handle(uv_file file) {
     return UV_UNKNOWN_HANDLE;
 
   if (isatty(file))
+  {
+#if defined(AROS_HAVE_TTY_BACKEND)
+    /* A real terminal emulator is present (xterm port or Console NG), so the
+       full termios/ioctl surface node's tty.WriteStream needs exists.  Report
+       the handle honestly and let node drive it as a TTY. */
     return UV_TTY;
+#else
+    /* No terminal emulator yet.  AROS's console is interactive, so isatty()
+       says yes, but it does not provide the termios/window-size surface that
+       node's tty.WriteStream assumes: constructing process.stdout faults
+       (null dereference right after the internal/tty builtin compiles, while
+       fs.writeSync(1, ...) on the very same descriptor works).
+
+       Reporting UV_FILE makes node build an fs.SyncWriteStream instead, which
+       writes through fs.writeSync - the path that is known good here.  Output
+       is then byte-oriented: the console renders single bytes, so non-ASCII
+       should be clamped to Latin-1 by the caller rather than emitted as UTF-8
+       multibyte, which the console would show as mojibake.
+
+       Flip this by defining AROS_HAVE_TTY_BACKEND once a terminal emulator
+       lands; nothing else in the port needs to change. */
+    return UV_FILE;
+#endif
+  }
 
   if (fstat(file, &status) != 0)
     return UV_UNKNOWN_HANDLE;
