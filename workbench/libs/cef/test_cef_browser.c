@@ -52,7 +52,7 @@ static cef_life_span_handler_t life_span_handler;
  * failing, which surfaces as
  *   FATAL:pdf_extension_util.cc(205) Check failed:
  *       manifest_contents.find(kNameTag) != std::string::npos
- * Staged from out/aros-cef-bootstrap.  See test_electron_lifecycle.c.
+ * Staged from out/aros-cef-bootstrap-adt.  See test_electron_lifecycle.c.
  */
 static cef_char_t resources_path[] = u"Developer:CEF";
 static cef_char_t locales_path[] = u"Developer:CEF/locales";
@@ -172,6 +172,26 @@ static int frame_has_test_content(const void *buffer, int width, int height)
     }
 
     return 0;
+}
+
+/*
+ * Optional argv[2] overrides the built-in document, so a real http:// page can
+ * be loaded without rebuilding. cef_string_t is UTF-16 and a URL is ASCII once
+ * percent-encoded, so widening byte-by-byte is sufficient and avoids dragging
+ * a converter in here.
+ */
+static cef_char_t url_override[2048];
+static size_t url_override_len;
+
+static void set_url_override(const char *ascii)
+{
+    size_t limit = (sizeof(url_override) / sizeof(url_override[0])) - 1;
+    size_t i;
+
+    for (i = 0; ascii[i] != '\0' && i < limit; ++i)
+        url_override[i] = (cef_char_t)(unsigned char)ascii[i];
+    url_override[i] = 0;
+    url_override_len = i;
 }
 
 static void set_static_cef_string(cef_string_t *target, cef_char_t *value,
@@ -437,6 +457,8 @@ int main(int argc, char **argv)
 
     if (argc > 1)
         snapshot_path = argv[1];
+    if (argc > 2)
+        set_url_override(argv[2]);
     CEFBase = OpenLibrary(CEFNAME, CEFVERSION);
     if (CEFBase == NULL)
     {
@@ -508,8 +530,11 @@ int main(int argc, char **argv)
     browser_settings.size = sizeof(browser_settings);
 
     memset(&url, 0, sizeof(url));
-    set_static_cef_string(&url, test_url,
-        (sizeof(test_url) / sizeof(test_url[0])) - 1);
+    if (url_override_len != 0)
+        set_static_cef_string(&url, url_override, url_override_len);
+    else
+        set_static_cef_string(&url, test_url,
+            (sizeof(test_url) / sizeof(test_url[0])) - 1);
 
     create_result = CEFCreateBrowser(&window_info, &client, &url,
         &browser_settings, NULL, NULL);
