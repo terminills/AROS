@@ -3651,3 +3651,40 @@
  }
  
  void* AllocatePages(v8::PageAllocator* page_allocator, void* hint, size_t size,
+
+--- a/src/node_metadata.cc
++++ b/src/node_metadata.cc
+@@ -205,6 +205,13 @@
+ #endif  // NODE_HAS_RELEASE_URLS
+ }
+ 
++#ifdef __AROS__
++/* The build configures --dest-os=linux because node's configure.py has no
++   notion of AROS, but the platform string is what scripts actually see.
++   Report the truth: this is AROS, not Linux. */
++Metadata::Metadata() : arch(NODE_ARCH), platform("aros") {}
++#else
+ Metadata::Metadata() : arch(NODE_ARCH), platform(NODE_PLATFORM) {}
++#endif
+ 
+ }  // namespace node
+
+--- a/src/node.cc
++++ b/src/node.cc
+@@ -892,7 +892,16 @@
+     ProcessInitializationFlags::Flags flags) {
+   NODE_AROS_PHASE("initialize-args check-once");
+   // Make sure InitializeNodeWithArgs() is called only once.
++#ifdef __AROS__
++  /* node.library is a shared AROS library and outlives the process that
++     opened it, so this file-scope guard is still set from the PREVIOUS
++     C:Node invocation and CHECK() would abort the second one.  node is
++     written for one Start() per OS process; on AROS one library serves many
++     processes in sequence.  Record that we ran, without aborting. */
++  init_called.store(true);
++#else
+   CHECK(!init_called.exchange(true));
++#endif
+ 
+   // Initialize node_start_time to get relative uptime.
+   NODE_AROS_PHASE("initialize-args hrtime");
