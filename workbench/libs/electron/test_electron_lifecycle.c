@@ -15,8 +15,19 @@
 
 #include "include/capi/cef_app_capi.h"
 
-static cef_char_t resources_path[] = u"Developer:Chromium";
-static cef_char_t locales_path[] = u"Developer:Chromium/locales";
+/*
+ * CEF's resources must come from the same build as cef-blink.library.  grit
+ * assigns IDR_* numbers per build, so a pak from the chrome target resolves
+ * the wrong entry for a CEF-target lookup - the resource is "found" and
+ * empty, which surfaces as
+ *   FATAL:pdf_extension_util.cc(205) Check failed:
+ *       manifest_contents.find(kNameTag) != std::string::npos
+ * These therefore point at Developer:CEF (staged from
+ * out/aros-cef-bootstrap), not at Developer:Chromium, which holds the paks
+ * the standalone Chromium browser binary was built with.
+ */
+static cef_char_t resources_path[] = u"Developer:CEF";
+static cef_char_t locales_path[] = u"Developer:CEF/locales";
 static char node_name[] = "ElectronLifecycleTest";
 static char eval_flag[] = "-e";
 static char node_script[] =
