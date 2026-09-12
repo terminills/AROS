@@ -85,7 +85,7 @@
        ],
 +      'conditions': [
 +        [ 'node_use_bundled_v8=="false" and node_shared=="false"', {
-+          'cflags': [ '-fPIC' ],
++          'cflags': [ '-fno-pic' ],
 +        }],
 +      ],
      },
