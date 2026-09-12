@@ -235,20 +235,37 @@ static void HandleModuleSegments(module_t *mod, struct MinList * list)
     LONG segidx = 0, i = 0;
     IPTR maxgapsize = 0;
 #if AROS_MODULES_DEBUG
-    TEXT buffer[2048];
-    /* If you start getting crashes with weird 'last' values, it might be an overrun of buffer.
-       Check Strlen(seg->s_name) */
+    /* The gdb helper string is built straight into its own allocation.
+       It used to be assembled one entry at a time in a fixed TEXT[2048]
+       stack buffer, whose own comment warned that a long section name would
+       overrun it and corrupt 'last'. That is not hypothetical: a C++ module
+       compiled with -ffunction-sections names each section after the mangled
+       function, and cef-blink.library carries 800521 sections of which the
+       longest name is 2107 characters. Two of them exceed the buffer, and the
+       overrun wrote the name's own bytes over 'last', so the next Strcpy()
+       stored to a non-canonical address and took a #GP (the faulting pointer
+       read as ASCII, e.g. 0x4537366d4c453636).
+       Formatting directly into the reserved space removes the size limit
+       altogether rather than raising it, so no name length can overflow. */
     STRPTR last = NULL;
-    ULONG seggdbhlplen = 0;
+    STRPTR gdbhlpend = NULL;
+    BOOL   gdbhlpfailed = FALSE;
+    IPTR   seggdbhlplen = 0;
 #endif
 
     mod->m_segments = AllocVec(mod->m_segcnt * sizeof(struct segment *), MEMF_PUBLIC | MEMF_CLEAR);
 
 #if AROS_MODULES_DEBUG
+    /* Reserve "-s <name> 0x<ptr> " per named segment: 5 for "-s " and the two
+       separating spaces, 2 for "0x", and two hex digits per pointer byte.
+       IPTR, not ULONG: a module with this many sections sums to ~100 MB of
+       helper string, and the accumulator must not be the thing that wraps. */
     ForeachNode(list, seg)
     {
         if (seg->s_name) seggdbhlplen += Strlen(seg->s_name) + 5 + 2 + sizeof(APTR) * 2;
     }
+    if (seggdbhlplen)
+        seggdbhlplen++;                 /* terminating NUL */
 #endif
 
     ForeachNodeSafe(list, seg, tmpnode)
@@ -264,19 +281,38 @@ static void HandleModuleSegments(module_t *mod, struct MinList * list)
          * this in .gdbinit script took about 3 minutes for binary with around 4000
          * sections. Now loading symbols for such file takes 2-3 seconds.
          */
-        if (seg->s_name) /* Only for segments which have a name */
+        if (seg->s_name && !gdbhlpfailed) /* Only for segments which have a name */
         {
             if (mod->m_seggdbhlp == NULL)
             {
                 mod->m_seggdbhlp = AllocVec(seggdbhlplen, MEMF_PUBLIC | MEMF_CLEAR);
-                __sprintf(mod->m_seggdbhlp, "0x%p ", seg->s_lowest);
-                last = mod->m_seggdbhlp + Strlen(mod->m_seggdbhlp);
+                if (mod->m_seggdbhlp == NULL)
+                {
+                    /* Only a gdb convenience, and for a module this size the
+                       request can legitimately be ~100 MB. Give up on the
+                       helper string rather than retrying once per segment,
+                       and never hand NULL to __sprintf(). */
+                    gdbhlpfailed = TRUE;
+                }
+                else
+                {
+                    gdbhlpend = mod->m_seggdbhlp + seggdbhlplen;
+                    __sprintf(mod->m_seggdbhlp, "0x%p ", seg->s_lowest);
+                    last = mod->m_seggdbhlp + Strlen(mod->m_seggdbhlp);
+                }
             }
             else
             {
-                __sprintf(buffer, "-s %s 0x%p ", seg->s_name, seg->s_lowest);
-                Strcpy(last, buffer);
-                last += Strlen(buffer);
+                /* The pre-pass reserved exactly this much for this segment,
+                   so the bound is a guard against the accounting drifting
+                   from the format, not an expected path. */
+                IPTR need = Strlen(seg->s_name) + 5 + 2 + sizeof(APTR) * 2;
+
+                if (last + need < gdbhlpend)
+                {
+                    __sprintf(last, "-s %s 0x%p ", seg->s_name, seg->s_lowest);
+                    last += Strlen(last);
+                }
             }
         }
 #endif
