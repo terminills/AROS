@@ -45,8 +45,17 @@ static cef_client_t client;
 static cef_render_handler_t render_handler;
 static cef_life_span_handler_t life_span_handler;
 
-static cef_char_t resources_path[] = u"Developer:Chromium";
-static cef_char_t locales_path[] = u"Developer:Chromium/locales";
+/*
+ * Developer:CEF, not Developer:Chromium: grit numbers IDR_* per build, so the
+ * paks the standalone browser binary was built with resolve the wrong entry
+ * for a cef-blink.library lookup - returning an empty resource rather than
+ * failing, which surfaces as
+ *   FATAL:pdf_extension_util.cc(205) Check failed:
+ *       manifest_contents.find(kNameTag) != std::string::npos
+ * Staged from out/aros-cef-bootstrap.  See test_electron_lifecycle.c.
+ */
+static cef_char_t resources_path[] = u"Developer:CEF";
+static cef_char_t locales_path[] = u"Developer:CEF/locales";
 static cef_char_t root_cache_path[] = u"T:CEFSharedLibrary";
 static cef_char_t cache_path[] = u"T:CEFSharedLibrary/Default";
 static cef_char_t test_url[] =
