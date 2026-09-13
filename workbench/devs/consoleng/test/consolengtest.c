@@ -247,6 +247,91 @@ have_window:
 
     printf("CONSOLENG-TEST: PASS rendered %d lines into consoleng.device\n", i);
 
+    /*
+     * INPUT. Everything above this point is the write path; a TUI also has to
+     * READ. consoleng inherits the stock console's input chain (the device's
+     * input handler fills a per-unit buffer from real key events, and CMD_READ
+     * drains it), but "inherits" is an assumption until a keystroke has
+     * actually come back out, so this asks for one.
+     *
+     * SendIO rather than DoIO: a console read blocks until something is typed,
+     * and a test that hangs forever when input is broken is worse than one
+     * that reports nothing arrived. Poll, then abort cleanly on timeout.
+     *
+     * Keys are injected by the harness (AROS_ACTIONS_FILE "key <rawcode>"),
+     * which delivers them to the ACTIVE window - hence the ActivateWindow
+     * below. In SELFWIN mode the device owns the window and this program has
+     * no pointer to it, so the read test only runs when we opened it.
+     */
+    if (win)
+    {
+        static UBYTE inbuf[64];
+        LONG waited = 0;
+        LONG got = -1;
+
+        ActivateWindow(win);
+
+        {
+            static const char prompt[] =
+                "\r\nINPUT TEST - type something (harness injects keys):\r\n";
+            ioreq->io_Command = CMD_WRITE;
+            ioreq->io_Data    = (APTR)prompt;
+            ioreq->io_Length  = sizeof(prompt) - 1;
+            DoIO((struct IORequest *)ioreq);
+        }
+
+        ioreq->io_Command = CMD_READ;
+        ioreq->io_Data    = (APTR)inbuf;
+        ioreq->io_Length  = sizeof(inbuf) - 1;
+        SendIO((struct IORequest *)ioreq);
+
+        /* ~20s, which is inside the harness deadline and well after the
+           injected keys are due. */
+        while (waited < 400 && !CheckIO((struct IORequest *)ioreq))
+        {
+            Delay(5);
+            waited++;
+        }
+
+        if (CheckIO((struct IORequest *)ioreq))
+        {
+            WaitIO((struct IORequest *)ioreq);
+            got = ioreq->io_Actual;
+        }
+        else
+        {
+            AbortIO((struct IORequest *)ioreq);
+            WaitIO((struct IORequest *)ioreq);
+        }
+
+        if (got > 0)
+        {
+            LONG n;
+
+            inbuf[got] = '\0';
+            printf("CONSOLENG-TEST: PASS read %ld byte(s) from consoleng:",
+                   (long)got);
+            for (n = 0; n < got; n++)
+                printf(" %02x", inbuf[n]);
+            printf(" (\"%s\")\n", inbuf);
+
+            /* Echo it back so the screenshot shows the round trip too. */
+            ioreq->io_Command = CMD_WRITE;
+            ioreq->io_Data    = (APTR)"read back: ";
+            ioreq->io_Length  = 11;
+            DoIO((struct IORequest *)ioreq);
+            ioreq->io_Command = CMD_WRITE;
+            ioreq->io_Data    = (APTR)inbuf;
+            ioreq->io_Length  = got;
+            DoIO((struct IORequest *)ioreq);
+        }
+        else
+        {
+            printf("CONSOLENG-TEST: FAIL no input arrived within %ld ticks"
+                   " (read aborted)\n", (long)waited);
+        }
+    }
+
     /* Hold the window so a screenshot can be taken, but do not hang a test
      * harness forever: give up after a bounded wait if nobody closes it. */
     {

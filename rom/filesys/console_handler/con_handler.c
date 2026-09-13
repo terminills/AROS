@@ -123,6 +123,24 @@ static void MakeConsAbout(struct Window *win, struct IntuitionBase *IntuitionBas
  */
 #define AUXF_DEVICE     0x40000000
 
+/*
+ * The comment above is wrong about "the top bits are spare", and it matters.
+ * AROS_FAST_BPTR is 1 on every target this tree builds (aros/<cpu>/cpu.h for
+ * x86_64, i386, arm, aarch64, ppc, riscv, riscv64), so a BPTR is the address
+ * itself and bit 30 is part of it. Masking AUXF_DEVICE off therefore CLEARS
+ * bit 30 of any FileSysStartupMsg whose address has it set, and the deref
+ * below bus faults. It depends only on where the FSSM landed, so the same
+ * mount boots cleanly again and again and then dies - seen as a "Hardware bus
+ * fault/address error" in a CONNG task at open_con+0xf0.
+ *
+ * The flag stays, because it is the documented convention with AUX: stubs
+ * from other sources. A stub that knows about this also passes the real,
+ * unmasked pointer in dp_Arg4 with this magic in dp_Arg5 (a startup packet
+ * uses dp_Arg1..dp_Arg3 only), and that is preferred when present. A stub
+ * that does not is handled exactly as before.
+ */
+#define AUXP_FSSM_MAGIC 0x41555844  /* 'AUXD' */
+
 #if defined(CONSOLE_SHOW_MENU)
 enum
 {
@@ -463,8 +481,13 @@ static struct filehandle *open_con(struct DosPacket *dp, LONG *perr)
      * pointer too, so no test on the value alone is enough.
      */
     if ((IPTR)dp->dp_Arg2 & AUXF_DEVICE) {
+        /* Prefer the unmasked pointer when the stub supplied one: masking the
+           flag out of dp_Arg2 corrupts bit 30 of the address on every
+           AROS_FAST_BPTR target. See AUXP_FSSM_MAGIC above. */
         struct FileSysStartupMsg *fssm =
-            BADDR((BPTR)((IPTR)dp->dp_Arg2 & ~AUXF_DEVICE));
+            ((IPTR)dp->dp_Arg5 == (IPTR)AUXP_FSSM_MAGIC && dp->dp_Arg4)
+                ? (struct FileSysStartupMsg *)(IPTR)dp->dp_Arg4
+                : BADDR((BPTR)((IPTR)dp->dp_Arg2 & ~AUXF_DEVICE));
 
         if (fssm && fssm->fssm_Device != BNULL) {
             ULONG len = AROS_BSTR_strlen(fssm->fssm_Device);
