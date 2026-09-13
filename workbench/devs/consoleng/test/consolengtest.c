@@ -34,21 +34,20 @@ static const char *lines[] =
     "Latin-1 still goes through Text(): \xc3\xa4 \xc3\xb6 \xc3\xbc \xc3\x9f\r\n",
     "\r\n",
 
-    /* THE TEST, part 1 - codepoints above U+00FF that Vera Mono DOES have.
+    /* Symbols above U+00FF. Every character here must appear as a real glyph;
+     * anything that comes out as a bare capital letter is a REASON CODE, not a
+     * character - see CONSOLENG_GLYPH_* in console_gcc.h ('E' = the face never
+     * opened, 'F' = the face is fine but has no such glyph).
      *
-     * The face's cmap was parsed directly (it maps 282 codepoints, 91 of them
-     * above U+00FF), so this list is evidence-based rather than assumed. Every
-     * character on this line must appear as a real glyph. Anything that comes
-     * out as a bare letter here is a reason code, and the glyph path is
-     * broken - see CONSOLENG_GLYPH_* in console_gcc.h.
-     *
-     * This replaces an earlier line that used Greek alpha/beta/gamma/delta and
-     * Cyrillic A/Be/Ve/Ge. Those all rendered as 'F' (OTERR_UnknownGlyph) and
-     * that looked like a failure of this device - but Bitstream Vera is a
-     * Latin-only face and simply does not contain them. The engine was right
-     * and the TEST was wrong. Note U+03C0 and U+03A9 below: Vera has exactly
-     * two Greek letters, and picking the other four was pure bad luck. */
-    "IN FACE (must render as glyphs):\r\n",
+     * Worth remembering how this line was chosen. An earlier version used
+     * Greek alpha/beta/gamma/delta and Cyrillic A/Be/Ve/Ge against Vera Mono,
+     * they all came back 'F', and that looked like the glyph path failing.
+     * It was not: Bitstream Vera is a Latin-only face (282 codepoints, checked
+     * by parsing its cmap) and does not contain them - while pi and omega, the
+     * only two Greek letters it does have, rendered perfectly. The engine was
+     * right and the TEST was wrong. That is why this file now states which
+     * face is expected to cover what, instead of assuming. */
+    "Symbols above Latin-1:\r\n",
     "  \xcf\x80 \xce\xa9 \xe2\x82\xac \xe2\x84\xa2 \xe2\x88\x9e \xe2\x88\x91 "
         "\xe2\x88\x9a \xe2\x89\xa4 \xe2\x89\xa5 \xe2\x89\xa0 \xe2\x80\xa2 "
         "\xe2\x80\xa6 \xc5\x82 \xef\xac\x81\r\n",
@@ -56,16 +55,35 @@ static const char *lines[] =
         "ellipsis l-stroke fi)\r\n",
     "\r\n",
 
-    /* THE TEST, part 2 - the control. These are genuinely absent from this
-     * face, so they MUST come back as 'F' (CONSOLENG_GLYPH_OBT_NOCP,
-     * ObtainInfoA returning OTERR_UnknownGlyph). An 'F' here is the device
-     * reporting honestly, not failing; an 'E' would mean the face never
-     * opened, which is a different bug entirely. Keeping both halves on one
-     * screen makes the screenshot self-checking. */
-    "NOT IN FACE (must show 'F' = no such glyph):\r\n",
-    "  \xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90 \xe2\x86\x90\xe2\x86\x92 "
-        "\xe2\xa0\x8b\xe2\xa0\x99 \xd0\x90\xd0\x91 \xce\xb1\xce\xb2\r\n",
-    "  (box drawing, arrows, braille, Cyrillic, Greek alpha/beta)\r\n",
+    /* THE POINT OF ALL OF THIS - a real TUI frame. This is the shape Ink
+     * draws, and Ink is what the Claude Code CLI renders with, so a box that
+     * joins up here is the actual goal rather than a glyph-by-glyph demo. */
+    "A real TUI frame (what Ink draws):\r\n",
+    "  \xe2\x94\x8c\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x90\r\n",
+    "  \xe2\x94\x82 consoleng \xe2\x9c\x93 ready \xe2\x94\x82\r\n",
+    "  \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\xa4\r\n",
+    "  \xe2\x94\x82 \xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x92\xe2\x96\x92"
+        "\xe2\x96\x91\xe2\x96\x91 62%  \xe2\x86\x92    \xe2\x94\x82\r\n",
+    "  \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x98\r\n",
+    "\r\n",
+    "Greek/Cyrillic: \xce\xb1 \xce\xb2 \xce\xb3 \xce\xb4  "
+        "\xd0\x90 \xd0\x91 \xd0\x92 \xd0\x93\r\n",
+
+    /* The control. Braille is the ONE thing DejaVu Sans Mono still lacks
+     * (verified against its cmap), and Ink's default spinner is braille - so
+     * this 'F' is a real, known limitation rather than a defect, and keeping
+     * it on screen stops it being rediscovered as a bug later. */
+    "Braille (absent even from DejaVu - Ink's spinner): "
+        "\xe2\xa0\x8b\xe2\xa0\x99\xe2\xa0\xb9\r\n",
     NULL
 };
 
@@ -140,10 +158,18 @@ int main(void)
      * default console font is a bitmap font with no .otag, so it has no
      * outline engine and NOTHING above Latin-1 can be rasterised from it -
      * the glyph path correctly falls back to a placeholder. Exercising the
-     * engine at all requires a font that has one. "Vera Mono" ships with this
-     * tree (Fonts/Vera Mono.otag) and is monospaced, which a terminal wants. */
+     * engine at all requires a font that has one.
+     *
+     * DejaVuSansMono, not "Vera Mono". Vera is monospaced and has an .otag,
+     * but it is a Latin-only face: parsing its cmap shows 282 codepoints, and
+     * box drawing, arrows, blocks, Cyrillic and all but two Greek letters are
+     * simply absent - so a TUI drawn in it is blank cells, however good the
+     * glyph path is. DejaVu is Vera's upstream-maintained successor with the
+     * same metrics and 3260 codepoints covering the ranges a terminal needs.
+     * The name is deliberately space-free so CON:-style FONT=/OSC 50 options
+     * need no quoting. */
     {
-        static const char setfont[] = "\x1b]50;Vera Mono,16\x07";
+        static const char setfont[] = "\x1b]50;DejaVuSansMono,16\x07";
         ioreq->io_Command = CMD_WRITE;
         ioreq->io_Data    = (APTR)setfont;
         ioreq->io_Length  = sizeof(setfont) - 1;
