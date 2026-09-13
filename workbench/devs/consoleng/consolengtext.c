@@ -30,17 +30,20 @@
  * autowrap, the redraw controls, UCS-4 charmap cells - is in the device and is
  * unaffected by this file.
  *
- * What IS lost: box-drawing, arrows, Braille spinners and emoji draw as a
- * placeholder rather than their real glyph. A TUI stays laid out and usable;
- * it does not look right. That is a visible, honest degradation and not a
- * silent one - do not describe this device as matching OPAL's rendering until
- * the glyph path exists.
+ * This file decodes the run and routes each codepoint:
+ *   < 0x100  -> Text() as a single Latin-1 byte, which is exactly the factory
+ *               ceiling, so this device is never worse than the stock one;
+ *   >= 0x100 -> consolengglyph.c, which opens this device's OWN outline engine
+ *               and rasterises the codepoint (diskfont closes its engine after
+ *               pre-rendering 0-255, which is the whole reason a higher
+ *               codepoint cannot be asked for later).
  *
- * The callers have already filled the cell background and advance the cursor
- * by CELLS, so the only job here is to put something of the right width where
- * the glyph would have gone. One placeholder per codepoint keeps the column
- * arithmetic honest; drawing the raw UTF-8 bytes through Text() would emit two
- * to four mojibake characters per cell and shear the whole line.
+ * The placeholder is now only the LAST resort - a bitmap font, a font with no
+ * outline engine, or a codepoint the face does not cover. It is kept because
+ * the callers have already filled the cell background and advance the cursor
+ * by CELLS: something of the right width has to go where the glyph would have
+ * been. Drawing the raw UTF-8 bytes through Text() instead would emit two to
+ * four mojibake characters per cell and shear the whole line.
  */
 
 /* Decode one UTF-8 sequence, advancing *cursor. Malformed input is tolerated
@@ -84,7 +87,9 @@ static ULONG ConsoleNGUTF8Next(const UBYTE **cursor, const UBYTE *end)
     return cp;
 }
 
-void ConsoleNGTextUTF8(struct Library *GfxBase, struct RastPort *rp,
+void ConsoleNGTextUTF8(struct Library *GfxBase,
+                       struct ConsoleBase *ConsoleDevice,
+                       struct RastPort *rp,
                        CONST_STRPTR string, ULONG byteLen)
 {
     const UBYTE *p   = (const UBYTE *)string;
@@ -125,11 +130,34 @@ void ConsoleNGTextUTF8(struct Library *GfxBase, struct RastPort *rp,
         }
         else
         {
-            /* Above Latin-1 there is genuinely no glyph to be had without a
-               live GlyphEngine on the font, which diskfont closes at the end
-               of OTAG_ReadOutlineFont (bullet.c:1048). Placeholder keeps the
-               column arithmetic honest until that changes. */
-            Text(rp, (CONST_STRPTR)"?", 1);
+            /* Above Latin-1: ask this device's own GlyphEngine, which exists
+               precisely because diskfont closes its own at the end of
+               OTAG_ReadOutlineFont (bullet.c:1048). The pen position has
+               already been set by the caller, so hand the glyph path the
+               current position explicitly and advance by one cell.
+
+               Fall back to the placeholder only when there really is no glyph
+               to be had - a bitmap font, a font with no outline engine, or a
+               codepoint the face does not cover. */
+            LONG why = ConsolengGlyphDraw(GfxBase, ConsoleDevice, rp, cp,
+                                          rp->cp_x, rp->cp_y);
+
+            if (why != CONSOLENG_GLYPH_OK)
+            {
+                /* Draw the REASON, not a generic '?'. See the note in
+                   console_gcc.h: this device cannot use kprintf, so the
+                   rendered cell is the only diagnostic channel it has. */
+                UBYTE d = (why < 10) ? (UBYTE)('0' + why)
+                                     : (UBYTE)('A' + (why - 10));
+
+                Text(rp, (CONST_STRPTR)&d, 1);
+            }
+            else
+            {
+                /* BltTemplate does not move the pen; keep the caller's cell
+                   arithmetic intact by advancing one character width. */
+                Move(rp, rp->cp_x + rp->Font->tf_XSize, rp->cp_y);
+            }
         }
 
         if (p <= prev)

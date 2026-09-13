@@ -90,6 +90,7 @@ static int GM_UNIQUENAME(Init) (LIBBASETYPEPTR ConsoleDevice)
     InitSemaphore(&ConsoleDevice->unitListLock);
     InitSemaphore(&ConsoleDevice->consoleTaskLock);
     InitSemaphore(&ConsoleDevice->copyBufferLock);
+    InitSemaphore(&ConsoleDevice->glyphLock);
 
     ConsoleDevice->copyBuffer = 0;
     ConsoleDevice->copyBufferSize = 0;
@@ -118,6 +119,8 @@ static int GM_UNIQUENAME(Init) (LIBBASETYPEPTR ConsoleDevice)
 
 static int GM_UNIQUENAME(Expunge) (LIBBASETYPEPTR ConsoleDevice)
 {
+    /* Drop the outline engine this device opened for Unicode glyphs. */
+    ConsolengGlyphUnbind(ConsoleDevice);
     CloseLibrary(ConsoleDevice->cb_IntuitionBase);
     CloseLibrary(ConsoleDevice->cb_KeymapBase);
     return TRUE;

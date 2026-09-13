@@ -360,6 +360,23 @@ struct ConsoleBase
     struct SignalSemaphore unitListLock;
     struct SignalSemaphore consoleTaskLock;
 
+    /* Unicode glyph rendering above Latin-1 (consolengglyph.c). This device
+       opens its OWN outline engine for the font in use, because diskfont
+       closes its engine after pre-rendering codepoints 0-255 and nothing can
+       rasterise a higher one afterwards. Cached because binding costs a file
+       read; guarded because units render from more than one task. Kept on the
+       device rather than in file statics so a second unit or a font change
+       cannot corrupt another unit's engine. */
+    struct SignalSemaphore glyphLock;
+    struct Library     *glyphEngineBase;    /* the outline engine library */
+    struct GlyphEngine *glyphEngine;
+    struct TextFont    *glyphFont;          /* font the engine is bound to */
+    APTR                glyphOTag;          /* struct ConsolengOTag * */
+    UBYTE              *glyphMask;          /* 1-bit scratch for BltTemplate */
+    ULONG               glyphMaskSize;
+    BOOL                glyphFailed;        /* this font has no engine */
+    LONG                glyphWhy;           /* CONSOLENG_GLYPH_* reason */
+
     struct Interrupt *inputHandler;
     /* Second input handler, BELOW intuition (priority < 50). Intuition
        delivers window events (IECLASS_SIZEWINDOW, IECLASS_REFRESHWINDOW,
@@ -420,9 +437,47 @@ struct ConsoleBase
  * scope exactly as the Text() macro does under __GRAPHICS_NOLIBBASE__. */
 /* GfxBase is a struct Library * throughout this device (see setabpen above),
  * not a struct GfxBase *. */
-void ConsoleNGTextUTF8(struct Library *GfxBase, struct RastPort *rp,
+void ConsoleNGTextUTF8(struct Library *GfxBase,
+                       struct ConsoleBase *ConsoleDevice,
+                       struct RastPort *rp,
                        CONST_STRPTR string, ULONG byteLen);
+
+/* consolengglyph.c: this device's own Unicode glyph path above Latin-1.
+ *
+ * ConsolengGlyphDraw returns WHY it failed, not just that it did. A
+ * disk-loaded device cannot call kprintf() (that needs the kernel-only
+ * _arosdebuglock - see consolengglyph.c), so the only diagnostic channel
+ * available is what gets drawn: consolengtext.c renders the reason code as a
+ * digit instead of '?'. Ugly on purpose, and only visible where a glyph was
+ * impossible anyway. */
+#define CONSOLENG_GLYPH_OK             0
+#define CONSOLENG_GLYPH_NOFONT         1   /* no rastport font / no name */
+#define CONSOLENG_GLYPH_NOOTAG         2   /* no .otag: bitmap font */
+#define CONSOLENG_GLYPH_NOENGINENAME   3   /* .otag has no OT_Engine */
+#define CONSOLENG_GLYPH_NOLIB          4   /* engine .library would not open */
+#define CONSOLENG_GLYPH_NOOPENENGINE   5   /* OpenEngine() failed */
+#define CONSOLENG_GLYPH_SETINFO        6   /* SetInfoA rejected otag/size */
+#define CONSOLENG_GLYPH_NOGLYPH        7   /* ObtainInfoA left gm NULL */
+#define CONSOLENG_GLYPH_NOMEM          8
+#define CONSOLENG_GLYPH_GM_NOBITMAP    9   /* gm returned, glm_BitMap NULL */
+#define CONSOLENG_GLYPH_GM_EMPTY      10   /* gm+bitmap, zero black box ('A') */
+#define CONSOLENG_GLYPH_MASKFAIL      11   /* mask build failed ('B') */
+#define CONSOLENG_GLYPH_SETCODE       12   /* engine rejected OT_GlyphCode ('C') */
+#define CONSOLENG_GLYPH_NOFACE        13   /* engine has no usable face ('D') */
+/* These two come from ObtainInfoA's OWN return code rather than from gm being
+   NULL, and they point at opposite halves of the system - 'E' means the face
+   never opened or the instance (point size / DPI) was rejected, so the
+   codepoint is irrelevant; 'F' means the face is open and working and simply
+   does not cover this codepoint. See the long note at the gm==NULL branch in
+   consolengglyph.c. */
+#define CONSOLENG_GLYPH_OBT_NOFACE    14   /* OTERR_Failure: no face/instance ('E') */
+#define CONSOLENG_GLYPH_OBT_NOCP      15   /* OTERR_UnknownGlyph: face ok ('F') */
+
+LONG ConsolengGlyphDraw(struct Library *GfxBase,
+                        struct ConsoleBase *ConsoleDevice,
+                        struct RastPort *rp, ULONG cp, LONG x, LONG base_y);
+void ConsolengGlyphUnbind(struct ConsoleBase *ConsoleDevice);
 #define TextUTF8(rp, string, byteLen) \
-    ConsoleNGTextUTF8(GfxBase, (rp), (string), (byteLen))
+    ConsoleNGTextUTF8(GfxBase, ConsoleDevice, (rp), (string), (byteLen))
 
 #endif /* CONSOLE_GCC_H */
