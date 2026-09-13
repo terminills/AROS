@@ -160,21 +160,31 @@ static Object *stdcon_new(Class *cl, Object *o, struct opSet *msg)
             data->dri = GetScreenDrawInfo(CU(o)->cu_Window->WScreen);
             if (data->dri)
             {
-                /* ANSI pens for SGR 30-37/40-47; identity fallback if the
-                   colormap cannot supply them. xterm-256/truecolor pens
-                   are obtained lazily on first use. */
+                /* SGR 30-37/40-47 stay on the SYSTEM PENS - pens[i] == i, as
+                   set above and as the stock console.device does.
+
+                   This device used to ObtainBestPen() true ANSI RGB for these
+                   eight, which is more faithful to a terminal and is the wrong
+                   default here. AROS's own prompt is written against pen
+                   INDICES, not against ANSI colours (workbench/s/Shell-Startup:
+                   "*E[42m*E[31m%N.*E[43m*E[32m%s*E[42m*E[31m>*E[40m*E[31m "),
+                   so on the stock console those numbers pick muted Workbench
+                   theme colours. Resolving them to real red/green instead made
+                   an ordinary Shell prompt come out vivid red-on-green - the
+                   device looked broken next to the console it sits beside.
+                   terminills: it should look like a normal Console by default.
+
+                   Nothing is lost. An application that genuinely wants colour
+                   asks for it explicitly with xterm-256 (SGR 38;5;n) or
+                   truecolor (SGR 38;2;r;g;b), and those pens are still
+                   obtained lazily on first use, below and in
+                   Console_GetColorPen(). Only the eight legacy slots that
+                   predate any of that are left alone. */
                 data->cm = CU(o)->cu_Window->WScreen->ViewPort.ColorMap;
                 for (i = 0; i < 256; i++)
                     data->xtermpens[i] = -1;
                 for (i = 0; i < 8; i++)
-                {
-                    LONG pen = stdcon_bestpen(data, ansi_rgb[i][0],
-                        ansi_rgb[i][1], ansi_rgb[i][2]);
-
-                    data->obtainedpens[i] = pen;
-                    if (pen != -1)
-                        data->pens[i] = (UWORD) pen;
-                }
+                    data->obtainedpens[i] = -1;
 
                 data->penmap[CONUNIT_PEN_DEFBG] =
                     &data->dri->dri_Pens[BACKGROUNDPEN];
