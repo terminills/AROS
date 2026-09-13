@@ -187,7 +187,7 @@ workbench-libs-v8-linklib-v8monolith-stub:
     conffile=v8.conf \
     files="$(FILES) $(FUNCS) $(V8_STUB_FILES)" \
     uselibs="$(V8_USELIBS)" \
-    cxxfiles="v8_bridge std_fix $(V8_PLATFORM_CXXFILES)"
+    cxxfiles="v8_bridge std_fix v8_allocator $(V8_PLATFORM_CXXFILES)"
 
 # Copy include files to system includes
 INCLUDE_FILES := $(call WILDCARD, include/*.h)
