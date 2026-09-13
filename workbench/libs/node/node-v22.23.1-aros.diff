@@ -2487,7 +2487,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    return scope.Escape(fun);
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node.cc
 --- node-v22.23.1/src/node.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node.cc	2026-09-13 00:54:01.448405711 -0500
++++ node-v22.23.1/src/node.cc	2026-09-13 02:12:04.236406548 -0500
 @@ -134,6 +134,15 @@
  #include <tuple>
  #include <vector>
@@ -2622,28 +2622,63 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (result->exit_code_enum() != ExitCode::kNoFailure) {
        result->early_return_ = true;
        return result;
-@@ -1283,13 +1336,17 @@
+@@ -1282,14 +1335,45 @@
+ #endif  // HAVE_OPENSSL
    }
  
++  /* AROS: the V8 platform, V8 itself and cppgc's process heap are
++     PROCESS-GLOBAL and ONE-WAY. Upstream disposes them from
++     TearDownOncePerProcess() on the way to process exit, and V8 does not
++     support V8::Initialize() after V8::Dispose(). node.library outlives the
++     AROS process that opened it, so on a second C:Node these are already up;
++     re-initializing them faulted reading NULL+8 (CR2=0x8, at the
++     "v8-platform enter" phase, right after the previous run's
++     V8::DisposePlatform()).
++
++     So: initialize them exactly once per library load and reuse them after
++     that. per_process::v8_initialized is the existing flag for "these are
++     up"; the matching half of this fix is that TearDownOncePerProcess() must
++     not dispose them and must not clear that flag on AROS.
++
++     result->platform_ is still assigned on every invocation - the caller
++     needs the pointer whether or not we created it this time round. */
    if (!(flags & ProcessInitializationFlags::kNoInitializeNodeV8Platform)) {
 +    NODE_AROS_PHASE("v8-platform enter");
++#ifdef __AROS__
++    if (!per_process::v8_initialized) {
++      per_process::v8_platform.Initialize(
++          static_cast<int>(per_process::cli_options->v8_thread_pool_size));
++    }
++#else
      per_process::v8_platform.Initialize(
          static_cast<int>(per_process::cli_options->v8_thread_pool_size));
++#endif
      result->platform_ = per_process::v8_platform.Platform();
 +    NODE_AROS_PHASE("v8-platform leave");
    }
  
-   if (!(flags & ProcessInitializationFlags::kNoInitializeV8)) {
+-  if (!(flags & ProcessInitializationFlags::kNoInitializeV8)) {
++  if (!(flags & ProcessInitializationFlags::kNoInitializeV8)
++#ifdef __AROS__
++      && !per_process::v8_initialized
++#endif
++  ) {
 +    NODE_AROS_PHASE("v8-initialize enter");
      V8::Initialize();
 +    NODE_AROS_PHASE("v8-initialize leave");
  
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
-@@ -1298,11 +1355,13 @@
+@@ -1297,12 +1381,18 @@
+     absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
    }
  
-   if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
+-  if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
++  if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)
++#ifdef __AROS__
++      && !per_process::v8_initialized
++#endif
++  ) {
 +    NODE_AROS_PHASE("cppgc-initialize enter");
      v8::PageAllocator* allocator = nullptr;
      if (result->platform_ != nullptr) {
@@ -2654,7 +2689,43 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
  #if NODE_USE_V8_WASM_TRAP_HANDLER
-@@ -1568,14 +1627,19 @@
+@@ -1355,6 +1445,27 @@
+     ResetSignalHandlers();
+   }
+ 
++#ifdef __AROS__
++  /* Matching half of the re-invocation fix in
++     InitializeOncePerProcessInternal(): do NOT tear down the process-global
++     V8 state here, and do NOT clear per_process::v8_initialized.
++
++     These three disposals are one-way. Upstream only ever reaches them on the
++     way to process exit, so "leaking" them costs nothing there. On AROS
++     node.library outlives the process, NodeStart() returns to its caller, and
++     the next C:Node would then be initializing against a disposed platform -
++     which faulted at NULL+8. This is the same shape as the uv_default_loop
++     problem OPAL fixed in c12662e16b ("upstream Node relies on process exit
++     to reclaim uv_default_loop, but NodeStart returns to the caller"), except
++     that for V8 the answer is the opposite: uv state must be released because
++     it holds AROS signals, while V8 state must be KEPT because V8 cannot be
++     re-initialized.
++
++     The per-invocation Isolate is still created and disposed normally, which
++     V8 does support. What survives is the platform, the V8 process state and
++     cppgc's process heap - i.e. exactly what one library load should own. */
++  (void)flags;
++#else
+   if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
+     cppgc::ShutdownProcess();
+   }
+@@ -1380,6 +1491,7 @@
+     // will never be fully cleaned up.
+     per_process::v8_platform.Dispose();
+   }
++#endif  // __AROS__ : process-global V8 state is kept for the library's life
+ 
+ #if HAVE_OPENSSL
+   crypto::CleanupCachedRootCertificates();
+@@ -1568,14 +1680,19 @@
  }
  
  static ExitCode StartInternal(int argc, char** argv) {
