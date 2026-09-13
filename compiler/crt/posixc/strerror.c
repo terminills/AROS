@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     C99 function strerror().
 */
@@ -45,6 +45,13 @@ static const char * _errstrings[];
 {
     char *s;
     
+    /* Negative is never a valid errno. Without this the lookup below indexes
+       BEFORE the table - MIN() returns n unchanged when n is negative - and
+       returns whatever is there, which the caller then uses as a string.
+       See the long note in strerror_r() below: this is a real field crash. */
+    if (n < 0)
+        return (char *)"Unknown error";
+
     s = (char *)_errstrings[MIN(n, __POSIXC_ELAST+1)];
 
     return (s != NULL ? s : __stdc_strerror(n));
@@ -216,6 +223,33 @@ static const char * _errstrings[__POSIXC_ELAST+2] =
 {
     const char *msg;
     int n = MIN(errnum, __POSIXC_ELAST + 1);
+
+    /*
+     * A negative errnum used to index BEFORE _errstrings[]: MIN() returns n
+     * unchanged when it is negative. The out-of-bounds read usually yields
+     * something non-NULL, which then passes BOTH NULL checks below and reaches
+     * strlen() as a bogus pointer.
+     *
+     * This is the AROS Chromium "SSL_do_handshake crash" (field report,
+     * Chromium 124.0.6367.0, pc-x86_64):
+     *
+     *   PC:            stdc.library!strlen+0x0
+     *   Fault-Address: 0x31        rdi=0x31   cr2=0x31
+     *   rsi=r12=0xffffff93  (= -109)
+     *
+     * -109 is net::ERR_ADDRESS_UNREACHABLE (net/base/net_error_list.h:165),
+     * not an errno. Chromium's base::safe_strerror() funnels into this
+     * function via wrap_posix_strerror_r(&strerror_r, ...), so a net error
+     * code handed to it read 109 pointers before the table, got back 0x31,
+     * and faulted in strlen.
+     *
+     * It looked driver-specific at first - far more frequent on
+     * pcnet32.device than on e1000.device - but that is only because an
+     * unreliable NIC produces more failed connections, and this fires on the
+     * FAILURE path. The reporter was right that it is not driver related.
+     */
+    if (errnum < 0)
+        n = __POSIXC_ELAST + 1;         /* the NULL "too high" slot */
 
     msg = _errstrings[n];
 
