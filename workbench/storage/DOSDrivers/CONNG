@@ -5,6 +5,7 @@
  * arrows, Greek, Cyrillic - the glyphs a TUI is built from), but nothing
  * selected it: CON: is wired to console.device, so no stream ever arrived.
  *
+ *   Mount CONNG: FROM SYS:Storage/DOSDrivers/CONNG
  *   NEWSHELL CONNG:
  *
  * gives a Shell in a consoleng window, leaving CON: and console.device
@@ -19,6 +20,22 @@
  * io_Data = NULL, which used to fail for a console because console.device
  * takes a Window at open time; consoleng.device now opens its own window when
  * it is handed none, so this mount is pure configuration.
+ *
+ * WHY THIS LIVES IN Storage/ AND NOT Devs/DOSDrivers.
+ *
+ * Entries in DEVS:DOSDrivers are auto-mounted by S:Startup-Sequence, and
+ * mounting this one is not free: con-handler opens its device from the STARTUP
+ * packet (con_handler.c calls open_con() on the packet it receives at
+ * startup, not lazily on first Open()), and consoleng.device opens its own
+ * window when handed none. So a boot-time mount put an empty "AROS Console"
+ * window on the Workbench of every boot, covering the desktop, before anyone
+ * had asked for a console. Caught by booting the alpha4 ISO at 1 core.
+ *
+ * From Storage/ it ships with the system, costs nothing at boot, and is there
+ * when it is wanted:
+ *
+ *   Mount CONNG: FROM SYS:Storage/DOSDrivers/CONNG
+ *   NEWSHELL CONNG:
  *
  * EHandler rather than Handler: only that form is given a FileSysStartupMsg,
  * so with a plain Handler the Device and Unit below would be parsed and then
