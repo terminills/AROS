@@ -12,6 +12,7 @@
 #include <exec/types.h>
 #include <proto/debug.h>
 #include <proto/electron.h>
+#include <proto/v8.h>
 
 #include "include/capi/cef_app_capi.h"
 
@@ -57,9 +58,34 @@ int main(int argc, char **argv)
     LONG initialize_result;
 
     (void)argc;
+
+    /* Before anything runs, the seam must still be at its default. If this is
+       already TRUE something installed an allocator behind our back and the
+       assertion below would prove nothing. */
+    KPrintF("[ELECTRON-LIFECYCLE] shared heap before node: %ld\n",
+        (LONG)V8AllocatorIsInstalled());
+
     KPrintF("[ELECTRON-LIFECYCLE] node begin\n");
     node_result = ElectronRunNode(3, node_argv);
     KPrintF("[ELECTRON-LIFECYCLE] node end rc=%ld\n", node_result);
+
+    /*
+     * THE ASSERTION THIS TEST EXISTS FOR.
+     *
+     * ElectronRunNode() installs cef-blink's heap into v8.library before
+     * calling NodeStart(), so that Blink and V8 share one allocator. Nothing
+     * in the lifecycle output distinguishes "installed" from "silently did
+     * nothing" - it passes either way - and the libraries involved cannot log,
+     * because a disk-loaded library calling kprintf will not link on a pc
+     * target. So ask v8.library directly.
+     */
+    if (!V8AllocatorIsInstalled())
+    {
+        KPrintF("[ELECTRON-LIFECYCLE] FAIL shared heap NOT installed -"
+            " Blink and V8 are on separate allocators\n");
+        return 20;
+    }
+    KPrintF("[ELECTRON-LIFECYCLE] shared heap installed\n");
     if (node_result != 0)
         return 20;
 

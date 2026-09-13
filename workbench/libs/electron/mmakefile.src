@@ -39,7 +39,7 @@ ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
     files=test_electron_lifecycle \
     cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
     targetdir=$(AROS_C) \
-    uselibs="electron debug stdc"
+    uselibs="electron v8 debug stdc"
 
 #MM workbench-libs-electron-context-test : workbench-libs-electron
 %build_prog mmake=workbench-libs-electron-context-test \

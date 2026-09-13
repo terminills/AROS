@@ -85,6 +85,7 @@ endif
 
 # List of all implementation files
 FUNCS := v8allocatorinstall \
+    v8allocatorisinstalled \
     v8initialize \
          v8cleanup \
          v8createisolate \
