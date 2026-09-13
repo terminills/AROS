@@ -1,3 +1,4 @@
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/configure.py /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/configure.py
 --- node-v22.23.1/configure.py	2026-06-23 11:27:38.000000000 -0500
 +++ node-v22.23.1/configure.py	2026-07-26 12:11:56.876427176 -0500
 @@ -943,6 +943,12 @@
@@ -43,6 +44,7 @@
  output = {
    'variables': variables,
    'target_defaults': output,
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/cares/config/linux/ares_config.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/cares/config/linux/ares_config.h
 --- node-v22.23.1/deps/cares/config/linux/ares_config.h	2026-06-23 11:27:39.000000000 -0500
 +++ node-v22.23.1/deps/cares/config/linux/ares_config.h	2026-07-25 19:19:39.118058420 -0500
 @@ -570,4 +570,29 @@
@@ -77,6 +79,7 @@
 +#  define INET6_ADDRSTRLEN 46
 +# endif
 +#endif
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/llhttp/llhttp.gyp /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/llhttp/llhttp.gyp
 --- node-v22.23.1/deps/llhttp/llhttp.gyp	2026-06-23 11:27:39.000000000 -0500
 +++ node-v22.23.1/deps/llhttp/llhttp.gyp	2026-07-26 11:27:49.880191623 -0500
 @@ -17,6 +17,11 @@
@@ -91,6 +94,7 @@
      },
    ]
  }
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/openssl/openssl/crypto/dso/dso_dlfcn.c /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/openssl/openssl/crypto/dso/dso_dlfcn.c
 --- node-v22.23.1/deps/openssl/openssl/crypto/dso/dso_dlfcn.c	2026-06-23 11:27:40.000000000 -0500
 +++ node-v22.23.1/deps/openssl/openssl/crypto/dso/dso_dlfcn.c	2026-07-26 12:26:26.113130609 -0500
 @@ -19,6 +19,14 @@
@@ -108,6 +112,7 @@
  #ifdef DSO_DLFCN
  
  #ifdef HAVE_DLFCN_H
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/simdjson/simdjson.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/simdjson/simdjson.h
 --- node-v22.23.1/deps/simdjson/simdjson.h	2026-06-23 11:27:41.000000000 -0500
 +++ node-v22.23.1/deps/simdjson/simdjson.h	2026-07-25 20:14:31.905043506 -0500
 @@ -4351,7 +4351,7 @@
@@ -137,6 +142,7 @@
  simdjson_inline padded_memory_map::padded_memory_map(const char *filename) noexcept {
  
      int fd = open(filename, O_RDONLY);
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/uvwasi/src/clocks.c /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/uvwasi/src/clocks.c
 --- node-v22.23.1/deps/uvwasi/src/clocks.c	2026-06-23 11:27:41.000000000 -0500
 +++ node-v22.23.1/deps/uvwasi/src/clocks.c	2026-07-25 19:20:48.315617538 -0500
 @@ -123,6 +123,8 @@
@@ -178,6 +184,7 @@
    UVWASI__CLOCK_GETTIME_AND_RETURN(CLOCK_THREAD_CPUTIME_ID, *time);
  #elif defined(RUSAGE_THREAD) || defined(RUSAGE_LWP)
    UVWASI__SLOW_GETRES_AND_RETURN(*time);
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/uvwasi/src/uvwasi.c /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/uvwasi/src/uvwasi.c
 --- node-v22.23.1/deps/uvwasi/src/uvwasi.c	2026-06-23 11:27:41.000000000 -0500
 +++ node-v22.23.1/deps/uvwasi/src/uvwasi.c	2026-07-25 19:15:49.002530066 -0500
 @@ -36,8 +36,8 @@
@@ -191,6 +198,1052 @@
  # undef POSIX_FADV_NORMAL
  #endif
  
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/include/cppgc/internal/write-barrier.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/include/cppgc/internal/write-barrier.h
+--- node-v22.23.1/deps/v8/include/cppgc/internal/write-barrier.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/include/cppgc/internal/write-barrier.h	2026-09-11 22:54:39.346292217 -0500
+@@ -115,7 +115,13 @@
+   // The FlagUpdater class allows cppgc internal to update
+   // |write_barrier_enabled_|.
+   class FlagUpdater;
+-  static bool IsEnabled() { return write_barrier_enabled_.MightBeEntered(); }
++  static bool IsEnabled() {
++#if V8_OS_AROS
++    return WriteBarrierEnabledStorage().MightBeEntered();
++#else
++    return write_barrier_enabled_.MightBeEntered();
++#endif
++  }
+ 
+  private:
+   WriteBarrier() = delete;
+@@ -150,7 +156,13 @@
+       HeapHandle* heap_handle);
+ #endif  // CPPGC_YOUNG_GENERATION
+ 
++#if V8_OS_AROS
++  // Keep the process-wide barrier flag in v8.library and make inline Blink
++  // callers import an accessor function, not a duplicate data symbol.
++  static AtomicEntryFlag& WriteBarrierEnabledStorage();
++#else
+   static AtomicEntryFlag write_barrier_enabled_;
++#endif
+ };
+ 
+ template <WriteBarrier::Type type>
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/include/cppgc/process-heap-statistics.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/include/cppgc/process-heap-statistics.h
+--- node-v22.23.1/deps/v8/include/cppgc/process-heap-statistics.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/include/cppgc/process-heap-statistics.h	2026-09-11 22:54:39.346456734 -0500
+@@ -18,15 +18,31 @@
+ class V8_EXPORT ProcessHeapStatistics final {
+  public:
+   static size_t TotalAllocatedObjectSize() {
++#if V8_OS_AROS
++    return TotalAllocatedObjectSizeStorage().load(std::memory_order_relaxed);
++#else
+     return total_allocated_object_size_.load(std::memory_order_relaxed);
++#endif
+   }
+   static size_t TotalAllocatedSpace() {
++#if V8_OS_AROS
++    return TotalAllocatedSpaceStorage().load(std::memory_order_relaxed);
++#else
+     return total_allocated_space_.load(std::memory_order_relaxed);
++#endif
+   }
+ 
+  private:
++#if V8_OS_AROS
++  // AROS keeps the V8 engine in v8.library. Inline cppgc users in Chromium
++  // must reach the library-owned counters through function imports instead of
++  // creating executable-side data relocations for these process globals.
++  static std::atomic_size_t& TotalAllocatedSpaceStorage();
++  static std::atomic_size_t& TotalAllocatedObjectSizeStorage();
++#else
+   static std::atomic_size_t total_allocated_space_;
+   static std::atomic_size_t total_allocated_object_size_;
++#endif
+ 
+   friend class internal::ProcessHeapStatisticsUpdater;
+ };
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/include/v8config.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/include/v8config.h
+--- node-v22.23.1/deps/v8/include/v8config.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/include/v8config.h	2026-09-11 22:54:39.346619438 -0500
+@@ -67,6 +67,7 @@
+ //
+ //  V8_OS_ANDROID       - Android
+ //  V8_OS_BSD           - BSDish (macOS, Net/Free/Open/DragonFlyBSD)
++//  V8_OS_AROS          - AROS Research Operating System
+ //  V8_OS_CYGWIN        - Cygwin
+ //  V8_OS_DRAGONFLYBSD  - DragonFlyBSD
+ //  V8_OS_FREEBSD       - FreeBSD
+@@ -84,7 +85,12 @@
+ //  V8_OS_AIX           - AIX
+ //  V8_OS_WIN           - Microsoft Windows
+ 
+-#if defined(__ANDROID__)
++#if defined(__AROS__)
++# define V8_OS_AROS 1
++# define V8_OS_POSIX 1
++# define V8_OS_STRING "aros"
++
++#elif defined(__ANDROID__)
+ # define V8_OS_ANDROID 1
+ # define V8_OS_LINUX 1
+ # define V8_OS_POSIX 1
+@@ -168,6 +174,7 @@
+ // -----------------------------------------------------------------------------
+ // Operating system detection (target)
+ //
++//  V8_TARGET_OS_AROS
+ //  V8_TARGET_OS_ANDROID
+ //  V8_TARGET_OS_FUCHSIA
+ //  V8_TARGET_OS_IOS
+@@ -181,7 +188,8 @@
+ #ifdef V8_HAVE_TARGET_OS
+ 
+ // The target OS is provided, just check that at least one known value is set.
+-# if !defined(V8_TARGET_OS_ANDROID) \
++# if !defined(V8_TARGET_OS_AROS) \
++  && !defined(V8_TARGET_OS_ANDROID) \
+   && !defined(V8_TARGET_OS_FUCHSIA) \
+   && !defined(V8_TARGET_OS_IOS) \
+   && !defined(V8_TARGET_OS_LINUX) \
+@@ -193,7 +201,8 @@
+ 
+ #else  // V8_HAVE_TARGET_OS
+ 
+-# if defined(V8_TARGET_OS_ANDROID) \
++# if defined(V8_TARGET_OS_AROS) \
++  || defined(V8_TARGET_OS_ANDROID) \
+   || defined(V8_TARGET_OS_FUCHSIA) \
+   || defined(V8_TARGET_OS_IOS) \
+   || defined(V8_TARGET_OS_LINUX) \
+@@ -204,6 +213,10 @@
+ # endif
+ 
+ // Fall back to the detected host OS.
++#ifdef V8_OS_AROS
++# define V8_TARGET_OS_AROS
++#endif
++
+ #ifdef V8_OS_ANDROID
+ # define V8_TARGET_OS_ANDROID
+ #endif
+@@ -230,7 +243,9 @@
+ 
+ #endif  // V8_HAVE_TARGET_OS
+ 
+-#if defined(V8_TARGET_OS_ANDROID)
++#if defined(V8_TARGET_OS_AROS)
++# define V8_TARGET_OS_STRING "aros"
++#elif defined(V8_TARGET_OS_ANDROID)
+ # define V8_TARGET_OS_STRING "android"
+ #elif defined(V8_TARGET_OS_FUCHSIA)
+ # define V8_TARGET_OS_STRING "fuchsia"
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/base/macros.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/base/macros.h
+--- node-v22.23.1/deps/v8/src/base/macros.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/base/macros.h	2026-09-11 22:54:39.346860088 -0500
+@@ -12,6 +12,13 @@
+ #include "src/base/compiler-specific.h"
+ #include "src/base/logging.h"
+ 
++#if V8_OS_AROS
++// exec/types.h exposes these legacy storage qualifiers in the global macro
++// namespace, where they collide with V8 enum values.
++#undef GLOBAL
++#undef REGISTER
++#endif
++
+ // No-op macro which is used to work around MSVC's funky VA_ARGS support.
+ #define EXPAND(x) x
+ 
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/base/platform/memory.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/base/platform/memory.h
+--- node-v22.23.1/deps/v8/src/base/platform/memory.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/base/platform/memory.h	2026-09-11 22:54:39.347022271 -0500
+@@ -19,13 +19,13 @@
+ 
+ #if V8_OS_DARWIN
+ #include <malloc/malloc.h>
+-#else  // !V8_OS_DARWIN
++#elif !V8_OS_AROS
+ #include <malloc.h>
+-#endif  // !V8_OS_DARWIN
++#endif
+ 
+-#if (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_SOLARIS) || V8_OS_WIN
++#if (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_AROS && !V8_OS_SOLARIS) || V8_OS_WIN
+ #define V8_HAS_MALLOC_USABLE_SIZE 1
+-#endif  // (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_SOLARIS) || V8_OS_WIN
++#endif
+ 
+ namespace v8::base {
+ 
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/base/platform/platform.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/base/platform/platform.cc
+--- node-v22.23.1/deps/v8/src/base/platform/platform.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/base/platform/platform.cc	2026-09-11 22:54:39.347482421 -0500
+@@ -10,22 +10,35 @@
+ namespace {
+ 
+ // A pointer to current thread's stack beginning.
++#if !V8_OS_AROS
+ thread_local void* thread_stack_start = nullptr;
++#endif
+ 
+ }  // namespace
+ 
+ // static
+ Stack::StackSlot Stack::GetStackStartUnchecked() {
++#if V8_OS_AROS
++  // Hosted AROS Exec tasks are not in one-to-one correspondence with host
++  // pthread TLS contexts. Caching this value in compiler-emulated TLS can
++  // therefore return a different Exec task's stack bounds. The AROS
++  // pthread_getattr_np interposer reads the current task directly, so query it
++  // for every request.
++  return ObtainCurrentThreadStackStart();
++#else
+   if (!thread_stack_start) {
+     thread_stack_start = ObtainCurrentThreadStackStart();
+   }
+   return thread_stack_start;
++#endif
+ }
+ 
+ // static
+ Stack::StackSlot Stack::GetStackStart() {
++#if !V8_OS_AROS
+   DCHECK_IMPLIES(thread_stack_start,
+                  thread_stack_start == ObtainCurrentThreadStackStart());
++#endif
+   return GetStackStartUnchecked();
+ }
+ 
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/base/platform/platform-posix.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/base/platform/platform-posix.cc
+--- node-v22.23.1/deps/v8/src/base/platform/platform-posix.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/base/platform/platform-posix.cc	2026-09-11 22:54:39.347233846 -0500
+@@ -17,7 +17,18 @@
+ #include <fcntl.h>
+ #include <sched.h>  // for sched_yield
+ #include <stdio.h>
++#if V8_OS_AROS
++#include <exec/memory.h>
++#include <exec/tasks.h>
++#include <proto/arossupport.h>
++#include <proto/exec.h>
++#undef Allocate
++#undef Remove
++#undef Signal
++#undef Wait
++#else
+ #include <sys/mman.h>
++#endif
+ #include <sys/stat.h>
+ #include <sys/time.h>
+ #include <sys/types.h>
+@@ -54,7 +65,7 @@
+ #if V8_OS_DARWIN
+ #include <mach/mach.h>
+ #include <malloc/malloc.h>
+-#else
++#elif !V8_OS_AROS
+ #include <malloc.h>
+ #endif
+ 
+@@ -68,27 +79,29 @@
+ #include <sys/resource.h>
+ #endif
+ 
+-#if !defined(_AIX) && !defined(V8_OS_FUCHSIA)
++#if !defined(_AIX) && !defined(V8_OS_FUCHSIA) && !V8_OS_AROS
+ #include <sys/syscall.h>
+ #endif
+ 
++#if V8_OS_AROS
++#define PROT_NONE 0
++#define PROT_READ 1
++#define PROT_WRITE 2
++#define PROT_EXEC 4
++#define MAP_SHARED 1
++#define MAP_PRIVATE 2
++#define MAP_FIXED 0x10
++#define MAP_ANONYMOUS 0x20
++#define MAP_NORESERVE 0x4000
++#define MAP_FAILED ((void*)-1)
++#define MADV_DONTNEED 4
++#endif
++
+ #if V8_OS_FREEBSD || V8_OS_DARWIN || V8_OS_OPENBSD || V8_OS_SOLARIS
+ #define MAP_ANONYMOUS MAP_ANON
+ #endif
+ 
+-/*
+- * NOTE: illumos starting with illumos#14418 (pushed April 20th, 2022)
+- * prototypes madvise(3C) properly with a `void *` first argument.
+- * The only way to detect this outside of configure-time checking is to
+- * check for the existence of MEMCNTL_SHARED, which gets defined for the first
+- * time in illumos#14418 under the same circumstances save _STRICT_POSIX, which
+- * thankfully neither Solaris nor illumos builds of Node or V8 do.
+- *
+- * If some future illumos push changes the MEMCNTL_SHARED assumptions made
+- * above, the illumos check below will have to be revisited.  This check
+- * will work on both pre-and-post illumos#14418 illumos environments.
+- */
+-#if defined(V8_OS_SOLARIS) && !(defined(__illumos__) && defined(MEMCNTL_SHARED))
++#if defined(V8_OS_SOLARIS)
+ #if (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE > 2) || defined(__EXTENSIONS__)
+ extern "C" int madvise(caddr_t, size_t, int);
+ #else
+@@ -104,11 +117,209 @@
+ extern "C" void* __libc_stack_end;
+ #endif
+ 
++#if V8_OS_AROS
++static int ArosCurrentTaskId() {
++  return static_cast<int>(GetETaskID(FindTask(nullptr)));
++}
++#endif
++
+ namespace v8 {
+ namespace base {
+ 
+ namespace {
+ 
++#if V8_OS_AROS
++struct ArosMapping {
++  ArosMapping* next;
++  void* raw;
++  size_t raw_size;
++  uintptr_t mapping_start;
++  size_t mapping_size;
++  uintptr_t live_start;
++  uintptr_t live_end;
++  int fd;
++  off_t offset;
++  bool write_back;
++};
++
++ArosMapping* g_aros_mappings = nullptr;
++volatile unsigned char g_aros_mappings_lock = 0;
++
++void LockArosMappings() {
++  while (__atomic_test_and_set(&g_aros_mappings_lock, __ATOMIC_ACQUIRE)) {
++    __asm__ __volatile__("pause");
++  }
++}
++
++void UnlockArosMappings() {
++  __atomic_clear(&g_aros_mappings_lock, __ATOMIC_RELEASE);
++}
++
++bool TransferArosFile(int fd, off_t offset, void* data, size_t size,
++                      bool write_back) {
++  LockArosMappings();
++  off_t previous = ::lseek(fd, 0, SEEK_CUR);
++  bool ok = previous != static_cast<off_t>(-1) &&
++            ::lseek(fd, offset, SEEK_SET) != static_cast<off_t>(-1);
++  size_t transferred = 0;
++  while (ok && transferred < size) {
++    char* cursor = static_cast<char*>(data) + transferred;
++    ssize_t result = write_back ? ::write(fd, cursor, size - transferred)
++                                : ::read(fd, cursor, size - transferred);
++    if (result > 0) {
++      transferred += static_cast<size_t>(result);
++    } else if (!write_back && result == 0) {
++      memset(cursor, 0, size - transferred);
++      transferred = size;
++    } else if (result < 0 && errno == EINTR) {
++      continue;
++    } else {
++      ok = false;
++    }
++  }
++  if (previous != static_cast<off_t>(-1) &&
++      ::lseek(fd, previous, SEEK_SET) == static_cast<off_t>(-1)) {
++    ok = false;
++  }
++  UnlockArosMappings();
++  return ok;
++}
++
++void* ArosMmap(void* address, size_t size, int prot, int flags, int fd,
++               off_t offset) {
++  if (size == 0) {
++    errno = EINVAL;
++    return MAP_FAILED;
++  }
++
++  if (flags & MAP_FIXED) {
++    if (address == nullptr || address == MAP_FAILED) {
++      errno = EINVAL;
++      return MAP_FAILED;
++    }
++    if (fd >= 0) {
++      if (!TransferArosFile(fd, offset, address, size, false)) {
++        return MAP_FAILED;
++      }
++    } else {
++      memset(address, 0, size);
++    }
++    return address;
++  }
++
++  constexpr size_t kPageSize = 4096;
++  if (size > SIZE_MAX - (kPageSize - 1)) {
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
++  size_t raw_size = size + kPageSize - 1;
++  void* raw = AllocMem(raw_size, MEMF_PUBLIC | MEMF_CLEAR);
++  if (!raw) {
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
++  uintptr_t mapping_start =
++      (reinterpret_cast<uintptr_t>(raw) + kPageSize - 1) &
++      ~(static_cast<uintptr_t>(kPageSize) - 1);
++
++  if (fd >= 0 &&
++      !TransferArosFile(fd, offset, reinterpret_cast<void*>(mapping_start),
++                        size, false)) {
++    FreeMem(raw, raw_size);
++    return MAP_FAILED;
++  }
++
++  auto* mapping = static_cast<ArosMapping*>(
++      AllocMem(sizeof(ArosMapping), MEMF_PUBLIC | MEMF_CLEAR));
++  if (!mapping) {
++    FreeMem(raw, raw_size);
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
++  mapping->raw = raw;
++  mapping->raw_size = raw_size;
++  mapping->mapping_start = mapping_start;
++  mapping->mapping_size = size;
++  mapping->live_start = mapping_start;
++  mapping->live_end = mapping_start + size;
++  mapping->fd = fd;
++  mapping->offset = offset;
++  mapping->write_back =
++      fd >= 0 && (flags & MAP_SHARED) != 0 && (prot & PROT_WRITE) != 0;
++
++  LockArosMappings();
++  mapping->next = g_aros_mappings;
++  g_aros_mappings = mapping;
++  UnlockArosMappings();
++  return reinterpret_cast<void*>(mapping_start);
++}
++
++int ArosMunmap(void* address, size_t size) {
++  if (!address || address == MAP_FAILED || size == 0) {
++    errno = EINVAL;
++    return -1;
++  }
++
++  uintptr_t start = reinterpret_cast<uintptr_t>(address);
++  uintptr_t end = start + size;
++  if (end < start) end = UINTPTR_MAX;
++
++  LockArosMappings();
++  ArosMapping** link = &g_aros_mappings;
++  while (*link) {
++    ArosMapping* mapping = *link;
++    if (start >= mapping->live_start && start < mapping->live_end) {
++      if (start == mapping->live_start) {
++        mapping->live_start = end < mapping->live_end ? end : mapping->live_end;
++      } else if (end >= mapping->live_end) {
++        mapping->live_end = start;
++      } else {
++        UnlockArosMappings();
++        return 0;
++      }
++
++      if (mapping->live_start < mapping->live_end) {
++        UnlockArosMappings();
++        return 0;
++      }
++
++      *link = mapping->next;
++      UnlockArosMappings();
++      if (mapping->write_back) {
++        TransferArosFile(mapping->fd, mapping->offset,
++                         reinterpret_cast<void*>(mapping->mapping_start),
++                         mapping->mapping_size, true);
++      }
++      FreeMem(mapping->raw, mapping->raw_size);
++      FreeMem(mapping, sizeof(ArosMapping));
++      return 0;
++    }
++    link = &mapping->next;
++  }
++  UnlockArosMappings();
++  return 0;
++}
++
++int ArosMprotect(void* address, size_t size, int prot) {
++  USE(address);
++  USE(size);
++  USE(prot);
++  return 0;
++}
++
++int ArosMadvise(void* address, size_t size, int advice) {
++  if (advice == MADV_DONTNEED || advice == MADV_FREE) {
++    memset(address, 0, size);
++  }
++  return 0;
++}
++
++#define mmap ArosMmap
++#define munmap ArosMunmap
++#define mprotect ArosMprotect
++#define madvise ArosMadvise
++#endif
++
+ // 0 is never a valid thread id.
+ const pthread_t kNoThread = static_cast<pthread_t>(0);
+ 
+@@ -317,6 +528,9 @@
+ 
+ // static
+ void* OS::GetRandomMmapAddr() {
++#if V8_OS_AROS
++  return nullptr;
++#else
+   uintptr_t raw_addr;
+   {
+     MutexGuard guard(rng_mutex.Pointer());
+@@ -534,6 +748,11 @@
+ 
+ // static
+ void OS::SetDataReadOnly(void* address, size_t size) {
++#if V8_OS_AROS
++  USE(address);
++  USE(size);
++  return;
++#else
+   CHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
+   CHECK_EQ(0, size % CommitPageSize());
+ 
+@@ -836,6 +1055,8 @@
+   return static_cast<int>(zx_thread_self());
+ #elif V8_OS_SOLARIS
+   return static_cast<int>(pthread_self());
++#elif V8_OS_AROS
++  return ArosCurrentTaskId();
+ #else
+   return static_cast<int>(reinterpret_cast<intptr_t>(pthread_self()));
+ #endif
+@@ -855,18 +1076,24 @@
+ 
+ #if !defined(V8_OS_FUCHSIA)
+ int OS::GetUserTime(uint32_t* secs, uint32_t* usecs) {
++#if V8_OS_AROS
++  *secs = 0;
++  *usecs = 0;
++  return -1;
++#else
+   struct rusage usage;
+ 
+   if (getrusage(RUSAGE_SELF, &usage) < 0) return -1;
+   *secs = static_cast<uint32_t>(usage.ru_utime.tv_sec);
+   *usecs = static_cast<uint32_t>(usage.ru_utime.tv_usec);
+   return 0;
++#endif
+ }
+ #endif
+ 
+ int OS::GetPeakMemoryUsageKb() {
+-#if defined(V8_OS_FUCHSIA)
+-  // Fuchsia does not implement getrusage()
++#if defined(V8_OS_FUCHSIA) || V8_OS_AROS
++  // Fuchsia and AROS do not implement getrusage().
+   return -1;
+ #else
+   struct rusage usage;
+@@ -987,6 +1214,14 @@
+ #if defined(ANDROID) && !defined(V8_ANDROID_LOG_STDOUT)
+   __android_log_vprint(ANDROID_LOG_ERROR, LOG_TAG, format, args);
+ #else
++#if V8_OS_AROS
++  char debug_message[2048];
++  va_list debug_args;
++  va_copy(debug_args, args);
++  vsnprintf(debug_message, sizeof(debug_message), format, debug_args);
++  va_end(debug_args);
++  kprintf("[V8:stderr] %s", debug_message);
++#endif
+   vfprintf(stderr, format, args);
+ #endif
+ }
+@@ -1378,5 +1613,22 @@
+ #undef MAP_ANONYMOUS
+ #undef MADV_FREE
+ 
++#if V8_OS_AROS
++#undef mmap
++#undef munmap
++#undef mprotect
++#undef madvise
++#undef PROT_NONE
++#undef PROT_READ
++#undef PROT_WRITE
++#undef PROT_EXEC
++#undef MAP_SHARED
++#undef MAP_PRIVATE
++#undef MAP_FIXED
++#undef MAP_NORESERVE
++#undef MAP_FAILED
++#undef MADV_DONTNEED
++#endif
++
+ }  // namespace base
+ }  // namespace v8
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/base/sys-info.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/base/sys-info.cc
+--- node-v22.23.1/deps/v8/src/base/sys-info.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/base/sys-info.cc	2026-09-11 22:54:39.347601784 -0500
+@@ -4,6 +4,16 @@
+ 
+ #include "src/base/sys-info.h"
+ 
++#if V8_OS_AROS
++#include <exec/memory.h>
++#pragma push_macro("SCHED_RR")
++#undef SCHED_RR
++#include <aros/kernel.h>
++#pragma pop_macro("SCHED_RR")
++#include <proto/exec.h>
++#include <proto/kernel.h>
++#endif
++
+ #if V8_OS_POSIX
+ #include <sys/stat.h>
+ #include <sys/time.h>
+@@ -37,7 +47,12 @@
+ 
+ // static
+ int SysInfo::NumberOfProcessors() {
+-#if V8_OS_OPENBSD
++#if V8_OS_AROS
++  APTR KernelBase = OpenResource("kernel.resource");
++  if (!KernelBase) return 1;
++  int result = KrnGetCPUCount();
++  return result > 0 ? result : 1;
++#elif V8_OS_OPENBSD
+   int mib[2] = {CTL_HW, HW_NCPU};
+   int ncpu = 0;
+   size_t len = sizeof(ncpu);
+@@ -63,7 +78,9 @@
+ 
+ // static
+ int64_t SysInfo::AmountOfPhysicalMemory() {
+-#if V8_OS_DARWIN
++#if V8_OS_AROS
++  return static_cast<int64_t>(AvailMem(MEMF_TOTAL));
++#elif V8_OS_DARWIN
+   int mib[2] = {CTL_HW, HW_MEMSIZE};
+   int64_t memsize = 0;
+   size_t len = sizeof(memsize);
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/deoptimizer/translation-opcode.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/deoptimizer/translation-opcode.h
+--- node-v22.23.1/deps/v8/src/deoptimizer/translation-opcode.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/deoptimizer/translation-opcode.h	2026-09-11 22:54:39.347739471 -0500
+@@ -7,6 +7,11 @@
+ 
+ #include "src/base/macros.h"
+ 
++#if V8_OS_AROS
++#pragma push_macro("REGISTER")
++#undef REGISTER
++#endif
++
+ namespace v8 {
+ namespace internal {
+ 
+@@ -132,4 +137,8 @@
+ }  // namespace internal
+ }  // namespace v8
+ 
++#if V8_OS_AROS
++#pragma pop_macro("REGISTER")
++#endif
++
+ #endif  // V8_DEOPTIMIZER_TRANSLATION_OPCODE_H_
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/execution/thread-id.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/execution/thread-id.cc
+--- node-v22.23.1/deps/v8/src/execution/thread-id.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/execution/thread-id.cc	2026-09-11 22:54:39.347866629 -0500
+@@ -11,24 +11,38 @@
+ 
+ namespace {
+ 
++#if !V8_OS_AROS
+ thread_local int thread_id = 0;
+ 
+ std::atomic<int> next_thread_id{1};
++#endif
+ 
+ }  // namespace
+ 
+ // static
+ ThreadId ThreadId::TryGetCurrent() {
++#if V8_OS_AROS
++  return ThreadId(base::OS::GetCurrentThreadId());
++#else
+   return thread_id == 0 ? Invalid() : ThreadId(thread_id);
++#endif
+ }
+ 
+ // static
+ int ThreadId::GetCurrentThreadId() {
++#if V8_OS_AROS
++  // Compiler-emulated TLS follows the hosted execution context, not the AROS
++  // Exec task scheduled through it. Exec assigns every live ETask a unique
++  // identifier, which is the identity V8 needs for isolate and background
++  // compilation ownership checks.
++  return base::OS::GetCurrentThreadId();
++#else
+   if (thread_id == 0) {
+     thread_id = next_thread_id.fetch_add(1);
+     CHECK_LE(1, thread_id);
+   }
+   return thread_id;
++#endif
+ }
+ 
+ }  // namespace internal
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/heap/cppgc/persistent-node.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/heap/cppgc/persistent-node.cc
+--- node-v22.23.1/deps/v8/src/heap/cppgc/persistent-node.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/heap/cppgc/persistent-node.cc	2026-09-11 22:54:39.348240598 -0500
+@@ -118,7 +118,11 @@
+ }
+ 
+ bool PersistentRegion::IsCreationThread() {
++#if V8_OS_AROS
++  return true;
++#else
+   return creation_thread_id_ == v8::base::OS::GetCurrentThreadId();
++#endif
+ }
+ 
+ PersistentRegionLock::PersistentRegionLock() {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/heap/cppgc/platform.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/heap/cppgc/platform.cc
+--- node-v22.23.1/deps/v8/src/heap/cppgc/platform.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/heap/cppgc/platform.cc	2026-09-11 22:54:39.348374989 -0500
+@@ -26,6 +26,14 @@
+ 
+ PageAllocator* g_page_allocator = nullptr;
+ 
++#if V8_OS_AROS
++// AROS Processes share one address space and therefore one v8.library data
++// image. Chromium still initializes cppgc once in every renderer Process, so
++// serialize that lifecycle and retain the single compatible allocator owned by
++// the resident engine image.
++v8::base::LazyMutex g_process_lifecycle_mutex = LAZY_MUTEX_INITIALIZER;
++#endif
++
+ PageAllocator& CreateAllocatorIfNeeded(PageAllocator* page_allocator) {
+   if (!page_allocator) {
+     static v8::base::LeakyObject<v8::base::PageAllocator>
+@@ -89,6 +97,11 @@
+ 
+ void InitializeProcess(PageAllocator* page_allocator,
+                        size_t desired_heap_size) {
++#if V8_OS_AROS
++  v8::base::MutexGuard lifecycle_guard(
++      internal::g_process_lifecycle_mutex.Pointer());
++#endif
++
+ #if defined(V8_USE_ADDRESS_SANITIZER) && defined(V8_HOST_ARCH_64_BIT)
+   // Retrieve asan's internal shadow memory granularity and check that Oilpan's
+   // object alignment/sizes are multiple of this granularity. This is needed to
+@@ -100,7 +113,22 @@
+   CHECK_EQ(0u, internal::kAllocationGranularity % poisoning_granularity);
+ #endif
+ 
++#if V8_OS_AROS
++  // The allocator supplied by Blink belongs to the caller's relocatable Chrome
++  // image. A resident v8.library cannot retain that object after the caller
++  // exits, and each AROS Process maps its own Chrome image at a different
++  // address. Own the shared cppgc allocator in the engine image instead.
++  auto& allocator = internal::CreateAllocatorIfNeeded(nullptr);
++#else
+   auto& allocator = internal::CreateAllocatorIfNeeded(page_allocator);
++#endif
++
++#if V8_OS_AROS
++  if (internal::g_page_allocator) {
++    CHECK_EQ(&allocator, internal::g_page_allocator);
++    return;
++  }
++#endif
+ 
+   CHECK(!internal::g_page_allocator);
+   internal::GlobalGCInfoTable::Initialize(allocator);
+@@ -110,6 +138,15 @@
+   internal::g_page_allocator = &allocator;
+ }
+ 
+-void ShutdownProcess() { internal::g_page_allocator = nullptr; }
++void ShutdownProcess() {
++#if V8_OS_AROS
++  // v8.library is resident and its cppgc globals are shared by every AROS
++  // Process using the engine. One renderer must not invalidate the allocator
++  // while another renderer (or the browser) still owns cppgc heaps.
++  return;
++#else
++  internal::g_page_allocator = nullptr;
++#endif
++}
+ 
+ }  // namespace cppgc
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/heap/cppgc/process-heap-statistics.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/heap/cppgc/process-heap-statistics.cc
+--- node-v22.23.1/deps/v8/src/heap/cppgc/process-heap-statistics.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/heap/cppgc/process-heap-statistics.cc	2026-09-11 22:54:39.348498370 -0500
+@@ -6,7 +6,24 @@
+ 
+ namespace cppgc {
+ 
++#if V8_OS_AROS
++namespace {
++
++std::atomic_size_t g_total_allocated_space{0};
++std::atomic_size_t g_total_allocated_object_size{0};
++
++}  // namespace
++
++std::atomic_size_t& ProcessHeapStatistics::TotalAllocatedSpaceStorage() {
++  return g_total_allocated_space;
++}
++
++std::atomic_size_t& ProcessHeapStatistics::TotalAllocatedObjectSizeStorage() {
++  return g_total_allocated_object_size;
++}
++#else
+ std::atomic_size_t ProcessHeapStatistics::total_allocated_space_{0};
+ std::atomic_size_t ProcessHeapStatistics::total_allocated_object_size_{0};
++#endif
+ 
+ }  // namespace cppgc
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/heap/cppgc/process-heap-statistics.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/heap/cppgc/process-heap-statistics.h
+--- node-v22.23.1/deps/v8/src/heap/cppgc/process-heap-statistics.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/heap/cppgc/process-heap-statistics.h	2026-09-11 22:54:39.348619376 -0500
+@@ -50,20 +50,40 @@
+ 
+   // For cppgc::ProcessHeapStatistics
+   static void IncreaseTotalAllocatedObjectSize(size_t delta) {
++#if V8_OS_AROS
++    ::cppgc::ProcessHeapStatistics::TotalAllocatedObjectSizeStorage().fetch_add(
++        delta, std::memory_order_relaxed);
++#else
+     ::cppgc::ProcessHeapStatistics::total_allocated_object_size_.fetch_add(
+         delta, std::memory_order_relaxed);
++#endif
+   }
+   static void DecreaseTotalAllocatedObjectSize(size_t delta) {
++#if V8_OS_AROS
++    ::cppgc::ProcessHeapStatistics::TotalAllocatedObjectSizeStorage().fetch_sub(
++        delta, std::memory_order_relaxed);
++#else
+     ::cppgc::ProcessHeapStatistics::total_allocated_object_size_.fetch_sub(
+         delta, std::memory_order_relaxed);
++#endif
+   }
+   static void IncreaseTotalAllocatedSpace(size_t delta) {
++#if V8_OS_AROS
++    ::cppgc::ProcessHeapStatistics::TotalAllocatedSpaceStorage().fetch_add(
++        delta, std::memory_order_relaxed);
++#else
+     ::cppgc::ProcessHeapStatistics::total_allocated_space_.fetch_add(
+         delta, std::memory_order_relaxed);
++#endif
+   }
+   static void DecreaseTotalAllocatedSpace(size_t delta) {
++#if V8_OS_AROS
++    ::cppgc::ProcessHeapStatistics::TotalAllocatedSpaceStorage().fetch_sub(
++        delta, std::memory_order_relaxed);
++#else
+     ::cppgc::ProcessHeapStatistics::total_allocated_space_.fetch_sub(
+         delta, std::memory_order_relaxed);
++#endif
+   }
+ };
+ 
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/heap/cppgc/write-barrier.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/heap/cppgc/write-barrier.cc
+--- node-v22.23.1/deps/v8/src/heap/cppgc/write-barrier.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/heap/cppgc/write-barrier.cc	2026-09-11 22:54:39.348755490 -0500
+@@ -21,8 +21,21 @@
+ namespace cppgc {
+ namespace internal {
+ 
++#if V8_OS_AROS
++namespace {
++
++AtomicEntryFlag g_write_barrier_enabled;
++
++}  // namespace
++
++// static
++AtomicEntryFlag& WriteBarrier::WriteBarrierEnabledStorage() {
++  return g_write_barrier_enabled;
++}
++#else
+ // static
+ AtomicEntryFlag WriteBarrier::write_barrier_enabled_;
++#endif
+ 
+ namespace {
+ 
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/heap/cppgc/write-barrier.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/heap/cppgc/write-barrier.h
+--- node-v22.23.1/deps/v8/src/heap/cppgc/write-barrier.h	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/heap/cppgc/write-barrier.h	2026-09-11 22:54:39.348887887 -0500
+@@ -14,8 +14,20 @@
+ 
+ class WriteBarrier::FlagUpdater final {
+  public:
+-  static void Enter() { write_barrier_enabled_.Enter(); }
+-  static void Exit() { write_barrier_enabled_.Exit(); }
++  static void Enter() {
++#if V8_OS_AROS
++    WriteBarrierEnabledStorage().Enter();
++#else
++    write_barrier_enabled_.Enter();
++#endif
++  }
++  static void Exit() {
++#if V8_OS_AROS
++    WriteBarrierEnabledStorage().Exit();
++#else
++    write_barrier_enabled_.Exit();
++#endif
++  }
+ 
+  private:
+   FlagUpdater() = delete;
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/heap/cppgc-js/cpp-heap.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/heap/cppgc-js/cpp-heap.cc
+--- node-v22.23.1/deps/v8/src/heap/cppgc-js/cpp-heap.cc	2026-06-23 11:27:41.000000000 -0500
++++ node-v22.23.1/deps/v8/src/heap/cppgc-js/cpp-heap.cc	2026-09-11 22:54:39.348030215 -0500
+@@ -564,6 +564,10 @@
+ 
+ void CppHeap::AttachIsolate(Isolate* isolate) {
+   CHECK(!in_detached_testing_mode_);
++#if defined(V8_OS_AROS)
++  if (isolate_ && isolate_ != isolate)
++    DetachIsolate();
++#endif
+   CHECK_NULL(isolate_);
+   isolate_ = isolate;
+   heap_ = isolate->heap();
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/libsampler/sampler.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/libsampler/sampler.cc
+--- node-v22.23.1/deps/v8/src/libsampler/sampler.cc	2026-06-23 11:27:42.000000000 -0500
++++ node-v22.23.1/deps/v8/src/libsampler/sampler.cc	2026-09-11 22:54:39.349023601 -0500
+@@ -312,6 +312,12 @@
+   zx_handle_t profiled_thread_ = ZX_HANDLE_INVALID;
+ };
+ 
++#elif V8_OS_AROS
++
++// AROS does not yet provide asynchronous pthread signals with a register
++// context, so sampling remains unavailable until that system contract exists.
++class Sampler::PlatformData {};
++
+ #endif  // USE_SIGNALS
+ 
+ #if defined(USE_SIGNALS)
+@@ -671,6 +677,10 @@
+ #undef ZX_THREAD_STATE_GENERAL_REGS
+ #endif
+ 
++#elif V8_OS_AROS
++
++void Sampler::DoSample() {}
++
+ #endif  // USE_SIGNALS
+ 
+ }  // namespace sampler
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/libsampler/sampler.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/libsampler/sampler.h
+--- node-v22.23.1/deps/v8/src/libsampler/sampler.h	2026-06-23 11:27:42.000000000 -0500
++++ node-v22.23.1/deps/v8/src/libsampler/sampler.h	2026-09-11 22:54:39.349175415 -0500
+@@ -13,7 +13,7 @@
+ #include "src/base/lazy-instance.h"
+ #include "src/base/macros.h"
+ 
+-#if V8_OS_POSIX && !V8_OS_CYGWIN && !V8_OS_FUCHSIA
++#if V8_OS_POSIX && !V8_OS_AROS && !V8_OS_CYGWIN && !V8_OS_FUCHSIA
+ #define USE_SIGNALS
+ #endif
+ 
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/logging/counters.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/logging/counters.cc
+--- node-v22.23.1/deps/v8/src/logging/counters.cc	2026-06-23 11:27:42.000000000 -0500
++++ node-v22.23.1/deps/v8/src/logging/counters.cc	2026-09-11 22:54:39.349301581 -0500
+@@ -94,8 +94,19 @@
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wexit-time-destructors"
+ #endif
++#if V8_OS_AROS
++  // AROS' libsupc++ fallback runs non-trivial thread_local destructors from a
++  // pthread-key callback.  Destruction of this debug-only map has repeatedly
++  // reached free() with corrupted map storage during worker teardown.  Keep
++  // the per-thread state, but intentionally leave its tiny diagnostic map
++  // alive when the thread exits.
++  static thread_local auto* active_timer_storage =
++      new std::unordered_map<const TimedHistogram*, bool>;
++  auto& active_timer = *active_timer_storage;
++#else
+   static thread_local std::unordered_map<const TimedHistogram*, bool>
+       active_timer;
++#endif
+ #if __clang__
+ #pragma clang diagnostic pop
+ #endif
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/v8/src/utils/allocation.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/v8/src/utils/allocation.cc
+--- node-v22.23.1/deps/v8/src/utils/allocation.cc	2026-06-23 11:27:42.000000000 -0500
++++ node-v22.23.1/deps/v8/src/utils/allocation.cc	2026-09-11 22:54:39.349455087 -0500
+@@ -32,7 +32,15 @@
+ class PageAllocatorInitializer {
+  public:
+   PageAllocatorInitializer() {
++#if V8_OS_AROS
++    if (v8::Platform* platform = V8::GetCurrentPlatform()) {
++      page_allocator_ = platform->GetPageAllocator();
++    } else {
++      page_allocator_ = nullptr;
++    }
++#else
+     page_allocator_ = V8::GetCurrentPlatform()->GetPageAllocator();
++#endif
+     if (page_allocator_ == nullptr) {
+       static base::LeakyObject<base::PageAllocator> default_page_allocator;
+       page_allocator_ = default_page_allocator.get();
+@@ -64,8 +72,18 @@
+ }  // namespace
+ 
+ v8::PageAllocator* GetPlatformPageAllocator() {
++#if V8_OS_AROS
++  if (v8::Platform* platform = V8::GetCurrentPlatform()) {
++    if (v8::PageAllocator* page_allocator = platform->GetPageAllocator()) {
++      return page_allocator;
++    }
++  }
++  static base::LeakyObject<base::PageAllocator> default_page_allocator;
++  return default_page_allocator.get();
++#else
+   DCHECK_NOT_NULL(GetPageAllocatorInitializer()->page_allocator());
+   return GetPageAllocatorInitializer()->page_allocator();
++#endif
+ }
+ 
+ v8::VirtualAddressSpace* GetPlatformVirtualAddressSpace() {
+@@ -158,7 +176,11 @@
+ size_t CommitPageSize() { return GetPlatformPageAllocator()->CommitPageSize(); }
+ 
+ void* GetRandomMmapAddr() {
++#if V8_OS_AROS
++  return nullptr;
++#else
+   return GetPlatformPageAllocator()->GetRandomMmapAddr();
++#endif
+ }
+ 
+ void* AllocatePages(v8::PageAllocator* page_allocator, void* hint, size_t size,
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/zstd/lib/common/threading.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/zstd/lib/common/threading.h
 --- node-v22.23.1/deps/zstd/lib/common/threading.h	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/deps/zstd/lib/common/threading.h	2026-07-25 19:24:02.983380202 -0500
 @@ -16,6 +16,15 @@
@@ -209,6 +1262,7 @@
  #if defined(ZSTD_MULTITHREAD) && defined(_WIN32)
  
  /**
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/lib/internal/url.js /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/lib/internal/url.js
 --- node-v22.23.1/lib/internal/url.js	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/lib/internal/url.js	2026-07-26 09:10:18.096670051 -0500
 @@ -1572,7 +1572,17 @@
@@ -262,6 +1316,7 @@
  }
  
  function fileURLToPath(path, options = kEmptyObject) {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/lib/path.js /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/lib/path.js
 --- node-v22.23.1/lib/path.js	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/lib/path.js	2026-07-26 23:47:19.157829723 -0500
 @@ -71,6 +71,14 @@
@@ -485,6 +1540,7 @@
  
      return ret;
    },
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/node.gyp /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/node.gyp
 --- node-v22.23.1/node.gyp	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/node.gyp	2026-07-26 12:23:53.877007420 -0500
 @@ -598,7 +598,8 @@
@@ -581,6 +1637,7 @@
          [ 'OS in "linux mac openharmony"', {
            'defines': ['NODE_JS2C_USE_STRING_LITERALS'],
          }],
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/node.gypi /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/node.gypi
 --- node-v22.23.1/node.gypi	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/node.gypi	2026-07-26 12:19:29.448409896 -0500
 @@ -313,8 +313,9 @@
@@ -605,6 +1662,7 @@
            ],
            'conditions': [
              # -force_load or --whole-archive are not applicable for
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/api/environment.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/api/environment.cc
 --- node-v22.23.1/src/api/environment.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/api/environment.cc	2026-08-10 06:01:42.519989251 -0500
 @@ -1,4 +1,5 @@
@@ -691,9 +1749,10 @@
      FreeEnvironment(env);
      return nullptr;
    }
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/async_wrap.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/async_wrap.cc
 --- node-v22.23.1/src/async_wrap.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/async_wrap.cc	2026-08-10 07:03:19.274012059 -0500
-@@ -25,11 +25,16 @@
++++ node-v22.23.1/src/async_wrap.cc	2026-09-13 00:25:30.074493545 -0500
+@@ -25,11 +25,36 @@
  #include "env-inl.h"
  #include "node_errors.h"
  #include "node_external_reference.h"
@@ -704,13 +1763,33 @@
  #include "v8.h"
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  using v8::Context;
  using v8::DontDelete;
  using v8::EscapableHandleScope;
-@@ -65,8 +70,45 @@
+@@ -65,8 +90,45 @@
  #undef V
  };
  
@@ -756,7 +1835,7 @@
  
    TryCatchScope try_catch(env,
                            TryCatchScope::CatchMode::kFatalRethrowStackOverflow);
-@@ -96,6 +138,14 @@
+@@ -96,6 +158,14 @@
    if (async_hooks->fields()[type] == 0 || !env->can_call_into_js())
      return;
  
@@ -771,7 +1850,7 @@
    HandleScope handle_scope(env->isolate());
    Local<Value> async_id_value = Number::New(env->isolate(), async_id);
    TryCatchScope try_catch(env,
-@@ -105,8 +155,13 @@
+@@ -105,8 +175,13 @@
  
  
  void AsyncWrap::EmitPromiseResolve(Environment* env, double async_id) {
@@ -785,7 +1864,7 @@
  }
  
  void AsyncWrap::EmitTraceAsyncStart() const {
-@@ -139,8 +194,13 @@
+@@ -139,8 +214,13 @@
  
  
  void AsyncWrap::EmitBefore(Environment* env, double async_id) {
@@ -799,7 +1878,7 @@
  }
  
  
-@@ -163,12 +223,25 @@
+@@ -163,12 +243,25 @@
  void AsyncWrap::EmitAfter(Environment* env, double async_id) {
    // If the user's callback failed then the after() hooks will be called at the
    // end of _fatalException().
@@ -825,7 +1904,7 @@
  
    CHECK(args[0]->IsObject());
  
-@@ -176,10 +249,25 @@
+@@ -176,10 +269,25 @@
    // async_hooks internally, so this should only ever be called once. At which
    // time all the functions should be set. Detect this by checking if
    // init !IsEmpty().
@@ -851,7 +1930,7 @@
  #define SET_HOOK_FN(name)                                                      \
    do {                                                                         \
      Local<Value> v =                                                           \
-@@ -189,6 +277,7 @@
+@@ -189,6 +297,7 @@
      CHECK(v->IsFunction());                                                    \
      env->set_async_hooks_##name##_function(v.As<Function>());                  \
    } while (0)
@@ -859,7 +1938,7 @@
  
    SET_HOOK_FN(init);
    SET_HOOK_FN(before);
-@@ -349,11 +438,25 @@
+@@ -349,11 +458,25 @@
  void AsyncWrap::SetCallbackTrampoline(const FunctionCallbackInfo<Value>& args) {
    Environment* env = Environment::GetCurrent(args);
  
@@ -885,7 +1964,7 @@
  }
  
  Local<FunctionTemplate> AsyncWrap::GetConstructorTemplate(
-@@ -639,7 +742,15 @@
+@@ -639,7 +762,15 @@
    }
  
    HandleScope scope(env->isolate());
@@ -901,6 +1980,7 @@
  
    Local<Value> argv[] = {
      Number::New(env->isolate(), async_id),
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/debug_utils.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/debug_utils.cc
 --- node-v22.23.1/src/debug_utils.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/debug_utils.cc	2026-07-25 20:05:15.111399183 -0500
 @@ -12,7 +12,8 @@
@@ -913,6 +1993,7 @@
      defined(__UCLIBC__) || \
      defined(_AIX)
  #define HAVE_EXECINFO_H 0
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/env.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/env.cc
 --- node-v22.23.1/src/env.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/env.cc	2026-08-10 06:01:35.025051922 -0500
 @@ -985,8 +985,19 @@
@@ -935,6 +2016,7 @@
    if (env_info != nullptr) {
      DeserializeProperties(env_info);
    }
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/env-inl.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/env-inl.h
 --- node-v22.23.1/src/env-inl.h	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/env-inl.h	2026-08-10 07:09:38.046884396 -0500
 @@ -907,6 +907,31 @@
@@ -979,6 +2061,7 @@
  #undef V
  
  v8::Local<v8::Context> Environment::context() const {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/large_pages/node_large_page.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/large_pages/node_large_page.cc
 --- node-v22.23.1/src/large_pages/node_large_page.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/large_pages/node_large_page.cc	2026-07-25 21:09:16.494325095 -0500
 @@ -60,7 +60,8 @@
@@ -1011,6 +2094,7 @@
    bool have_thp = false;
  #if defined(__linux__)
    have_thp = IsTransparentHugePagesEnabled();
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/memory_tracker-inl.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/memory_tracker-inl.h
 --- node-v22.23.1/src/memory_tracker-inl.h	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/memory_tracker-inl.h	2026-07-25 19:51:30.296143787 -0500
 @@ -6,6 +6,10 @@
@@ -1024,20 +2108,41 @@
  namespace node {
  
  // Fallback edge_name if node_name is not available, or "" if edge_name
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_binding.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_binding.cc
 --- node-v22.23.1/src/node_binding.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_binding.cc	2026-08-10 06:49:51.014426720 -0500
-@@ -8,6 +8,10 @@
++++ node-v22.23.1/src/node_binding.cc	2026-09-13 00:25:30.075245941 -0500
+@@ -8,6 +8,30 @@
  
  #include <string>
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  #if HAVE_OPENSSL
  #define NODE_BUILTIN_OPENSSL_BINDINGS(V) V(crypto) V(tls_wrap)
  #else
-@@ -339,7 +343,7 @@
+@@ -339,7 +363,7 @@
  DLib::DLib(const char* filename, int flags)
      : filename_(filename), flags_(flags), handle_(nullptr) {}
  
@@ -1046,7 +2151,7 @@
  bool DLib::Open() {
    handle_ = dlopen(filename_.c_str(), flags_);
    if (handle_ != nullptr) return true;
-@@ -395,7 +399,7 @@
+@@ -395,7 +419,7 @@
    if (0 == uv_dlsym(&lib_, name, &address)) return address;
    return nullptr;
  }
@@ -1055,7 +2160,7 @@
  
  void DLib::SaveInGlobalHandleMap(node_module* mp) {
    has_entry_in_global_handle_map_ = true;
-@@ -641,11 +645,32 @@
+@@ -641,11 +665,32 @@
    node::Utf8Value module_v(isolate, module);
    Local<Object> exports;
  
@@ -1088,6 +2193,7 @@
      return THROW_ERR_INVALID_MODULE(isolate, "No such binding: %s", *module_v);
    }
  
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_binding.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_binding.h
 --- node-v22.23.1/src/node_binding.h	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_binding.h	2026-07-25 20:06:51.479822639 -0500
 @@ -3,7 +3,7 @@
@@ -1117,6 +2223,7 @@
    uv_lib_t lib_;
  #endif
    bool has_entry_in_global_handle_map_ = false;
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_buffer.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_buffer.cc
 --- node-v22.23.1/src/node_buffer.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_buffer.cc	2026-07-25 20:29:27.873241829 -0500
 @@ -36,6 +36,10 @@
@@ -1144,14 +2251,35 @@
      if (!store) {
        return env->ThrowRangeError("Array buffer allocation failed");
      }
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_builtins.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_builtins.cc
 --- node-v22.23.1/src/node_builtins.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_builtins.cc	2026-08-10 06:37:37.810796645 -0500
-@@ -32,6 +32,16 @@
++++ node-v22.23.1/src/node_builtins.cc	2026-09-13 00:25:30.073166315 -0500
+@@ -32,6 +32,36 @@
  using v8::Undefined;
  using v8::Value;
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +const BuiltinSourceMap& ArosGetBuiltinSourceMapDirect();
 +MaybeLocal<String> ArosLoadBuiltinSourceDirect(Isolate* isolate, const char* id);
 +
@@ -1163,7 +2291,7 @@
  BuiltinLoader::BuiltinLoader()
      : config_(GetConfig()), code_cache_(std::make_shared<BuiltinCodeCache>()) {
    LoadJavaScriptSource();
-@@ -61,8 +71,13 @@
+@@ -61,8 +91,13 @@
  }
  
  bool BuiltinLoader::Exists(const char* id) {
@@ -1177,7 +2305,7 @@
  }
  
  bool BuiltinLoader::Add(const char* id, const UnionBytes& source) {
-@@ -77,8 +92,13 @@
+@@ -77,8 +112,13 @@
    Local<Context> context = env->context();
  
    Local<Object> out = Object::New(isolate);
@@ -1191,7 +2319,7 @@
      Local<String> key = OneByteString(isolate, x.first);
      if (out->Set(context, key, x.second.ToStringChecked(isolate)).IsNothing()) {
        return;
-@@ -93,9 +113,15 @@
+@@ -93,9 +133,15 @@
  
  std::vector<std::string_view> BuiltinLoader::GetBuiltinIds() const {
    std::vector<std::string_view> ids;
@@ -1207,7 +2335,7 @@
      ids.emplace_back(x.first);
    }
    return ids;
-@@ -153,8 +179,13 @@
+@@ -153,8 +199,13 @@
          "internal/v8_prof_processor",
    };
  
@@ -1221,7 +2349,7 @@
      const std::string& id = x.first;
      for (auto const& prefix : prefixes) {
        if (prefix.length() > id.length()) {
-@@ -167,7 +198,11 @@
+@@ -167,7 +218,11 @@
      }
    }
  
@@ -1233,7 +2361,7 @@
      const std::string& id = x.first;
      if (0 == builtin_categories.cannot_be_required.count(id)) {
        builtin_categories.can_be_required.emplace(id);
-@@ -196,13 +231,29 @@
+@@ -196,13 +251,29 @@
  
  MaybeLocal<String> BuiltinLoader::LoadBuiltinSource(Isolate* isolate,
                                                      const char* id) const {
@@ -1263,7 +2391,7 @@
    return source_it->second.ToStringChecked(isolate);
  #else   // !NODE_BUILTIN_MODULES_PATH
    std::string filename = OnDiskFileName(id);
-@@ -279,15 +330,34 @@
+@@ -279,15 +350,34 @@
    EscapableHandleScope scope(isolate);
  
    Local<String> source;
@@ -1298,7 +2426,7 @@
    {
      // Note: The lock here should not extend into the
      // `CompileFunction()` call below, because this function may recurse if
-@@ -300,6 +370,9 @@
+@@ -300,6 +390,9 @@
        cached_data = cache_it->second;
      }
    }
@@ -1308,7 +2436,7 @@
  
    const bool has_cache = cached_data.data != nullptr;
    ScriptCompiler::CompileOptions options =
-@@ -312,10 +385,16 @@
+@@ -312,10 +405,16 @@
        options = ScriptCompiler::kEagerCompile;
      }
    }
@@ -1325,7 +2453,7 @@
  
    per_process::Debug(
        DebugCategory::CODE_CACHE,
-@@ -324,6 +403,9 @@
+@@ -324,6 +423,9 @@
        has_cache ? "with" : "without",
        options == ScriptCompiler::kEagerCompile ? "eagerly" : "lazily");
  
@@ -1335,7 +2463,7 @@
    MaybeLocal<Function> maybe_fun =
        ScriptCompiler::CompileFunction(context,
                                        &script_source,
-@@ -332,6 +414,9 @@
+@@ -332,6 +434,9 @@
                                        0,
                                        nullptr,
                                        options);
@@ -1345,7 +2473,7 @@
  
    // This could fail when there are early errors in the built-in modules,
    // e.g. the syntax errors
-@@ -376,7 +461,11 @@
+@@ -376,7 +481,11 @@
      // This is only done when the isolate is not being serialized because
      // V8 does not support serializing code cache with an unfinalized read-only
      // space (which is what isolates pending to be serialized have).
@@ -1357,13 +2485,16 @@
    }
  
    return scope.Escape(fun);
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node.cc
 --- node-v22.23.1/src/node.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node.cc	2026-07-25 22:42:32.941252042 -0500
-@@ -134,6 +134,13 @@
++++ node-v22.23.1/src/node.cc	2026-09-13 00:25:30.076180948 -0500
+@@ -134,6 +134,15 @@
  #include <tuple>
  #include <vector>
  
-+#ifdef __AROS__
++#if defined(__AROS__) && defined(NODE_AROS_TRACE)
++/* bug() reaches kprintf(), which needs the kernel-only _arosdebuglock; see the
++ * note at the kprintf declarations. Opt-in so node.library can link on pc. */
 +#include <aros/debug.h>
 +#define NODE_AROS_PHASE(name) bug("[Node] phase %s\n", name)
 +#else
@@ -1373,13 +2504,22 @@
  namespace node {
  
  using v8::Array;
-@@ -883,19 +890,25 @@
+@@ -883,19 +892,34 @@
      std::vector<std::string>* exec_argv,
      std::vector<std::string>* errors,
      ProcessInitializationFlags::Flags flags) {
 +  NODE_AROS_PHASE("initialize-args check-once");
    // Make sure InitializeNodeWithArgs() is called only once.
++#ifdef __AROS__
++  /* node.library is a shared AROS library and outlives the process that
++     opened it, so this file-scope guard is still set from the PREVIOUS
++     C:Node invocation and CHECK() would abort the second one.  node is
++     written for one Start() per OS process; on AROS one library serves many
++     processes in sequence.  Record that we ran, without aborting. */
++  init_called.store(true);
++#else
    CHECK(!init_called.exchange(true));
++#endif
  
    // Initialize node_start_time to get relative uptime.
 +  NODE_AROS_PHASE("initialize-args hrtime");
@@ -1399,7 +2539,7 @@
    }
  
    // Cache the original command line to be
-@@ -905,6 +918,7 @@
+@@ -905,6 +929,7 @@
    // Node provides a "v8.setFlagsFromString" method to dynamically change flags.
    // Hence do not freeze flags when initializing V8. In a browser setting, this
    // is security relevant, for Node it's less important.
@@ -1407,7 +2547,7 @@
    V8::SetFlagsFromString("--no-freeze-flags-after-init");
  
  #if defined(NODE_V8_OPTIONS)
-@@ -923,6 +937,7 @@
+@@ -923,6 +948,7 @@
    // Specify this explicitly to avoid being affected by V8 changes to the
    // default value.
    V8::SetFlagsFromString("--rehash-snapshot");
@@ -1415,7 +2555,7 @@
  
  #if HAVE_OPENSSL
    // TODO(joyeecheung): make this a per-env option and move the normalization
-@@ -933,10 +948,14 @@
+@@ -933,10 +959,14 @@
      per_process::cli_options->use_system_ca = true;
    }
  #endif  // HAVE_OPENSSL
@@ -1430,7 +2570,7 @@
  
    if (!env_files.empty()) {
      CHECK(!per_process::v8_initialized);
-@@ -1035,8 +1054,10 @@
+@@ -1035,8 +1065,10 @@
  #endif
  
    if (!(flags & ProcessInitializationFlags::kDisableCLIOptions)) {
@@ -1441,7 +2581,7 @@
      if (exit_code != ExitCode::kNoFailure) return exit_code;
    }
  
-@@ -1112,6 +1133,7 @@
+@@ -1112,6 +1144,7 @@
  InitializeOncePerProcessInternal(const std::vector<std::string>& args,
                                   ProcessInitializationFlags::Flags flags =
                                       ProcessInitializationFlags::kNoFlags) {
@@ -1449,7 +2589,7 @@
    auto result = std::make_shared<InitializationResultImpl>();
    result->args_ = args;
  
-@@ -1121,12 +1143,16 @@
+@@ -1121,12 +1154,16 @@
      per_process::enabled_debug_list.Parse(nullptr);
    }
  
@@ -1466,7 +2606,7 @@
      if (result->exit_code_enum() != ExitCode::kNoFailure) {
        result->early_return_ = true;
        return result;
-@@ -1283,13 +1309,17 @@
+@@ -1283,13 +1320,17 @@
    }
  
    if (!(flags & ProcessInitializationFlags::kNoInitializeNodeV8Platform)) {
@@ -1484,7 +2624,7 @@
  
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
-@@ -1298,11 +1328,13 @@
+@@ -1298,11 +1339,13 @@
    }
  
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
@@ -1498,7 +2638,7 @@
    }
  
  #if NODE_USE_V8_WASM_TRAP_HANDLER
-@@ -1568,14 +1600,19 @@
+@@ -1568,14 +1611,19 @@
  }
  
  static ExitCode StartInternal(int argc, char** argv) {
@@ -1518,6 +2658,7 @@
    for (const std::string& error : result->errors()) {
      FPrintF(stderr, "%s: %s\n", result->args().at(0), error);
    }
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_config.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_config.cc
 --- node-v22.23.1/src/node_config.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_config.cc	2026-07-25 20:42:26.554181304 -0500
 @@ -7,6 +7,12 @@
@@ -1554,8 +2695,9 @@
    Local<Value> result;
    if (ToV8Value(context, locale).ToLocal(&result)) {
      args.GetReturnValue().Set(result);
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_constants.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_constants.cc
 --- node-v22.23.1/src/node_constants.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_constants.cc	2026-08-10 06:56:45.834427004 -0500
++++ node-v22.23.1/src/node_constants.cc	2026-09-13 00:25:30.074824634 -0500
 @@ -43,7 +43,7 @@
  #endif  // !OPENSSL_NO_ENGINE
  #endif  // HAVE_OPENSSL
@@ -1565,18 +2707,38 @@
  #include <dlfcn.h>
  #endif
  
-@@ -61,6 +61,10 @@
+@@ -61,6 +61,30 @@
  #include <csignal>
  #include <limits>
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  namespace node {
  
  using v8::Context;
-@@ -1280,111 +1284,243 @@
+@@ -1280,111 +1304,243 @@
                                  Local<Value> unused,
                                  Local<Context> context,
                                  void* priv) {
@@ -1820,6 +2982,7 @@
  }
  
  }  // namespace constants
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_credentials.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_credentials.cc
 --- node-v22.23.1/src/node_credentials.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_credentials.cc	2026-08-01 22:43:07.224254278 -0500
 @@ -12,6 +12,9 @@
@@ -1852,20 +3015,41 @@
    if (dir.size() > 1 && dir.ends_with("/")) {
      dir.pop_back();
    }
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_errors.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_errors.cc
 --- node-v22.23.1/src/node_errors.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_errors.cc	2026-07-26 00:11:50.373843075 -0500
-@@ -3,6 +3,10 @@
++++ node-v22.23.1/src/node_errors.cc	2026-09-13 00:25:30.072710242 -0500
+@@ -3,6 +3,30 @@
  #include <filesystem>
  #include <sstream>
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  #include "debug_utils-inl.h"
  #include "node_errors.h"
  #include "node_external_reference.h"
-@@ -435,6 +439,16 @@
+@@ -435,6 +459,16 @@
    CHECK(!message.IsEmpty());
    HandleScope scope(isolate);
  
@@ -1882,7 +3066,7 @@
    AppendExceptionLine(env, error, message, FATAL_ERROR);
  
    auto report_to_inspector = [&]() {
-@@ -570,6 +584,11 @@
+@@ -570,6 +604,11 @@
  }
  
  [[noreturn]] void OnFatalError(const char* location, const char* message) {
@@ -1894,6 +3078,7 @@
    if (location) {
      FPrintF(stderr, "FATAL ERROR: %s %s\n", location, message);
    } else {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_internals.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_internals.h
 --- node-v22.23.1/src/node_internals.h	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_internals.h	2026-08-10 05:58:17.445687692 -0500
 @@ -143,8 +143,16 @@
@@ -1914,39 +3099,65 @@
  };
  
  class DebuggingArrayBufferAllocator final : public NodeArrayBufferAllocator {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_main.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_main.cc
 --- node-v22.23.1/src/node_main.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_main.cc	2026-07-25 22:33:51.711257693 -0500
-@@ -22,6 +22,10 @@
++++ node-v22.23.1/src/node_main.cc	2026-09-13 00:25:30.076342810 -0500
+@@ -22,6 +22,12 @@
  #include "node.h"
  #include <cstdio>
  
 +#ifdef __AROS__
++#ifdef NODE_AROS_TRACE
 +#include <aros/debug.h>
++#endif
 +#endif
 +
  #ifdef _WIN32
  #include <windows.h>
  #include <VersionHelpers.h>
-@@ -94,6 +98,11 @@
+@@ -94,6 +100,13 @@
  // UNIX
  
  int main(int argc, char* argv[]) {
 +#ifdef __AROS__
++#ifdef NODE_AROS_TRACE
 +  bug("[Node] main enter argc=%d\n", argc);
++#endif
 +#endif
 +  fprintf(stderr, "NODE_MAIN_ENTER argc=%d\n", argc);
 +  fflush(stderr);
    return node::Start(argc, argv);
  }
  #endif
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_main_instance.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_main_instance.cc
 --- node-v22.23.1/src/node_main_instance.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_main_instance.cc	2026-07-26 10:31:59.645901219 -0500
-@@ -22,6 +22,13 @@
++++ node-v22.23.1/src/node_main_instance.cc	2026-09-13 00:25:30.074995603 -0500
+@@ -22,6 +22,33 @@
  #include "inspector/worker_inspector.h"  // ParentInspectorHandle
  #endif
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#define NODE_MAIN_TRACE(...) kprintf("[NodeMain] " __VA_ARGS__)
 +#else
 +#define NODE_MAIN_TRACE(...) ((void) 0)
@@ -1955,7 +3166,7 @@
  namespace node {
  
  using v8::Context;
-@@ -87,6 +94,7 @@
+@@ -87,6 +114,7 @@
  }
  
  ExitCode NodeMainInstance::Run() {
@@ -1963,7 +3174,7 @@
    Locker locker(isolate_);
    Isolate::Scope isolate_scope(isolate_);
    HandleScope handle_scope(isolate_);
-@@ -94,21 +102,46 @@
+@@ -94,21 +122,46 @@
    ExitCode exit_code = ExitCode::kNoFailure;
    DeleteFnPtr<Environment, FreeEnvironment> env =
        CreateMainEnvironment(&exit_code);
@@ -2013,9 +3224,10 @@
    }
  
  #if defined(LEAK_SANITIZER)
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_messaging.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_messaging.cc
 --- node-v22.23.1/src/node_messaging.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_messaging.cc	2026-08-10 07:00:00.775705210 -0500
-@@ -8,8 +8,13 @@
++++ node-v22.23.1/src/node_messaging.cc	2026-09-13 00:25:30.074157327 -0500
+@@ -8,8 +8,33 @@
  #include "node_errors.h"
  #include "node_external_reference.h"
  #include "node_process-inl.h"
@@ -2023,13 +3235,33 @@
  #include "util-inl.h"
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  using node::contextify::ContextifyContext;
  using node::errors::TryCatchScope;
  using v8::Array;
-@@ -1577,6 +1582,21 @@
+@@ -1577,6 +1602,21 @@
  static void SetDeserializerCreateObjectFunction(
      const FunctionCallbackInfo<Value>& args) {
    Environment* env = Environment::GetCurrent(args);
@@ -2051,19 +3283,58 @@
    CHECK(args[0]->IsFunction());
    env->set_messaging_deserialize_create_object(args[0].As<Function>());
  }
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_metadata.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_metadata.cc
+--- node-v22.23.1/src/node_metadata.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_metadata.cc	2026-09-12 00:58:06.211790302 -0500
+@@ -205,6 +205,13 @@
+ #endif  // NODE_HAS_RELEASE_URLS
+ }
+ 
++#ifdef __AROS__
++/* The build configures --dest-os=linux because node's configure.py has no
++   notion of AROS, but the platform string is what scripts actually see.
++   Report the truth: this is AROS, not Linux. */
++Metadata::Metadata() : arch(NODE_ARCH), platform("aros") {}
++#else
+ Metadata::Metadata() : arch(NODE_ARCH), platform(NODE_PLATFORM) {}
++#endif
+ 
+ }  // namespace node
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_options-inl.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_options-inl.h
 --- node-v22.23.1/src/node_options-inl.h	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_options-inl.h	2026-07-26 13:44:33.690650459 -0500
-@@ -7,6 +7,10 @@
++++ node-v22.23.1/src/node_options-inl.h	2026-09-13 00:25:30.075955467 -0500
+@@ -7,6 +7,30 @@
  #include "node_options.h"
  #include "util.h"
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char*, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  namespace node {
  
  PerIsolateOptions* PerProcessOptions::get_per_isolate_options() {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_platform.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_platform.cc
 --- node-v22.23.1/src/node_platform.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_platform.cc	2026-08-10 05:49:47.903665267 -0500
 @@ -231,6 +231,15 @@
@@ -2210,6 +3481,7 @@
    worker_thread_task_runner_->PostDelayedTask(std::move(task),
                                                delay_in_seconds);
  }
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_process_object.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_process_object.cc
 --- node-v22.23.1/src/node_process_object.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_process_object.cc	2026-07-25 20:49:46.332402453 -0500
 @@ -75,7 +75,7 @@
@@ -2221,6 +3493,7 @@
  }
  
  static void SetVersions(Isolate* isolate, Local<Object> versions) {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_report.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_report.cc
 --- node-v22.23.1/src/node_report.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_report.cc	2026-07-25 20:50:18.920197447 -0500
 @@ -15,8 +15,10 @@
@@ -2271,6 +3544,7 @@
      {"max_user_processes", RLIMIT_NPROC},
  #endif
  #ifndef __OpenBSD__
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_sockaddr-inl.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_sockaddr-inl.h
 --- node-v22.23.1/src/node_sockaddr-inl.h	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_sockaddr-inl.h	2026-07-25 20:49:46.328402479 -0500
 @@ -31,7 +31,11 @@
@@ -2285,6 +3559,7 @@
  }
  
  int SocketAddress::GetPort(const sockaddr* addr) {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_sqlite.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_sqlite.cc
 --- node-v22.23.1/src/node_sqlite.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_sqlite.cc	2026-07-30 19:01:25.796244693 -0500
 @@ -1785,6 +1785,13 @@
@@ -2309,20 +3584,41 @@
  }
  
  StatementSync::StatementSync(Environment* env,
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_symbols.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_symbols.cc
 --- node-v22.23.1/src/node_symbols.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_symbols.cc	2026-08-10 06:45:37.449316465 -0500
-@@ -2,6 +2,10 @@
++++ node-v22.23.1/src/node_symbols.cc	2026-09-13 00:25:30.075403585 -0500
+@@ -2,6 +2,30 @@
  #include "node_binding.h"
  #include "util.h"
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  namespace node {
  
  using v8::Context;
-@@ -16,6 +20,20 @@
+@@ -16,6 +40,20 @@
                         Local<Context> context,
                         void* priv) {
    Environment* env = Environment::GetCurrent(context);
@@ -2343,7 +3639,7 @@
  #define V(PropertyName, StringValue)                                           \
    target                                                                       \
        ->Set(env->context(),                                                    \
-@@ -24,6 +42,7 @@
+@@ -24,6 +62,7 @@
        .Check();
    PER_ISOLATE_SYMBOL_PROPERTIES(V)
  #undef V
@@ -2351,20 +3647,41 @@
  }
  
  }  // namespace symbols
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_task_queue.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_task_queue.cc
 --- node-v22.23.1/src/node_task_queue.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_task_queue.cc	2026-08-10 06:52:33.328790113 -0500
-@@ -10,6 +10,10 @@
++++ node-v22.23.1/src/node_task_queue.cc	2026-09-13 00:25:30.075573753 -0500
+@@ -10,6 +10,30 @@
  
  #include <atomic>
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  namespace node {
  
  using errors::TryCatchScope;
-@@ -160,27 +164,65 @@
+@@ -160,27 +184,65 @@
                         Local<Value> unused,
                         Local<Context> context,
                         void* priv) {
@@ -2430,9 +3747,10 @@
  }
  
  void RegisterExternalReferences(ExternalReferenceRegistry* registry) {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_trace_events.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_trace_events.cc
 --- node-v22.23.1/src/node_trace_events.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_trace_events.cc	2026-08-10 07:05:40.887830199 -0500
-@@ -4,10 +4,15 @@
++++ node-v22.23.1/src/node_trace_events.cc	2026-09-13 00:25:30.075750113 -0500
+@@ -4,10 +4,35 @@
  #include "node.h"
  #include "node_external_reference.h"
  #include "node_internals.h"
@@ -2442,13 +3760,33 @@
  #include "util-inl.h"
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  #include <set>
  #include <string>
  
-@@ -120,7 +125,16 @@
+@@ -120,7 +145,16 @@
      const FunctionCallbackInfo<Value>& args) {
    Environment* env = Environment::GetCurrent(args);
    CHECK(args[0]->IsFunction());
@@ -2465,6 +3803,7 @@
  }
  
  static void GetCategoryEnabledBuffer(const FunctionCallbackInfo<Value>& args) {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_url.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_url.cc
 --- node-v22.23.1/src/node_url.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_url.cc	2026-07-26 08:55:46.470058735 -0500
 @@ -122,7 +122,19 @@
@@ -2509,20 +3848,41 @@
  #endif  // _WIN32
  }
  
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_v8.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_v8.cc
 --- node-v22.23.1/src/node_v8.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_v8.cc	2026-08-10 06:42:35.641650956 -0500
-@@ -29,6 +29,10 @@
++++ node-v22.23.1/src/node_v8.cc	2026-09-13 00:25:30.073427152 -0500
+@@ -29,6 +29,30 @@
  #include "util-inl.h"
  #include "v8.h"
  
 +#ifdef __AROS__
++/* AROS: this tracing resolves kprintf() through arossupport's vkprintf(),
++ * which needs _arosdebuglock - a symbol defined INSIDE the kernel ROM
++ * (arch/x86_64-pc/kernel/kernel_debug.c). A disk-loaded library cannot link
++ * against it, so any .library calling kprintf() is unlinkable on a pc target;
++ * hosted only gets away with it because its arossupport uses a vkprintf that
++ * needs no lock. That is why node.library built hosted and had never once
++ * linked for pc-x86_64.
++ *
++ * Tracing is therefore opt-in via NODE_AROS_TRACE. The stub is a static
++ * inline named kprintf, NOT a macro that renames it: renaming rewrote the
++ * next translation unit's own `extern "C" int kprintf(...)` declaration into
++ * a C-linkage declaration of the stub, which clashed with its C++ definition.
++ * The inline still consumes its arguments, so variables that exist only to be
++ * traced do not become unused. Same intent as b066849b for node_bridge.cc.
++ */
++#ifdef NODE_AROS_TRACE
 +extern "C" int kprintf(const char* format, ...);
++#elif !defined(NODE_AROS_KPRINTF_STUBBED)
++#define NODE_AROS_KPRINTF_STUBBED 1
++static inline int kprintf(const char*, ...) { return 0; }
++#endif
 +#endif
 +
  namespace node {
  namespace v8_utils {
  using v8::Array;
-@@ -224,6 +228,16 @@
+@@ -224,6 +248,16 @@
  
  void UpdateHeapCodeStatisticsBuffer(const FunctionCallbackInfo<Value>& args) {
    BindingData* data = Realm::GetBindingData<BindingData>(args);
@@ -2539,6 +3899,7 @@
    HeapCodeStatistics s;
    args.GetIsolate()->GetHeapCodeAndMetadataStatistics(&s);
    AliasedFloat64Array& buffer = data->heap_code_statistics_buffer;
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/util.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/util.cc
 --- node-v22.23.1/src/util.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/util.cc	2026-07-25 20:57:02.845662270 -0500
 @@ -323,7 +323,8 @@
@@ -2551,17 +3912,9 @@
  #endif
  }
  
-
-# ---------------------------------------------------------------------
-# js2c: emit the AROS builtin-source entry points.
-# node_builtins.cc (patched above) declares and calls
-# ArosGetBuiltinSourceMapDirect/ArosLoadBuiltinSourceDirect but nothing
-# defined them - in the OPAL tree they existed only as hand edits to the
-# GENERATED node_javascript.cc, untracked and destroyed by regeneration.
-# Emitting from the generator makes node.library reproducible.
-# ---------------------------------------------------------------------
---- a/tools/js2c.cc
-+++ b/tools/js2c.cc
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/tools/js2c.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/tools/js2c.cc
+--- node-v22.23.1/tools/js2c.cc	2026-06-23 11:27:45.000000000 -0500
++++ node-v22.23.1/tools/js2c.cc	2026-09-11 22:54:39.346046357 -0500
 @@ -182,15 +182,56 @@
  
  %.*s
@@ -2619,1072 +3972,3 @@
  }
  
  void RegisterExternalReferencesForInternalizedBuiltinCode(
-
-# ---------------------------------------------------------------------
-# V8 12.4.254 AROS port, harvested from chromium-aros (same V8 build
-# number). 46 hunks / 21 files: v8config.h's AROS arm (without which
-# NativeHandle never resolves), the POSIX platform layer, and the cppgc
-# statics/TLS workarounds. AROS-only hunks, so Chromium's unrelated V8
-# divergence is not dragged in.
-# ---------------------------------------------------------------------
---- a/deps/v8/include/cppgc/internal/write-barrier.h
-+++ b/deps/v8/include/cppgc/internal/write-barrier.h
-@@ -115,7 +115,13 @@
-   // The FlagUpdater class allows cppgc internal to update
-   // |write_barrier_enabled_|.
-   class FlagUpdater;
--  static bool IsEnabled() { return write_barrier_enabled_.MightBeEntered(); }
-+  static bool IsEnabled() {
-+#if V8_OS_AROS
-+    return WriteBarrierEnabledStorage().MightBeEntered();
-+#else
-+    return write_barrier_enabled_.MightBeEntered();
-+#endif
-+  }
- 
-  private:
-   WriteBarrier() = delete;
-@@ -150,7 +156,13 @@
-       HeapHandle* heap_handle);
- #endif  // CPPGC_YOUNG_GENERATION
- 
-+#if V8_OS_AROS
-+  // Keep the process-wide barrier flag in v8.library and make inline Blink
-+  // callers import an accessor function, not a duplicate data symbol.
-+  static AtomicEntryFlag& WriteBarrierEnabledStorage();
-+#else
-   static AtomicEntryFlag write_barrier_enabled_;
-+#endif
- };
- 
- template <WriteBarrier::Type type>
---- a/deps/v8/include/cppgc/process-heap-statistics.h
-+++ b/deps/v8/include/cppgc/process-heap-statistics.h
-@@ -18,15 +18,31 @@
- class V8_EXPORT ProcessHeapStatistics final {
-  public:
-   static size_t TotalAllocatedObjectSize() {
-+#if V8_OS_AROS
-+    return TotalAllocatedObjectSizeStorage().load(std::memory_order_relaxed);
-+#else
-     return total_allocated_object_size_.load(std::memory_order_relaxed);
-+#endif
-   }
-   static size_t TotalAllocatedSpace() {
-+#if V8_OS_AROS
-+    return TotalAllocatedSpaceStorage().load(std::memory_order_relaxed);
-+#else
-     return total_allocated_space_.load(std::memory_order_relaxed);
-+#endif
-   }
- 
-  private:
-+#if V8_OS_AROS
-+  // AROS keeps the V8 engine in v8.library. Inline cppgc users in Chromium
-+  // must reach the library-owned counters through function imports instead of
-+  // creating executable-side data relocations for these process globals.
-+  static std::atomic_size_t& TotalAllocatedSpaceStorage();
-+  static std::atomic_size_t& TotalAllocatedObjectSizeStorage();
-+#else
-   static std::atomic_size_t total_allocated_space_;
-   static std::atomic_size_t total_allocated_object_size_;
-+#endif
- 
-   friend class internal::ProcessHeapStatisticsUpdater;
- };
---- a/deps/v8/include/v8config.h
-+++ b/deps/v8/include/v8config.h
-@@ -67,6 +67,7 @@
- //
- //  V8_OS_ANDROID       - Android
- //  V8_OS_BSD           - BSDish (macOS, Net/Free/Open/DragonFlyBSD)
-+//  V8_OS_AROS          - AROS Research Operating System
- //  V8_OS_CYGWIN        - Cygwin
- //  V8_OS_DRAGONFLYBSD  - DragonFlyBSD
- //  V8_OS_FREEBSD       - FreeBSD
-@@ -84,7 +85,12 @@
- //  V8_OS_AIX           - AIX
- //  V8_OS_WIN           - Microsoft Windows
- 
--#if defined(__ANDROID__)
-+#if defined(__AROS__)
-+# define V8_OS_AROS 1
-+# define V8_OS_POSIX 1
-+# define V8_OS_STRING "aros"
-+
-+#elif defined(__ANDROID__)
- # define V8_OS_ANDROID 1
- # define V8_OS_LINUX 1
- # define V8_OS_POSIX 1
-@@ -168,6 +174,7 @@
- // -----------------------------------------------------------------------------
- // Operating system detection (target)
- //
-+//  V8_TARGET_OS_AROS
- //  V8_TARGET_OS_ANDROID
- //  V8_TARGET_OS_FUCHSIA
- //  V8_TARGET_OS_IOS
-@@ -181,7 +188,8 @@
- #ifdef V8_HAVE_TARGET_OS
- 
- // The target OS is provided, just check that at least one known value is set.
--# if !defined(V8_TARGET_OS_ANDROID) \
-+# if !defined(V8_TARGET_OS_AROS) \
-+  && !defined(V8_TARGET_OS_ANDROID) \
-   && !defined(V8_TARGET_OS_FUCHSIA) \
-   && !defined(V8_TARGET_OS_IOS) \
-   && !defined(V8_TARGET_OS_LINUX) \
-@@ -193,7 +201,8 @@
- 
- #else  // V8_HAVE_TARGET_OS
- 
--# if defined(V8_TARGET_OS_ANDROID) \
-+# if defined(V8_TARGET_OS_AROS) \
-+  || defined(V8_TARGET_OS_ANDROID) \
-   || defined(V8_TARGET_OS_FUCHSIA) \
-   || defined(V8_TARGET_OS_IOS) \
-   || defined(V8_TARGET_OS_LINUX) \
-@@ -204,6 +213,10 @@
- # endif
- 
- // Fall back to the detected host OS.
-+#ifdef V8_OS_AROS
-+# define V8_TARGET_OS_AROS
-+#endif
-+
- #ifdef V8_OS_ANDROID
- # define V8_TARGET_OS_ANDROID
- #endif
-@@ -230,7 +243,9 @@
- 
- #endif  // V8_HAVE_TARGET_OS
- 
--#if defined(V8_TARGET_OS_ANDROID)
-+#if defined(V8_TARGET_OS_AROS)
-+# define V8_TARGET_OS_STRING "aros"
-+#elif defined(V8_TARGET_OS_ANDROID)
- # define V8_TARGET_OS_STRING "android"
- #elif defined(V8_TARGET_OS_FUCHSIA)
- # define V8_TARGET_OS_STRING "fuchsia"
---- a/deps/v8/src/base/macros.h
-+++ b/deps/v8/src/base/macros.h
-@@ -12,6 +12,13 @@
- #include "src/base/compiler-specific.h"
- #include "src/base/logging.h"
- 
-+#if V8_OS_AROS
-+// exec/types.h exposes these legacy storage qualifiers in the global macro
-+// namespace, where they collide with V8 enum values.
-+#undef GLOBAL
-+#undef REGISTER
-+#endif
-+
- // No-op macro which is used to work around MSVC's funky VA_ARGS support.
- #define EXPAND(x) x
- 
---- a/deps/v8/src/base/platform/memory.h
-+++ b/deps/v8/src/base/platform/memory.h
-@@ -19,13 +19,13 @@
- 
- #if V8_OS_DARWIN
- #include <malloc/malloc.h>
--#else  // !V8_OS_DARWIN
-+#elif !V8_OS_AROS
- #include <malloc.h>
--#endif  // !V8_OS_DARWIN
-+#endif
- 
--#if (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_SOLARIS) || V8_OS_WIN
-+#if (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_AROS && !V8_OS_SOLARIS) || V8_OS_WIN
- #define V8_HAS_MALLOC_USABLE_SIZE 1
--#endif  // (V8_OS_POSIX && !V8_OS_AIX && !V8_OS_SOLARIS) || V8_OS_WIN
-+#endif
- 
- namespace v8::base {
- 
---- a/deps/v8/src/base/platform/platform-posix.cc
-+++ b/deps/v8/src/base/platform/platform-posix.cc
-@@ -17,7 +19,18 @@
- #include <fcntl.h>
- #include <sched.h>  // for sched_yield
- #include <stdio.h>
-+#if V8_OS_AROS
-+#include <exec/memory.h>
-+#include <exec/tasks.h>
-+#include <proto/arossupport.h>
-+#include <proto/exec.h>
-+#undef Allocate
-+#undef Remove
-+#undef Signal
-+#undef Wait
-+#else
- #include <sys/mman.h>
-+#endif
- #include <sys/stat.h>
- #include <sys/time.h>
- #include <sys/types.h>
-@@ -54,7 +67,7 @@
- #if V8_OS_DARWIN
- #include <mach/mach.h>
- #include <malloc/malloc.h>
--#else
-+#elif !V8_OS_AROS
- #include <malloc.h>
- #endif
- 
-@@ -68,27 +81,29 @@
- #include <sys/resource.h>
- #endif
- 
--#if !defined(_AIX) && !defined(V8_OS_FUCHSIA)
-+#if !defined(_AIX) && !defined(V8_OS_FUCHSIA) && !V8_OS_AROS
- #include <sys/syscall.h>
- #endif
- 
-+#if V8_OS_AROS
-+#define PROT_NONE 0
-+#define PROT_READ 1
-+#define PROT_WRITE 2
-+#define PROT_EXEC 4
-+#define MAP_SHARED 1
-+#define MAP_PRIVATE 2
-+#define MAP_FIXED 0x10
-+#define MAP_ANONYMOUS 0x20
-+#define MAP_NORESERVE 0x4000
-+#define MAP_FAILED ((void*)-1)
-+#define MADV_DONTNEED 4
-+#endif
-+
- #if V8_OS_FREEBSD || V8_OS_DARWIN || V8_OS_OPENBSD || V8_OS_SOLARIS
- #define MAP_ANONYMOUS MAP_ANON
- #endif
- 
--/*
-- * NOTE: illumos starting with illumos#14418 (pushed April 20th, 2022)
-- * prototypes madvise(3C) properly with a `void *` first argument.
-- * The only way to detect this outside of configure-time checking is to
-- * check for the existence of MEMCNTL_SHARED, which gets defined for the first
-- * time in illumos#14418 under the same circumstances save _STRICT_POSIX, which
-- * thankfully neither Solaris nor illumos builds of Node or V8 do.
-- *
-- * If some future illumos push changes the MEMCNTL_SHARED assumptions made
-- * above, the illumos check below will have to be revisited.  This check
-- * will work on both pre-and-post illumos#14418 illumos environments.
-- */
--#if defined(V8_OS_SOLARIS) && !(defined(__illumos__) && defined(MEMCNTL_SHARED))
-+#if defined(V8_OS_SOLARIS)
- #if (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE > 2) || defined(__EXTENSIONS__)
- extern "C" int madvise(caddr_t, size_t, int);
- #else
-@@ -104,11 +119,209 @@
- extern "C" void* __libc_stack_end;
- #endif
- 
-+#if V8_OS_AROS
-+static int ArosCurrentTaskId() {
-+  return static_cast<int>(GetETaskID(FindTask(nullptr)));
-+}
-+#endif
-+
- namespace v8 {
- namespace base {
- 
- namespace {
- 
-+#if V8_OS_AROS
-+struct ArosMapping {
-+  ArosMapping* next;
-+  void* raw;
-+  size_t raw_size;
-+  uintptr_t mapping_start;
-+  size_t mapping_size;
-+  uintptr_t live_start;
-+  uintptr_t live_end;
-+  int fd;
-+  off_t offset;
-+  bool write_back;
-+};
-+
-+ArosMapping* g_aros_mappings = nullptr;
-+volatile unsigned char g_aros_mappings_lock = 0;
-+
-+void LockArosMappings() {
-+  while (__atomic_test_and_set(&g_aros_mappings_lock, __ATOMIC_ACQUIRE)) {
-+    __asm__ __volatile__("pause");
-+  }
-+}
-+
-+void UnlockArosMappings() {
-+  __atomic_clear(&g_aros_mappings_lock, __ATOMIC_RELEASE);
-+}
-+
-+bool TransferArosFile(int fd, off_t offset, void* data, size_t size,
-+                      bool write_back) {
-+  LockArosMappings();
-+  off_t previous = ::lseek(fd, 0, SEEK_CUR);
-+  bool ok = previous != static_cast<off_t>(-1) &&
-+            ::lseek(fd, offset, SEEK_SET) != static_cast<off_t>(-1);
-+  size_t transferred = 0;
-+  while (ok && transferred < size) {
-+    char* cursor = static_cast<char*>(data) + transferred;
-+    ssize_t result = write_back ? ::write(fd, cursor, size - transferred)
-+                                : ::read(fd, cursor, size - transferred);
-+    if (result > 0) {
-+      transferred += static_cast<size_t>(result);
-+    } else if (!write_back && result == 0) {
-+      memset(cursor, 0, size - transferred);
-+      transferred = size;
-+    } else if (result < 0 && errno == EINTR) {
-+      continue;
-+    } else {
-+      ok = false;
-+    }
-+  }
-+  if (previous != static_cast<off_t>(-1) &&
-+      ::lseek(fd, previous, SEEK_SET) == static_cast<off_t>(-1)) {
-+    ok = false;
-+  }
-+  UnlockArosMappings();
-+  return ok;
-+}
-+
-+void* ArosMmap(void* address, size_t size, int prot, int flags, int fd,
-+               off_t offset) {
-+  if (size == 0) {
-+    errno = EINVAL;
-+    return MAP_FAILED;
-+  }
-+
-+  if (flags & MAP_FIXED) {
-+    if (address == nullptr || address == MAP_FAILED) {
-+      errno = EINVAL;
-+      return MAP_FAILED;
-+    }
-+    if (fd >= 0) {
-+      if (!TransferArosFile(fd, offset, address, size, false)) {
-+        return MAP_FAILED;
-+      }
-+    } else {
-+      memset(address, 0, size);
-+    }
-+    return address;
-+  }
-+
-+  constexpr size_t kPageSize = 4096;
-+  if (size > SIZE_MAX - (kPageSize - 1)) {
-+    errno = ENOMEM;
-+    return MAP_FAILED;
-+  }
-+  size_t raw_size = size + kPageSize - 1;
-+  void* raw = AllocMem(raw_size, MEMF_PUBLIC | MEMF_CLEAR);
-+  if (!raw) {
-+    errno = ENOMEM;
-+    return MAP_FAILED;
-+  }
-+  uintptr_t mapping_start =
-+      (reinterpret_cast<uintptr_t>(raw) + kPageSize - 1) &
-+      ~(static_cast<uintptr_t>(kPageSize) - 1);
-+
-+  if (fd >= 0 &&
-+      !TransferArosFile(fd, offset, reinterpret_cast<void*>(mapping_start),
-+                        size, false)) {
-+    FreeMem(raw, raw_size);
-+    return MAP_FAILED;
-+  }
-+
-+  auto* mapping = static_cast<ArosMapping*>(
-+      AllocMem(sizeof(ArosMapping), MEMF_PUBLIC | MEMF_CLEAR));
-+  if (!mapping) {
-+    FreeMem(raw, raw_size);
-+    errno = ENOMEM;
-+    return MAP_FAILED;
-+  }
-+  mapping->raw = raw;
-+  mapping->raw_size = raw_size;
-+  mapping->mapping_start = mapping_start;
-+  mapping->mapping_size = size;
-+  mapping->live_start = mapping_start;
-+  mapping->live_end = mapping_start + size;
-+  mapping->fd = fd;
-+  mapping->offset = offset;
-+  mapping->write_back =
-+      fd >= 0 && (flags & MAP_SHARED) != 0 && (prot & PROT_WRITE) != 0;
-+
-+  LockArosMappings();
-+  mapping->next = g_aros_mappings;
-+  g_aros_mappings = mapping;
-+  UnlockArosMappings();
-+  return reinterpret_cast<void*>(mapping_start);
-+}
-+
-+int ArosMunmap(void* address, size_t size) {
-+  if (!address || address == MAP_FAILED || size == 0) {
-+    errno = EINVAL;
-+    return -1;
-+  }
-+
-+  uintptr_t start = reinterpret_cast<uintptr_t>(address);
-+  uintptr_t end = start + size;
-+  if (end < start) end = UINTPTR_MAX;
-+
-+  LockArosMappings();
-+  ArosMapping** link = &g_aros_mappings;
-+  while (*link) {
-+    ArosMapping* mapping = *link;
-+    if (start >= mapping->live_start && start < mapping->live_end) {
-+      if (start == mapping->live_start) {
-+        mapping->live_start = end < mapping->live_end ? end : mapping->live_end;
-+      } else if (end >= mapping->live_end) {
-+        mapping->live_end = start;
-+      } else {
-+        UnlockArosMappings();
-+        return 0;
-+      }
-+
-+      if (mapping->live_start < mapping->live_end) {
-+        UnlockArosMappings();
-+        return 0;
-+      }
-+
-+      *link = mapping->next;
-+      UnlockArosMappings();
-+      if (mapping->write_back) {
-+        TransferArosFile(mapping->fd, mapping->offset,
-+                         reinterpret_cast<void*>(mapping->mapping_start),
-+                         mapping->mapping_size, true);
-+      }
-+      FreeMem(mapping->raw, mapping->raw_size);
-+      FreeMem(mapping, sizeof(ArosMapping));
-+      return 0;
-+    }
-+    link = &mapping->next;
-+  }
-+  UnlockArosMappings();
-+  return 0;
-+}
-+
-+int ArosMprotect(void* address, size_t size, int prot) {
-+  USE(address);
-+  USE(size);
-+  USE(prot);
-+  return 0;
-+}
-+
-+int ArosMadvise(void* address, size_t size, int advice) {
-+  if (advice == MADV_DONTNEED || advice == MADV_FREE) {
-+    memset(address, 0, size);
-+  }
-+  return 0;
-+}
-+
-+#define mmap ArosMmap
-+#define munmap ArosMunmap
-+#define mprotect ArosMprotect
-+#define madvise ArosMadvise
-+#endif
-+
- // 0 is never a valid thread id.
- const pthread_t kNoThread = static_cast<pthread_t>(0);
- 
-@@ -317,6 +530,9 @@
- 
- // static
- void* OS::GetRandomMmapAddr() {
-+#if V8_OS_AROS
-+  return nullptr;
-+#else
-   uintptr_t raw_addr;
-   {
-     MutexGuard guard(rng_mutex.Pointer());
-@@ -534,6 +751,11 @@
- 
- // static
- void OS::SetDataReadOnly(void* address, size_t size) {
-+#if V8_OS_AROS
-+  USE(address);
-+  USE(size);
-+  return;
-+#else
-   CHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
-   CHECK_EQ(0, size % CommitPageSize());
- 
-@@ -836,6 +1059,8 @@
-   return static_cast<int>(zx_thread_self());
- #elif V8_OS_SOLARIS
-   return static_cast<int>(pthread_self());
-+#elif V8_OS_AROS
-+  return ArosCurrentTaskId();
- #else
-   return static_cast<int>(reinterpret_cast<intptr_t>(pthread_self()));
- #endif
-@@ -855,18 +1080,24 @@
- 
- #if !defined(V8_OS_FUCHSIA)
- int OS::GetUserTime(uint32_t* secs, uint32_t* usecs) {
-+#if V8_OS_AROS
-+  *secs = 0;
-+  *usecs = 0;
-+  return -1;
-+#else
-   struct rusage usage;
- 
-   if (getrusage(RUSAGE_SELF, &usage) < 0) return -1;
-   *secs = static_cast<uint32_t>(usage.ru_utime.tv_sec);
-   *usecs = static_cast<uint32_t>(usage.ru_utime.tv_usec);
-   return 0;
-+#endif
- }
- #endif
- 
- int OS::GetPeakMemoryUsageKb() {
--#if defined(V8_OS_FUCHSIA)
--  // Fuchsia does not implement getrusage()
-+#if defined(V8_OS_FUCHSIA) || V8_OS_AROS
-+  // Fuchsia and AROS do not implement getrusage().
-   return -1;
- #else
-   struct rusage usage;
-@@ -987,6 +1218,14 @@
- #if defined(ANDROID) && !defined(V8_ANDROID_LOG_STDOUT)
-   __android_log_vprint(ANDROID_LOG_ERROR, LOG_TAG, format, args);
- #else
-+#if V8_OS_AROS
-+  char debug_message[2048];
-+  va_list debug_args;
-+  va_copy(debug_args, args);
-+  vsnprintf(debug_message, sizeof(debug_message), format, debug_args);
-+  va_end(debug_args);
-+  kprintf("[V8:stderr] %s", debug_message);
-+#endif
-   vfprintf(stderr, format, args);
- #endif
- }
-@@ -1378,5 +1617,22 @@
- #undef MAP_ANONYMOUS
- #undef MADV_FREE
- 
-+#if V8_OS_AROS
-+#undef mmap
-+#undef munmap
-+#undef mprotect
-+#undef madvise
-+#undef PROT_NONE
-+#undef PROT_READ
-+#undef PROT_WRITE
-+#undef PROT_EXEC
-+#undef MAP_SHARED
-+#undef MAP_PRIVATE
-+#undef MAP_FIXED
-+#undef MAP_NORESERVE
-+#undef MAP_FAILED
-+#undef MADV_DONTNEED
-+#endif
-+
- }  // namespace base
- }  // namespace v8
---- a/deps/v8/src/base/platform/platform.cc
-+++ b/deps/v8/src/base/platform/platform.cc
-@@ -10,22 +10,35 @@
- namespace {
- 
- // A pointer to current thread's stack beginning.
-+#if !V8_OS_AROS
- thread_local void* thread_stack_start = nullptr;
-+#endif
- 
- }  // namespace
- 
- // static
- Stack::StackSlot Stack::GetStackStartUnchecked() {
-+#if V8_OS_AROS
-+  // Hosted AROS Exec tasks are not in one-to-one correspondence with host
-+  // pthread TLS contexts. Caching this value in compiler-emulated TLS can
-+  // therefore return a different Exec task's stack bounds. The AROS
-+  // pthread_getattr_np interposer reads the current task directly, so query it
-+  // for every request.
-+  return ObtainCurrentThreadStackStart();
-+#else
-   if (!thread_stack_start) {
-     thread_stack_start = ObtainCurrentThreadStackStart();
-   }
-   return thread_stack_start;
-+#endif
- }
- 
- // static
- Stack::StackSlot Stack::GetStackStart() {
-+#if !V8_OS_AROS
-   DCHECK_IMPLIES(thread_stack_start,
-                  thread_stack_start == ObtainCurrentThreadStackStart());
-+#endif
-   return GetStackStartUnchecked();
- }
- 
---- a/deps/v8/src/base/sys-info.cc
-+++ b/deps/v8/src/base/sys-info.cc
-@@ -4,6 +4,16 @@
- 
- #include "src/base/sys-info.h"
- 
-+#if V8_OS_AROS
-+#include <exec/memory.h>
-+#pragma push_macro("SCHED_RR")
-+#undef SCHED_RR
-+#include <aros/kernel.h>
-+#pragma pop_macro("SCHED_RR")
-+#include <proto/exec.h>
-+#include <proto/kernel.h>
-+#endif
-+
- #if V8_OS_POSIX
- #include <sys/stat.h>
- #include <sys/time.h>
-@@ -37,7 +47,12 @@
- 
- // static
- int SysInfo::NumberOfProcessors() {
--#if V8_OS_OPENBSD
-+#if V8_OS_AROS
-+  APTR KernelBase = OpenResource("kernel.resource");
-+  if (!KernelBase) return 1;
-+  int result = KrnGetCPUCount();
-+  return result > 0 ? result : 1;
-+#elif V8_OS_OPENBSD
-   int mib[2] = {CTL_HW, HW_NCPU};
-   int ncpu = 0;
-   size_t len = sizeof(ncpu);
-@@ -63,7 +78,9 @@
- 
- // static
- int64_t SysInfo::AmountOfPhysicalMemory() {
--#if V8_OS_DARWIN
-+#if V8_OS_AROS
-+  return static_cast<int64_t>(AvailMem(MEMF_TOTAL));
-+#elif V8_OS_DARWIN
-   int mib[2] = {CTL_HW, HW_MEMSIZE};
-   int64_t memsize = 0;
-   size_t len = sizeof(memsize);
---- a/deps/v8/src/deoptimizer/translation-opcode.h
-+++ b/deps/v8/src/deoptimizer/translation-opcode.h
-@@ -7,6 +7,11 @@
- 
- #include "src/base/macros.h"
- 
-+#if V8_OS_AROS
-+#pragma push_macro("REGISTER")
-+#undef REGISTER
-+#endif
-+
- namespace v8 {
- namespace internal {
- 
-@@ -132,4 +137,8 @@
- }  // namespace internal
- }  // namespace v8
- 
-+#if V8_OS_AROS
-+#pragma pop_macro("REGISTER")
-+#endif
-+
- #endif  // V8_DEOPTIMIZER_TRANSLATION_OPCODE_H_
---- a/deps/v8/src/execution/thread-id.cc
-+++ b/deps/v8/src/execution/thread-id.cc
-@@ -11,24 +11,38 @@
- 
- namespace {
- 
-+#if !V8_OS_AROS
- thread_local int thread_id = 0;
- 
- std::atomic<int> next_thread_id{1};
-+#endif
- 
- }  // namespace
- 
- // static
- ThreadId ThreadId::TryGetCurrent() {
-+#if V8_OS_AROS
-+  return ThreadId(base::OS::GetCurrentThreadId());
-+#else
-   return thread_id == 0 ? Invalid() : ThreadId(thread_id);
-+#endif
- }
- 
- // static
- int ThreadId::GetCurrentThreadId() {
-+#if V8_OS_AROS
-+  // Compiler-emulated TLS follows the hosted execution context, not the AROS
-+  // Exec task scheduled through it. Exec assigns every live ETask a unique
-+  // identifier, which is the identity V8 needs for isolate and background
-+  // compilation ownership checks.
-+  return base::OS::GetCurrentThreadId();
-+#else
-   if (thread_id == 0) {
-     thread_id = next_thread_id.fetch_add(1);
-     CHECK_LE(1, thread_id);
-   }
-   return thread_id;
-+#endif
- }
- 
- }  // namespace internal
---- a/deps/v8/src/heap/cppgc-js/cpp-heap.cc
-+++ b/deps/v8/src/heap/cppgc-js/cpp-heap.cc
-@@ -564,6 +565,10 @@
- 
- void CppHeap::AttachIsolate(Isolate* isolate) {
-   CHECK(!in_detached_testing_mode_);
-+#if defined(V8_OS_AROS)
-+  if (isolate_ && isolate_ != isolate)
-+    DetachIsolate();
-+#endif
-   CHECK_NULL(isolate_);
-   isolate_ = isolate;
-   heap_ = isolate->heap();
---- a/deps/v8/src/heap/cppgc/persistent-node.cc
-+++ b/deps/v8/src/heap/cppgc/persistent-node.cc
-@@ -118,7 +118,11 @@
- }
- 
- bool PersistentRegion::IsCreationThread() {
-+#if V8_OS_AROS
-+  return true;
-+#else
-   return creation_thread_id_ == v8::base::OS::GetCurrentThreadId();
-+#endif
- }
- 
- PersistentRegionLock::PersistentRegionLock() {
---- a/deps/v8/src/heap/cppgc/platform.cc
-+++ b/deps/v8/src/heap/cppgc/platform.cc
-@@ -26,6 +27,14 @@
- 
- PageAllocator* g_page_allocator = nullptr;
- 
-+#if V8_OS_AROS
-+// AROS Processes share one address space and therefore one v8.library data
-+// image. Chromium still initializes cppgc once in every renderer Process, so
-+// serialize that lifecycle and retain the single compatible allocator owned by
-+// the resident engine image.
-+v8::base::LazyMutex g_process_lifecycle_mutex = LAZY_MUTEX_INITIALIZER;
-+#endif
-+
- PageAllocator& CreateAllocatorIfNeeded(PageAllocator* page_allocator) {
-   if (!page_allocator) {
-     static v8::base::LeakyObject<v8::base::PageAllocator>
-@@ -89,6 +98,11 @@
- 
- void InitializeProcess(PageAllocator* page_allocator,
-                        size_t desired_heap_size) {
-+#if V8_OS_AROS
-+  v8::base::MutexGuard lifecycle_guard(
-+      internal::g_process_lifecycle_mutex.Pointer());
-+#endif
-+
- #if defined(V8_USE_ADDRESS_SANITIZER) && defined(V8_HOST_ARCH_64_BIT)
-   // Retrieve asan's internal shadow memory granularity and check that Oilpan's
-   // object alignment/sizes are multiple of this granularity. This is needed to
-@@ -100,7 +114,22 @@
-   CHECK_EQ(0u, internal::kAllocationGranularity % poisoning_granularity);
- #endif
- 
-+#if V8_OS_AROS
-+  // The allocator supplied by Blink belongs to the caller's relocatable Chrome
-+  // image. A resident v8.library cannot retain that object after the caller
-+  // exits, and each AROS Process maps its own Chrome image at a different
-+  // address. Own the shared cppgc allocator in the engine image instead.
-+  auto& allocator = internal::CreateAllocatorIfNeeded(nullptr);
-+#else
-   auto& allocator = internal::CreateAllocatorIfNeeded(page_allocator);
-+#endif
-+
-+#if V8_OS_AROS
-+  if (internal::g_page_allocator) {
-+    CHECK_EQ(&allocator, internal::g_page_allocator);
-+    return;
-+  }
-+#endif
- 
-   CHECK(!internal::g_page_allocator);
-   internal::GlobalGCInfoTable::Initialize(allocator);
-@@ -110,6 +139,15 @@
-   internal::g_page_allocator = &allocator;
- }
- 
--void ShutdownProcess() { internal::g_page_allocator = nullptr; }
-+void ShutdownProcess() {
-+#if V8_OS_AROS
-+  // v8.library is resident and its cppgc globals are shared by every AROS
-+  // Process using the engine. One renderer must not invalidate the allocator
-+  // while another renderer (or the browser) still owns cppgc heaps.
-+  return;
-+#else
-+  internal::g_page_allocator = nullptr;
-+#endif
-+}
- 
- }  // namespace cppgc
---- a/deps/v8/src/heap/cppgc/process-heap-statistics.cc
-+++ b/deps/v8/src/heap/cppgc/process-heap-statistics.cc
-@@ -6,7 +6,24 @@
- 
- namespace cppgc {
- 
-+#if V8_OS_AROS
-+namespace {
-+
-+std::atomic_size_t g_total_allocated_space{0};
-+std::atomic_size_t g_total_allocated_object_size{0};
-+
-+}  // namespace
-+
-+std::atomic_size_t& ProcessHeapStatistics::TotalAllocatedSpaceStorage() {
-+  return g_total_allocated_space;
-+}
-+
-+std::atomic_size_t& ProcessHeapStatistics::TotalAllocatedObjectSizeStorage() {
-+  return g_total_allocated_object_size;
-+}
-+#else
- std::atomic_size_t ProcessHeapStatistics::total_allocated_space_{0};
- std::atomic_size_t ProcessHeapStatistics::total_allocated_object_size_{0};
-+#endif
- 
- }  // namespace cppgc
---- a/deps/v8/src/heap/cppgc/process-heap-statistics.h
-+++ b/deps/v8/src/heap/cppgc/process-heap-statistics.h
-@@ -50,20 +50,40 @@
- 
-   // For cppgc::ProcessHeapStatistics
-   static void IncreaseTotalAllocatedObjectSize(size_t delta) {
-+#if V8_OS_AROS
-+    ::cppgc::ProcessHeapStatistics::TotalAllocatedObjectSizeStorage().fetch_add(
-+        delta, std::memory_order_relaxed);
-+#else
-     ::cppgc::ProcessHeapStatistics::total_allocated_object_size_.fetch_add(
-         delta, std::memory_order_relaxed);
-+#endif
-   }
-   static void DecreaseTotalAllocatedObjectSize(size_t delta) {
-+#if V8_OS_AROS
-+    ::cppgc::ProcessHeapStatistics::TotalAllocatedObjectSizeStorage().fetch_sub(
-+        delta, std::memory_order_relaxed);
-+#else
-     ::cppgc::ProcessHeapStatistics::total_allocated_object_size_.fetch_sub(
-         delta, std::memory_order_relaxed);
-+#endif
-   }
-   static void IncreaseTotalAllocatedSpace(size_t delta) {
-+#if V8_OS_AROS
-+    ::cppgc::ProcessHeapStatistics::TotalAllocatedSpaceStorage().fetch_add(
-+        delta, std::memory_order_relaxed);
-+#else
-     ::cppgc::ProcessHeapStatistics::total_allocated_space_.fetch_add(
-         delta, std::memory_order_relaxed);
-+#endif
-   }
-   static void DecreaseTotalAllocatedSpace(size_t delta) {
-+#if V8_OS_AROS
-+    ::cppgc::ProcessHeapStatistics::TotalAllocatedSpaceStorage().fetch_sub(
-+        delta, std::memory_order_relaxed);
-+#else
-     ::cppgc::ProcessHeapStatistics::total_allocated_space_.fetch_sub(
-         delta, std::memory_order_relaxed);
-+#endif
-   }
- };
- 
---- a/deps/v8/src/heap/cppgc/write-barrier.cc
-+++ b/deps/v8/src/heap/cppgc/write-barrier.cc
-@@ -21,8 +21,21 @@
- namespace cppgc {
- namespace internal {
- 
-+#if V8_OS_AROS
-+namespace {
-+
-+AtomicEntryFlag g_write_barrier_enabled;
-+
-+}  // namespace
-+
-+// static
-+AtomicEntryFlag& WriteBarrier::WriteBarrierEnabledStorage() {
-+  return g_write_barrier_enabled;
-+}
-+#else
- // static
- AtomicEntryFlag WriteBarrier::write_barrier_enabled_;
-+#endif
- 
- namespace {
- 
---- a/deps/v8/src/heap/cppgc/write-barrier.h
-+++ b/deps/v8/src/heap/cppgc/write-barrier.h
-@@ -14,8 +14,20 @@
- 
- class WriteBarrier::FlagUpdater final {
-  public:
--  static void Enter() { write_barrier_enabled_.Enter(); }
--  static void Exit() { write_barrier_enabled_.Exit(); }
-+  static void Enter() {
-+#if V8_OS_AROS
-+    WriteBarrierEnabledStorage().Enter();
-+#else
-+    write_barrier_enabled_.Enter();
-+#endif
-+  }
-+  static void Exit() {
-+#if V8_OS_AROS
-+    WriteBarrierEnabledStorage().Exit();
-+#else
-+    write_barrier_enabled_.Exit();
-+#endif
-+  }
- 
-  private:
-   FlagUpdater() = delete;
---- a/deps/v8/src/libsampler/sampler.cc
-+++ b/deps/v8/src/libsampler/sampler.cc
-@@ -312,6 +312,12 @@
-   zx_handle_t profiled_thread_ = ZX_HANDLE_INVALID;
- };
- 
-+#elif V8_OS_AROS
-+
-+// AROS does not yet provide asynchronous pthread signals with a register
-+// context, so sampling remains unavailable until that system contract exists.
-+class Sampler::PlatformData {};
-+
- #endif  // USE_SIGNALS
- 
- #if defined(USE_SIGNALS)
-@@ -671,6 +677,10 @@
- #undef ZX_THREAD_STATE_GENERAL_REGS
- #endif
- 
-+#elif V8_OS_AROS
-+
-+void Sampler::DoSample() {}
-+
- #endif  // USE_SIGNALS
- 
- }  // namespace sampler
---- a/deps/v8/src/libsampler/sampler.h
-+++ b/deps/v8/src/libsampler/sampler.h
-@@ -13,7 +13,7 @@
- #include "src/base/lazy-instance.h"
- #include "src/base/macros.h"
- 
--#if V8_OS_POSIX && !V8_OS_CYGWIN && !V8_OS_FUCHSIA
-+#if V8_OS_POSIX && !V8_OS_AROS && !V8_OS_CYGWIN && !V8_OS_FUCHSIA
- #define USE_SIGNALS
- #endif
- 
---- a/deps/v8/src/logging/counters.cc
-+++ b/deps/v8/src/logging/counters.cc
-@@ -94,8 +94,19 @@
- #pragma clang diagnostic push
- #pragma clang diagnostic ignored "-Wexit-time-destructors"
- #endif
-+#if V8_OS_AROS
-+  // AROS' libsupc++ fallback runs non-trivial thread_local destructors from a
-+  // pthread-key callback.  Destruction of this debug-only map has repeatedly
-+  // reached free() with corrupted map storage during worker teardown.  Keep
-+  // the per-thread state, but intentionally leave its tiny diagnostic map
-+  // alive when the thread exits.
-+  static thread_local auto* active_timer_storage =
-+      new std::unordered_map<const TimedHistogram*, bool>;
-+  auto& active_timer = *active_timer_storage;
-+#else
-   static thread_local std::unordered_map<const TimedHistogram*, bool>
-       active_timer;
-+#endif
- #if __clang__
- #pragma clang diagnostic pop
- #endif
---- a/deps/v8/src/utils/allocation.cc
-+++ b/deps/v8/src/utils/allocation.cc
-@@ -32,7 +32,15 @@
- class PageAllocatorInitializer {
-  public:
-   PageAllocatorInitializer() {
-+#if V8_OS_AROS
-+    if (v8::Platform* platform = V8::GetCurrentPlatform()) {
-+      page_allocator_ = platform->GetPageAllocator();
-+    } else {
-+      page_allocator_ = nullptr;
-+    }
-+#else
-     page_allocator_ = V8::GetCurrentPlatform()->GetPageAllocator();
-+#endif
-     if (page_allocator_ == nullptr) {
-       static base::LeakyObject<base::PageAllocator> default_page_allocator;
-       page_allocator_ = default_page_allocator.get();
-@@ -64,8 +72,18 @@
- }  // namespace
- 
- v8::PageAllocator* GetPlatformPageAllocator() {
-+#if V8_OS_AROS
-+  if (v8::Platform* platform = V8::GetCurrentPlatform()) {
-+    if (v8::PageAllocator* page_allocator = platform->GetPageAllocator()) {
-+      return page_allocator;
-+    }
-+  }
-+  static base::LeakyObject<base::PageAllocator> default_page_allocator;
-+  return default_page_allocator.get();
-+#else
-   DCHECK_NOT_NULL(GetPageAllocatorInitializer()->page_allocator());
-   return GetPageAllocatorInitializer()->page_allocator();
-+#endif
- }
- 
- v8::VirtualAddressSpace* GetPlatformVirtualAddressSpace() {
-@@ -158,7 +176,11 @@
- size_t CommitPageSize() { return GetPlatformPageAllocator()->CommitPageSize(); }
- 
- void* GetRandomMmapAddr() {
-+#if V8_OS_AROS
-+  return nullptr;
-+#else
-   return GetPlatformPageAllocator()->GetRandomMmapAddr();
-+#endif
- }
- 
- void* AllocatePages(v8::PageAllocator* page_allocator, void* hint, size_t size,
-
---- a/src/node_metadata.cc
-+++ b/src/node_metadata.cc
-@@ -205,6 +205,13 @@
- #endif  // NODE_HAS_RELEASE_URLS
- }
- 
-+#ifdef __AROS__
-+/* The build configures --dest-os=linux because node's configure.py has no
-+   notion of AROS, but the platform string is what scripts actually see.
-+   Report the truth: this is AROS, not Linux. */
-+Metadata::Metadata() : arch(NODE_ARCH), platform("aros") {}
-+#else
- Metadata::Metadata() : arch(NODE_ARCH), platform(NODE_PLATFORM) {}
-+#endif
- 
- }  // namespace node
-
---- a/src/node.cc
-+++ b/src/node.cc
-@@ -892,7 +892,16 @@
-     ProcessInitializationFlags::Flags flags) {
-   NODE_AROS_PHASE("initialize-args check-once");
-   // Make sure InitializeNodeWithArgs() is called only once.
-+#ifdef __AROS__
-+  /* node.library is a shared AROS library and outlives the process that
-+     opened it, so this file-scope guard is still set from the PREVIOUS
-+     C:Node invocation and CHECK() would abort the second one.  node is
-+     written for one Start() per OS process; on AROS one library serves many
-+     processes in sequence.  Record that we ran, without aborting. */
-+  init_called.store(true);
-+#else
-   CHECK(!init_called.exchange(true));
-+#endif
- 
-   // Initialize node_start_time to get relative uptime.
-   NODE_AROS_PHASE("initialize-args hrtime");
