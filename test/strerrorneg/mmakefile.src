@@ -1,0 +1,7 @@
+include $(SRCDIR)/config/aros.cfg
+
+#MM test-strerrorneg : includes linklibs
+
+%build_prog mmake=test-strerrorneg \
+    progname=strerrorneg files=strerrorneg \
+    targetdir=$(AROS_TESTS)
