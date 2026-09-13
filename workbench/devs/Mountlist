@@ -165,3 +165,39 @@ CD0:
         DOSType        = 0x41434400
         Activate       = 1
 #
+
+/* CONNG: -- a console stream on consoleng.device, the second console device.
+ *
+ * consoleng.device renders Unicode above U+00FF with its own outline engine
+ * (box drawing, blocks, arrows, Greek, Cyrillic - what a TUI is drawn from),
+ * which the stock console.device cannot: diskfont pre-renders glyphs 0-255 and
+ * then closes its engine, so nothing can ask for a higher codepoint later.
+ *
+ *   Mount CONNG:
+ *   NEWSHELL CONNG:
+ *
+ * Deliberately HERE and not in DEVS:DOSDrivers. Startup-Sequence auto-mounts
+ * DOSDrivers entries but not Mountlist entries, and mounting this one is not
+ * free: con-handler opens its device from the startup packet rather than
+ * lazily, and consoleng.device opens its own window when handed none - so a
+ * DOSDrivers entry put an empty console window on the Workbench of every boot.
+ * From here it costs nothing until asked for, and it works from a read-only
+ * Live CD, where copying a file into DEVS:DOSDrivers is not possible.
+ *
+ * No handler code exists for this: aux-handler already forwards a mount's
+ * FileSysStartupMsg to con-handler's device mode, which drives any device
+ * answering CMD_READ and CMD_WRITE. Unit 3 is CONU_SNIPMAP, what CON: uses,
+ * so this stream gets the same built-in copy/paste.
+ *
+ * EHandler, not Handler: only that form is given a FileSysStartupMsg, so with
+ * a plain Handler the Device and Unit below are parsed and then discarded. */
+
+CONNG:
+        EHandler       = L:aux-handler
+        Priority       = 5
+        StackSize      = 4096
+        GlobVec        = -1
+        Device         = consoleng.device
+        Unit           = 3
+        Activate       = 1
+#
