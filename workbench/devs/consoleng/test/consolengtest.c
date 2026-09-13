@@ -105,6 +105,48 @@ int main(int argc, char **argv)
         (argv[1][0] == 'S' || argv[1][0] == 's'))
         selfwin = TRUE;
 
+    /* "CONNG:" (or any DOS path) drives the WHOLE mount chain instead of the
+     * device directly: DOS -> aux-handler -> con-handler device mode ->
+     * OpenDevice("consoleng.device", 3, io_Data = NULL) -> the device opens
+     * its own window. That is the path a Shell or a TUI actually takes, and
+     * unlike a screenshot it gives a verdict in words - useful precisely when
+     * another window is covering the screen. */
+    if (argc > 1 && argv[1] && strchr(argv[1], ':'))
+    {
+        BPTR fh = Open(argv[1], MODE_NEWFILE);
+
+        if (!fh)
+        {
+            printf("CONSOLENG-TEST: FAIL Open(\"%s\") failed, ioerr=%ld\n",
+                   argv[1], (long)IoErr());
+            return RETURN_FAIL;
+        }
+
+        printf("CONSOLENG-TEST: PASS Open(\"%s\") succeeded\n", argv[1]);
+
+        /* UTF-8 mode, then the outline font, then the corpus - same stream a
+           terminal would send. */
+        {
+            static const char utf8on[]  = "\x1b[>8h";
+            static const char setfont[] = "\x1b]50;DejaVuSansMono,16\x07";
+
+            Write(fh, (APTR)utf8on,  sizeof(utf8on)  - 1);
+            Write(fh, (APTR)setfont, sizeof(setfont) - 1);
+        }
+
+        for (i = 0; lines[i]; i++)
+            Write(fh, (APTR)lines[i], strlen(lines[i]));
+
+        printf("CONSOLENG-TEST: PASS wrote %d lines through %s\n", i, argv[1]);
+
+        /* Hold the stream open so the window stays up to be looked at. */
+        Delay(50 * 25);
+
+        Close(fh);
+        printf("CONSOLENG-TEST: PASS closed %s\n", argv[1]);
+        return RETURN_OK;
+    }
+
     if (selfwin)
     {
         printf("CONSOLENG-TEST: SELFWIN - passing no window, device opens its own\n");

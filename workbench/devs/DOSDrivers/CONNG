@@ -1,0 +1,36 @@
+/* CONNG: -- a console stream on consoleng.device.
+ *
+ * This is what makes the second console REACHABLE. consoleng.device renders
+ * Unicode above Latin-1 with its own outline engine (box drawing, blocks,
+ * arrows, Greek, Cyrillic - the glyphs a TUI is built from), but nothing
+ * selected it: CON: is wired to console.device, so no stream ever arrived.
+ *
+ *   NEWSHELL CONNG:
+ *
+ * gives a Shell in a consoleng window, leaving CON: and console.device
+ * completely alone. That separation is the whole point - console.device is
+ * load-bearing for the Shell, every CLI tool and the Startup-Sequence, so the
+ * new one has to be able to be wrong without taking the system down, and A/B
+ * has to be a device name rather than a rebuild.
+ *
+ * No new handler code exists for this. aux-handler already forwards a mount's
+ * FileSysStartupMsg to con-handler's device mode, which drives "any device
+ * answering CMD_READ and CMD_WRITE" (con_handler.c). It opens that device with
+ * io_Data = NULL, which used to fail for a console because console.device
+ * takes a Window at open time; consoleng.device now opens its own window when
+ * it is handed none, so this mount is pure configuration.
+ *
+ * EHandler rather than Handler: only that form is given a FileSysStartupMsg,
+ * so with a plain Handler the Device and Unit below would be parsed and then
+ * discarded. (Same reason AUX0 uses it.)
+ *
+ * Unit = 3 is CONU_SNIPMAP (devices/conunit.h), the unit type CON: itself
+ * uses, so this stream gets the same built-in copy/paste behaviour.
+ */
+
+EHandler  = L:aux-handler
+Priority  = 5
+StackSize = 4096  /* con-handler runs on this stack */
+GlobVec   = -1
+Device    = consoleng.device
+Unit      = 3
