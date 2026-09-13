@@ -28,10 +28,11 @@ typedef void  (*V8FreeFunc)(void *ptr);
  *
  * Default without any call: malloc/free, i.e. unchanged behaviour.
  */
-BOOL V8AllocatorInstall(V8AllocFunc allocFn, V8FreeFunc freeFn);
+/* Implementation; the public entry point is the V8AllocatorInstall LVO. */
+BOOL V8AllocatorInstallImpl(V8AllocFunc allocFn, V8FreeFunc freeFn);
 
 /* TRUE once a non-default allocator has been installed. */
-BOOL V8AllocatorIsInstalled(void);
+BOOL V8AllocatorIsInstalledImpl(void);
 
 #ifdef __cplusplus
 }

@@ -59,7 +59,6 @@
 */
 
 #include <proto/exec.h>
-#include <aros/debug.h>
 
 #include <stdlib.h>
 #include <new>
@@ -125,7 +124,7 @@ inline void V8HeapRelease(void *ptr)
     fatal by the embedder: continuing means two heaps.
 
 *****************************************************************************/
-extern "C" BOOL V8AllocatorInstall(V8AllocFunc allocFn, V8FreeFunc freeFn)
+extern "C" BOOL V8AllocatorInstallImpl(V8AllocFunc allocFn, V8FreeFunc freeFn)
 {
     if (allocFn == nullptr || freeFn == nullptr)
         return FALSE;
@@ -139,10 +138,14 @@ extern "C" BOOL V8AllocatorInstall(V8AllocFunc allocFn, V8FreeFunc freeFn)
 
     if (g_allocator_used)
     {
-        bug("[v8.library] allocator install REFUSED: memory has already been\n"
-            "              allocated with the default allocator. Installing\n"
-            "              now would free those objects to a different heap.\n"
-            "              Install before the first V8/node call.\n");
+        /* Too late: memory has already been served from the default heap, and
+           honouring this would free those objects to a different allocator.
+           Reported by return value ONLY - deliberately no bug()/kprintf here.
+           v8.library is a DISK library, and on a pc target kprintf needs
+           _arosdebuglock, a symbol that lives in the kernel ROM, so any
+           disk-loaded library calling it fails to LINK. Hosted builds hide
+           that because their arossupport uses a different vkprintf.
+           See aros-kprintf-unlinkable-in-disk-libraries. */
         return FALSE;
     }
 
@@ -152,7 +155,7 @@ extern "C" BOOL V8AllocatorInstall(V8AllocFunc allocFn, V8FreeFunc freeFn)
     return TRUE;
 }
 
-extern "C" BOOL V8AllocatorIsInstalled(void)
+extern "C" BOOL V8AllocatorIsInstalledImpl(void)
 {
     return g_allocator_installed;
 }

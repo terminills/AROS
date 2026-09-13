@@ -84,7 +84,8 @@ else
 endif
 
 # List of all implementation files
-FUNCS := v8initialize \
+FUNCS := v8allocatorinstall \
+    v8initialize \
          v8cleanup \
          v8createisolate \
          v8destroyisolate \

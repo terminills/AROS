@@ -8,6 +8,8 @@
 #include <aros/libcall.h>
 #include <exec/libraries.h>
 
+#include <stdlib.h>
+
 #include "cef-blink_libdefs.h"
 
 extern int cef_engine_version_info(int entry) __asm__("cef_version_info");
@@ -188,5 +190,52 @@ AROS_LH0(LONG, CEFBlinkDefaultV8WorkerThreadCount,
     if (platform == NULL)
         return 0;
     return (LONG)cef_engine_v8_worker_threads(platform);
+    AROS_LIBFUNC_EXIT
+}
+
+/*
+ * Expose THIS library's heap so the rest of the process can share it.
+ *
+ * cef-blink.library is built with use_partition_alloc_as_malloc=true, so its
+ * malloc/free are PartitionAlloc's. v8.library and node.library have no
+ * allocator of their own and fall through libstdc++ to stdc.library's malloc,
+ * which gives the process two heaps that know nothing about each other. An
+ * object allocated by Blink and destroyed by V8 is then freed to the wrong
+ * allocator - the proven cause of the crash on script-heavy pages.
+ *
+ * The fix is for v8.library to route its operator new/delete through this
+ * heap (see workbench/libs/v8/v8_allocator.cpp). PartitionAlloc is the right
+ * side to standardise on because, unlike stdc's malloc, it needs no AROS
+ * library base and therefore works on a Chromium-created thread.
+ *
+ * These two wrappers deliberately just call malloc/free. They are compiled
+ * INTO cef-blink.library, so those names bind to whatever allocator this
+ * library actually uses - today PartitionAlloc, and still correct if that ever
+ * changes. The contract exported here is "the heap cef-blink uses", not
+ * "PartitionAlloc", which is exactly the property the caller needs.
+ */
+static void *CEFBlinkHeapAlloc(size_t size)
+{
+    return malloc(size);
+}
+
+static void CEFBlinkHeapFree(void *ptr)
+{
+    free(ptr);
+}
+
+AROS_LH2(void, CEFBlinkGetAllocator,
+    AROS_LHA(APTR *, allocFn, A0),
+    AROS_LHA(APTR *, freeFn, A1),
+    LIBBASETYPEPTR, LIBBASE, 18, CEFBlink)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+
+    if (allocFn != NULL)
+        *allocFn = (APTR)CEFBlinkHeapAlloc;
+    if (freeFn != NULL)
+        *freeFn = (APTR)CEFBlinkHeapFree;
+
     AROS_LIBFUNC_EXIT
 }

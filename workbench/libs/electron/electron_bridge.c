@@ -16,6 +16,7 @@
 #include <proto/exec.h>
 #include <proto/intuition.h>
 #include <proto/node.h>
+#include <proto/v8.h>
 
 #include <signal.h>
 #include <string.h>
@@ -900,6 +901,52 @@ AROS_LH1(LONG, ElectronCEFVersionInfo,
     AROS_LIBFUNC_EXIT
 }
 
+/*
+ * Give the process ONE heap, before anything allocates.
+ *
+ * cef-blink.library allocates through PartitionAlloc; v8.library and
+ * node.library fall through libstdc++ to stdc.library's malloc. Two heaps in
+ * one process means an object allocated by Blink and destroyed by V8 - Blink's
+ * background script streamer hands V8 exactly such a vector - is freed to the
+ * wrong allocator and corrupts stdc's TLSF free list. PartitionAlloc is the
+ * side to standardise on, because unlike stdc's malloc it needs no AROS
+ * library base and so works on a Chromium-created thread.
+ *
+ * WHY HERE AND NOT LATER. Electron runs node first and initialises CEF
+ * afterwards, and node uses V8. Installing the shared heap when CEF starts
+ * would leave everything V8 allocated during node's phase owned by stdc and
+ * freed by PartitionAlloc - the same bug, inverted. So this runs before
+ * NodeStart(), and v8.library refuses a late install rather than honouring it.
+ *
+ * Best-effort by design: if cef-blink cannot supply an allocator, the process
+ * keeps the old split-heap behaviour rather than failing to start. That is a
+ * known bug, not a new one, and a node-only embedder never loads cef-blink at
+ * all.
+ */
+static void ElectronEnsureSharedHeap(void)
+{
+    static BOOL attempted = FALSE;
+    APTR allocFn = NULL;
+    APTR freeFn = NULL;
+
+    if (attempted)
+        return;
+    attempted = TRUE;
+
+    CEFGetAllocator(&allocFn, &freeFn);
+    if (allocFn == NULL || freeFn == NULL)
+        return;
+
+    /* A FALSE return means v8.library had already served an allocation from
+       the default heap, so switching would free those objects to the wrong
+       allocator; it refused rather than corrupt the heap. Not logged here on
+       purpose: electron.library is a DISK library and kprintf/bug need
+       _arosdebuglock from the kernel ROM, which makes any disk-loaded library
+       that calls them fail to LINK on a pc target. An embedder that needs to
+       know can call V8AllocatorInstall() itself and read the result. */
+    (void)V8AllocatorInstall(allocFn, freeFn);
+}
+
 AROS_LH2(LONG, ElectronRunNode,
     AROS_LHA(LONG, argc, D0),
     AROS_LHA(STRPTR *, argv, A0),
@@ -907,6 +954,7 @@ AROS_LH2(LONG, ElectronRunNode,
 {
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
+    ElectronEnsureSharedHeap();
     return NodeStart(argc, argv);
     AROS_LIBFUNC_EXIT
 }
@@ -919,6 +967,7 @@ AROS_LH3(LONG, ElectronExecuteCEFProcess,
 {
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
+    ElectronEnsureSharedHeap();
     return CEFExecuteProcess(args, application, sandbox_info);
     AROS_LIBFUNC_EXIT
 }
@@ -932,6 +981,7 @@ AROS_LH4(LONG, ElectronInitializeCEF,
 {
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
+    ElectronEnsureSharedHeap();
     return CEFInitialize(args, settings, application, sandbox_info);
     AROS_LIBFUNC_EXIT
 }

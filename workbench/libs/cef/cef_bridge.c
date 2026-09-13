@@ -152,3 +152,30 @@ AROS_LH0(LONG, CEFDefaultV8WorkerThreadCount,
     return CEFBlinkDefaultV8WorkerThreadCount();
     AROS_LIBFUNC_EXIT
 }
+
+/*
+ * Passthrough for cef-blink's heap, so an embedder can give the whole process
+ * one allocator.
+ *
+ * cef-blink.library is built with PartitionAlloc-as-malloc; v8.library and
+ * node.library fall through libstdc++ to stdc.library's malloc. Two heaps in
+ * one process means an object allocated by Blink and destroyed by V8 is freed
+ * to the wrong allocator, which is the proven cause of the crash on
+ * script-heavy pages.
+ *
+ * The embedder hands what this returns to V8AllocatorInstall() BEFORE anything
+ * else runs - see workbench/libs/v8/v8_allocator.cpp for why the ordering is
+ * not negotiable. Exposed here rather than making callers open
+ * cef-blink.library directly, so the existing layering (electron -> cef ->
+ * cef-blink) is preserved.
+ */
+AROS_LH2(void, CEFGetAllocator,
+    AROS_LHA(APTR *, allocFn, A0),
+    AROS_LHA(APTR *, freeFn, A1),
+    LIBBASETYPEPTR, LIBBASE, 18, CEF)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    CEFBlinkGetAllocator(allocFn, freeFn);
+    AROS_LIBFUNC_EXIT
+}
