@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     C99 function strerror().
 */
@@ -55,7 +55,23 @@ static const char * _errstrings[];
 
 ******************************************************************************/
 {
-    if (n > MAX_ERRNO)
+    if (n < 0)
+    {
+        /* A negative number is never a valid errno, and this used to fall
+           through to the table lookup below, where MIN(n, __STDC_ELAST+1)
+           returns n unchanged for negatives - so _errstrings[n] read BEFORE
+           the array and returned whatever happened to be there. The caller
+           then almost always does strlen() on it and dies.
+
+           Seen in the field (Chromium 124 crash report, pc-x86_64): a QUIC/TLS
+           client handshake reached strerror() with -109 in hand, got back the
+           non-pointer 0x31, and page faulted at stdc.library!strlen+0x0 with
+           cr2=0x31. Callers passing a negative return code straight to
+           strerror() instead of errno are a bug in the caller, but a C library
+           must not turn that into an out-of-bounds read. */
+        return (char *)"Errno out of range";
+    }
+    else if (n > MAX_ERRNO)
     {
         struct StdCIntBase *StdCBase =
             (struct StdCIntBase *)__aros_getbase_StdCBase();
