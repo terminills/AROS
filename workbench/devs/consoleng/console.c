@@ -91,6 +91,7 @@ static int GM_UNIQUENAME(Init) (LIBBASETYPEPTR ConsoleDevice)
     InitSemaphore(&ConsoleDevice->consoleTaskLock);
     InitSemaphore(&ConsoleDevice->copyBufferLock);
     InitSemaphore(&ConsoleDevice->glyphLock);
+    NEWLIST(&ConsoleDevice->ownWindows);
 
     ConsoleDevice->copyBuffer = 0;
     ConsoleDevice->copyBufferSize = 0;
@@ -128,11 +129,93 @@ static int GM_UNIQUENAME(Expunge) (LIBBASETYPEPTR ConsoleDevice)
 
 /*****************************************************************************/
 
+/*
+ * Open a window for an opener that did not supply one.
+ *
+ * WHY THIS EXISTS. console.device is the odd one out among AROS devices: it
+ * takes a Window through io_Data at OpenDevice() time, and consoleclass.c's
+ * New() returns NULL without one. Everything that wants a console therefore
+ * has to be a window-owning program.
+ *
+ * That is exactly what kept this device unreachable. rom/filesys/
+ * console_handler already has a generic "device mode" - it takes the device
+ * NAME from the mount's FileSysStartupMsg (con_handler.c:473) and states in
+ * its own comment that "any device answering those can stand in for
+ * console.device" - but it opens that device with io_Data = NULL, because a
+ * plain device takes a unit and flags rather than a window. So the seam for
+ * mounting a second console already existed and this device could not use it.
+ *
+ * The alternative was to teach rom/filesys/console_handler to carry a console
+ * device name down its window path. That handler is load-bearing for the
+ * Shell, every CLI tool and Startup-Sequence, and terminills' standing call on
+ * this work is to leave the stock path alone - so the missing capability goes
+ * HERE, in the new device, which is also where "consoleng handles everything
+ * internally" points. A mount needs no code at all now: give it
+ * Device = consoleng.device and Unit = 3 (CONU_SNIPMAP, what CON: uses).
+ *
+ * A caller that DOES pass a window keeps owning it; only what we opened
+ * ourselves is tracked and closed again.
+ */
+static struct Window *ConsolengOpenOwnWindow(LIBBASETYPEPTR ConsoleDevice)
+{
+    struct Screen *scr;
+    struct Window *win = NULL;
+
+    /* Lock the default public screen rather than assuming one: a console can
+       legitimately be opened before Wanderer, and LockPubScreen(NULL) failing
+       is a real answer ("no screen yet"), not an error to paper over. */
+    scr = LockPubScreen(NULL);
+    if (!scr)
+        return NULL;
+
+    {
+        WORD w = scr->Width  - 100;
+        WORD h = scr->Height - 100;
+        struct TagItem wintags[] =
+        {
+            { WA_Left,          40                        },
+            { WA_Top,           40                        },
+            { WA_Width,         0                         },
+            { WA_Height,        0                         },
+            { WA_Title,         (IPTR)"AROS Console"       },
+            { WA_PubScreen,     (IPTR)scr                 },
+            { WA_CloseGadget,   TRUE                      },
+            { WA_DragBar,       TRUE                      },
+            { WA_DepthGadget,   TRUE                      },
+            { WA_SizeGadget,    TRUE                      },
+            { WA_SmartRefresh,  TRUE                      },
+            { WA_Activate,      TRUE                      },
+            { WA_SimpleRefresh, FALSE                     },
+            { TAG_DONE,         0                         }
+        };
+
+        if (w < 200) w = 200;
+        if (h < 120) h = 120;
+        if (w > 720) w = 720;
+        if (h > 480) h = 480;
+
+        wintags[2].ti_Data = (IPTR)w;
+        wintags[3].ti_Data = (IPTR)h;
+
+        /* OpenWindowTagList, NOT OpenWindowTags. The amiga.lib VARARGS stubs
+           resolve IntuitionBase from a GLOBAL that is NULL in a
+           __INTUITION_NOLIBBASE__ module like this one; the A-forms take the
+           base from the macro in console_gcc.h. Getting this wrong faults at
+           a small negative offset off a NULL base. */
+        win = OpenWindowTagList(NULL, wintags);
+    }
+
+    UnlockPubScreen(NULL, scr);
+
+    return win;
+}
+
 static int GM_UNIQUENAME(Open)
     (LIBBASETYPEPTR ConsoleDevice,
     struct IOStdReq *ioreq, ULONG unitnum, ULONG flags)
 {
     BOOL success = FALSE;
+    struct Window *ownwin = NULL;
 
     /* Keep compiler happy */
     flags = 0;
@@ -170,7 +253,22 @@ static int GM_UNIQUENAME(Open)
 
         /* Init tags */
 
-        conunit_tags[0].ti_Data = (IPTR) ioreq->io_Data; /* Window */
+        /* No window supplied: open one ourselves. This is the plain-device
+           open the con-handler's device mode performs (io_Data = NULL), and
+           without it every such open fails in consoleclass.c's New(). */
+        if (ioreq->io_Data == NULL)
+        {
+            ownwin = ConsolengOpenOwnWindow(ConsoleDevice);
+            if (!ownwin)
+            {
+                D(bug("consoleng/open: no window supplied and none could be"
+                    " opened\n"));
+                goto open_fail;
+            }
+        }
+
+        conunit_tags[0].ti_Data =
+            (IPTR)(ownwin ? ownwin : (struct Window *)ioreq->io_Data);
 
         /* Select class of which to create console object */
         switch (unitnum)
@@ -207,6 +305,28 @@ static int GM_UNIQUENAME(Open)
             add_msg.opat_List = (struct List *)&ConsoleDevice->unitList;
             DoMethodA((Object *) ioreq->io_Unit, (Msg) &add_msg);
 
+            /* Remember a window we opened ourselves, so Close() can close it
+               again. Tracked per UNIT, not per device, because several units
+               can be open at once and only some of them self-opened. If the
+               bookkeeping cannot be allocated, close the window now rather
+               than leak it - the unit still works with a caller's window and
+               this path only ever applies to one we would have owned. */
+            if (ownwin)
+            {
+                struct ConsolengOwnWin *ow =
+                    AllocMem(sizeof(struct ConsolengOwnWin),
+                             MEMF_CLEAR | MEMF_PUBLIC);
+
+                if (ow)
+                {
+                    ow->unit = ioreq->io_Unit;
+                    ow->win  = ownwin;
+                    AddTail((struct List *)&ConsoleDevice->ownWindows,
+                            (struct Node *)&ow->node);
+                    ownwin = NULL;      /* handed over to the list */
+                }
+            }
+
             ReleaseSemaphore(&ConsoleDevice->unitListLock);
         } /* if (console unit created) */
     } /* if (not CONU_LIBRARY) */
@@ -217,6 +337,11 @@ static int GM_UNIQUENAME(Open)
     return TRUE;
 
   open_fail:
+
+    /* Still set means the unit was never created, or its bookkeeping failed,
+       so nothing else can be holding this window. */
+    if (ownwin)
+        CloseWindow(ownwin);
 
     ioreq->io_Error = IOERR_OPENFAIL;
 
@@ -231,13 +356,35 @@ static int GM_UNIQUENAME(Close)
     if (ioreq->io_Unit && ioreq->io_Unit != (struct Unit *)CONU_LIBRARY)
     {
         ULONG mid = OM_REMOVE;
+        struct ConsolengOwnWin *ow;
+        struct Window *ownwin = NULL;
 
         /* Remove the consoe from the console list */
         ObtainSemaphore(&ConsoleDevice->unitListLock);
         DoMethodA((Object *) ioreq->io_Unit, (Msg) &mid);
+
+        /* Unlink any window this device opened for THIS unit. A window the
+           caller supplied is not on this list and is left alone. */
+        ForeachNode(&ConsoleDevice->ownWindows, ow)
+        {
+            if (ow->unit == ioreq->io_Unit)
+            {
+                Remove((struct Node *)&ow->node);
+                ownwin = ow->win;
+                FreeMem(ow, sizeof(struct ConsolengOwnWin));
+                break;
+            }
+        }
+
         ReleaseSemaphore(&ConsoleDevice->unitListLock);
 
         DisposeObject((Object *) ioreq->io_Unit);
+
+        /* Only after the unit is gone: it renders into this window, so
+           closing the window first would leave it drawing into freed
+           layers. */
+        if (ownwin)
+            CloseWindow(ownwin);
     }
 
     return TRUE;

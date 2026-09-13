@@ -87,13 +87,29 @@ static const char *lines[] =
     NULL
 };
 
-int main(void)
+int main(int argc, char **argv)
 {
     struct MsgPort   *port  = NULL;
     struct IOStdReq  *ioreq = NULL;
     struct Window    *win   = NULL;
     BOOL              opened = FALSE;
+    BOOL              selfwin = FALSE;
     int               i;
+
+    /* "SELFWIN" exercises the other open path: hand the device NO window and
+     * let it open one itself. That is exactly how rom/filesys/
+     * console_handler's plain-device mode opens a device (io_Data = NULL), so
+     * this argument is the standing proof that a mount can route a CON:-style
+     * stream at consoleng.device without any change to that handler. */
+    if (argc > 1 && argv[1] &&
+        (argv[1][0] == 'S' || argv[1][0] == 's'))
+        selfwin = TRUE;
+
+    if (selfwin)
+    {
+        printf("CONSOLENG-TEST: SELFWIN - passing no window, device opens its own\n");
+        goto have_window;
+    }
 
     win = OpenWindowTags(NULL,
         WA_Left,        20,
@@ -114,6 +130,7 @@ int main(void)
         return RETURN_FAIL;
     }
 
+have_window:
     port = CreateMsgPort();
     if (port)
         ioreq = (struct IOStdReq *)CreateIORequest(port, sizeof(struct IOStdReq));
@@ -198,7 +215,10 @@ int main(void)
         {
             sigs = CheckSignal(1L << port->mp_SigBit);
             (void)sigs;
-            if (GetMsg(win->UserPort))
+            /* In SELFWIN mode we own no window, so there is no UserPort to
+               poll - just hold for the full wait so the device's own window
+               can be seen and screenshotted. */
+            if (win && GetMsg(win->UserPort))
                 break;
             Delay(50);              /* 1s */
             waited++;

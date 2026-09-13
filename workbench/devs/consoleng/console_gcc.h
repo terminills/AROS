@@ -413,9 +413,26 @@ struct ConsoleBase
     struct SignalSemaphore copyBufferLock;
     struct MinList sniphooks;
 
+    /* Windows this device opened FOR ITSELF, because the opener passed none.
+       See the long note at ConsolengOpenOwnWindow() in console.c: it is what
+       lets the stock con-handler's plain-device mount route a CON:-style
+       stream here with no change to rom/filesys/console_handler. Only
+       self-opened windows go on this list, so a caller-supplied window is
+       never closed out from under its owner. Guarded by unitListLock, which
+       already covers unit create/dispose. */
+    struct MinList ownWindows;
+
     struct Library *cb_IntuitionBase;
     struct Library *cb_KeymapBase;
     struct Library *cb_UtilityBase;
+};
+
+/* One self-opened window, tied to the unit it was opened for. */
+struct ConsolengOwnWin
+{
+    struct MinNode  node;
+    struct Unit    *unit;
+    struct Window  *win;
 };
 
 #undef CB
