@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2011, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: Open a file with the specified mode.
 */
@@ -215,6 +215,12 @@ static LONG InternalOpen(CONST_STRPTR name, LONG accessMode,
                     break;
                 }
 
+                /* Every member of a multi-assign is tried with this one
+                 * handle. Whatever the previous member's handler left in
+                 * it while saying ERROR_OBJECT_NOT_FOUND must not become
+                 * the port the next member's file is read through. */
+                handle->fh_Type = BNULL;
+                handle->fh_Arg1 = 0;
                 error = fs_Open(handle, dvp->dvp_Port, dvp->dvp_Lock, accessMode, filename, DOSBase);
             } while(error == ERROR_OBJECT_NOT_FOUND && accessMode != MODE_NEWFILE);
 

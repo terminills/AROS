@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2011-2014, The AROS Development Team. All rights reserved.
+    Copyright (C) 2011-2026, The AROS Development Team. All rights reserved.
 
     Desc: Low-level filesystem access functions, packet version
 */
@@ -60,8 +60,16 @@ LONG fs_Open(struct FileHandle *handle, struct MsgPort *port, BPTR lock, LONG mo
     /* A handler that serves its clients on a port other than the one we
      * found it on says so by filling in fh_Type itself. Handlers that do
      * not care leave it alone and keep talking on the port we used here.
+     *
+     * Only a handler that actually opened the file may own the handle. A
+     * rejected open must leave fh_Type empty: Open() walks the members of
+     * a multi-assign with this same handle, and a port left behind by the
+     * first member's ERROR_OBJECT_NOT_FOUND would make the file the second
+     * member finally opens get read through the wrong handler (FONTS: on a
+     * Live CD is RAM:Fonts + SYS:Fonts, so every Fonts:TrueType/*.ttf read
+     * 0 bytes and no outline font would open).
      */
-    if (!handle->fh_Type)
+    if (status && !handle->fh_Type)
         handle->fh_Type = port;
     return status ? 0 : error;
 }
