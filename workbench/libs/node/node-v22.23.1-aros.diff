@@ -2487,7 +2487,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    return scope.Escape(fun);
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node.cc
 --- node-v22.23.1/src/node.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node.cc	2026-09-13 00:25:30.076180948 -0500
++++ node-v22.23.1/src/node.cc	2026-09-13 00:54:01.448405711 -0500
 @@ -134,6 +134,15 @@
  #include <tuple>
  #include <vector>
@@ -2504,7 +2504,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  namespace node {
  
  using v8::Array;
-@@ -883,19 +892,34 @@
+@@ -883,19 +892,50 @@
      std::vector<std::string>* exec_argv,
      std::vector<std::string>* errors,
      ProcessInitializationFlags::Flags flags) {
@@ -2517,6 +2517,22 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +     written for one Start() per OS process; on AROS one library serves many
 +     processes in sequence.  Record that we ran, without aborting. */
 +  init_called.store(true);
++
++  /* The PARSED OPTIONS are process-global too, and they survive as well.
++     Option parsing mutates the existing per_process::cli_options object
++     rather than replacing it, so the previous invocation's flags are still
++     set when the next one parses. Observed: `Node --version` followed by
++     `Node -e "..."` prints the version a second time, because print_version
++     is still true from the first run - the second run's eval_string is
++     parsed correctly and then never reached.
++
++     TearDownOncePerProcess() does not cover this: it resets stdio, the
++     signal handlers and per_process::v8_initialized, but not the options and
++     not init_called above. Hand each invocation a fresh options object. */
++  {
++    Mutex::ScopedLock lock(per_process::cli_options_mutex);
++    per_process::cli_options = std::make_shared<PerProcessOptions>();
++  }
 +#else
    CHECK(!init_called.exchange(true));
 +#endif
@@ -2539,7 +2555,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
    // Cache the original command line to be
-@@ -905,6 +929,7 @@
+@@ -905,6 +945,7 @@
    // Node provides a "v8.setFlagsFromString" method to dynamically change flags.
    // Hence do not freeze flags when initializing V8. In a browser setting, this
    // is security relevant, for Node it's less important.
@@ -2547,7 +2563,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    V8::SetFlagsFromString("--no-freeze-flags-after-init");
  
  #if defined(NODE_V8_OPTIONS)
-@@ -923,6 +948,7 @@
+@@ -923,6 +964,7 @@
    // Specify this explicitly to avoid being affected by V8 changes to the
    // default value.
    V8::SetFlagsFromString("--rehash-snapshot");
@@ -2555,7 +2571,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    // TODO(joyeecheung): make this a per-env option and move the normalization
-@@ -933,10 +959,14 @@
+@@ -933,10 +975,14 @@
      per_process::cli_options->use_system_ca = true;
    }
  #endif  // HAVE_OPENSSL
@@ -2570,7 +2586,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
    if (!env_files.empty()) {
      CHECK(!per_process::v8_initialized);
-@@ -1035,8 +1065,10 @@
+@@ -1035,8 +1081,10 @@
  #endif
  
    if (!(flags & ProcessInitializationFlags::kDisableCLIOptions)) {
@@ -2581,7 +2597,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (exit_code != ExitCode::kNoFailure) return exit_code;
    }
  
-@@ -1112,6 +1144,7 @@
+@@ -1112,6 +1160,7 @@
  InitializeOncePerProcessInternal(const std::vector<std::string>& args,
                                   ProcessInitializationFlags::Flags flags =
                                       ProcessInitializationFlags::kNoFlags) {
@@ -2589,7 +2605,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    auto result = std::make_shared<InitializationResultImpl>();
    result->args_ = args;
  
-@@ -1121,12 +1154,16 @@
+@@ -1121,12 +1170,16 @@
      per_process::enabled_debug_list.Parse(nullptr);
    }
  
@@ -2606,7 +2622,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (result->exit_code_enum() != ExitCode::kNoFailure) {
        result->early_return_ = true;
        return result;
-@@ -1283,13 +1320,17 @@
+@@ -1283,13 +1336,17 @@
    }
  
    if (!(flags & ProcessInitializationFlags::kNoInitializeNodeV8Platform)) {
@@ -2624,7 +2640,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
-@@ -1298,11 +1339,13 @@
+@@ -1298,11 +1355,13 @@
    }
  
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
@@ -2638,7 +2654,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
  #if NODE_USE_V8_WASM_TRAP_HANDLER
-@@ -1568,14 +1611,19 @@
+@@ -1568,14 +1627,19 @@
  }
  
  static ExitCode StartInternal(int argc, char** argv) {
