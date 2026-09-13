@@ -1,0 +1,13 @@
+include $(SRCDIR)/config/aros.cfg
+
+# Visual proof for consoleng.device: opens the NEW device by name on a window
+# and renders a mixed stream into it. Nothing here opens console.device, so a
+# screenshot of this program is a screenshot of the new device only.
+
+#MM- workbench-devs-consoleng-test : workbench-devs-consoleng
+
+%build_prog mmake=workbench-devs-consoleng-test \
+    progname=ConsolengTest \
+    files=consolengtest \
+    targetdir=$(AROS_TESTS) \
+    uselibs="amiga"
