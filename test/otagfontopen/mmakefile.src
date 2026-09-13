@@ -1,0 +1,7 @@
+include $(SRCDIR)/config/aros.cfg
+
+#MM test-otagfontopen : includes linklibs
+
+%build_prog mmake=test-otagfontopen \
+    progname=otagfontopen files=otagfontopen \
+    targetdir=$(AROS_TESTS)
