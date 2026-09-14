@@ -47,7 +47,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/deps/cares/config/linux/ares_config.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/deps/cares/config/linux/ares_config.h
 --- node-v22.23.1/deps/cares/config/linux/ares_config.h	2026-06-23 11:27:39.000000000 -0500
 +++ node-v22.23.1/deps/cares/config/linux/ares_config.h	2026-07-25 19:19:39.118058420 -0500
-@@ -570,4 +570,29 @@
+@@ -570,4 +570,38 @@
  /* #undef _LARGE_FILES */
  
  /* Define to `unsigned int' if <sys/types.h> does not define. */
@@ -75,6 +75,15 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +# undef HAVE_IF_NAMETOINDEX
 +# undef HAVE_GETIFADDRS
 +# undef HAVE_IFADDRS_H
++/*
++ * gethostname() is not a libc call on AROS: the only definition is
++ * bsdsocket.library's inline stub, which jumps through node.library's
++ * SocketBase - NULL whenever no TCP/IP stack is running. ares_init_options()
++ * called it at channel setup (require('dns')) and trapped there before any
++ * lookup was even asked for. uv_os_gethostname() answers "AROS" on this
++ * platform anyway, so no domain could ever be derived from it.
++ */
++# undef HAVE_GETHOSTNAME
 +# ifndef INET6_ADDRSTRLEN
 +#  define INET6_ADDRSTRLEN 46
 +# endif
