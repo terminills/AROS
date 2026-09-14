@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 1982, 1986, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
+ * Copyright (C) 2026 The AROS Dev Team
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -212,7 +213,21 @@ struct tcpcb {
 
 /* TUBA stuff */
 	caddr_t	t_tuba_pcb;		/* next level down pcb for TCP over z */
+
+/*
+ * Per-connection keep-alive tuning (TCP_KEEPIDLE / TCP_KEEPINTVL /
+ * TCP_KEEPCNT), in slow-timer ticks like the tcp_keepidle/tcp_keepintvl
+ * globals they default to.  0 means "use the global".
+ */
+	u_int	t_keepidle;		/* idle time before first probe */
+	u_int	t_keepintvl;		/* interval between probes */
+	u_int	t_keepcnt;		/* probes before dropping */
 };
+
+#define	TP_KEEPIDLE(tp)	((tp)->t_keepidle ? (tp)->t_keepidle : tcp_keepidle)
+#define	TP_KEEPINTVL(tp) ((tp)->t_keepintvl ? (tp)->t_keepintvl : tcp_keepintvl)
+#define	TP_KEEPCNT(tp)	((tp)->t_keepcnt ? (tp)->t_keepcnt : TCPTV_KEEPCNT)
+#define	TP_MAXIDLE(tp)	(TP_KEEPCNT(tp) * TP_KEEPINTVL(tp))
 
 /*
  * Structure to hold TCP options that are only used during segment

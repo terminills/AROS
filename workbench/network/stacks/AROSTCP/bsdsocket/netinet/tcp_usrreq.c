@@ -615,6 +615,45 @@ struct mbuf **mp;
                 tp->t_flags &= ~TF_NOPUSH;
             break;
 
+        /*
+         * Per-connection keep-alive tuning, FreeBSD/Linux semantics:
+         * TCP_KEEPIDLE and TCP_KEEPINTVL in seconds, TCP_KEEPCNT in
+         * probes.  Stored in slow-timer ticks next to the globals they
+         * override; t_timer[] is a short, so reject values that would
+         * not fit.  0 is not a valid value (the field's "use global").
+         */
+        case TCP_KEEPIDLE:
+        case TCP_KEEPINTVL:
+            if(m == NULL || m->m_len < sizeof(int))
+                error = EINVAL;
+            else if((i = *mtod(m, int *)) <= 0 ||
+                    i > SHRT_MAX / PR_SLOWHZ)
+                error = EINVAL;
+            else if(optname == TCP_KEEPIDLE) {
+                tp->t_keepidle = i * PR_SLOWHZ;
+                /*
+                 * An established, quiet connection that is still
+                 * waiting out the old idle period gets the new one.
+                 */
+                if(tp->t_state >= TCPS_ESTABLISHED &&
+                        tp->t_state <= TCPS_CLOSE_WAIT &&
+                        (so->so_options & SO_KEEPALIVE) &&
+                        tp->t_idle < TP_KEEPIDLE(tp))
+                    tp->t_timer[TCPT_KEEP] =
+                        TP_KEEPIDLE(tp) - tp->t_idle;
+            } else
+                tp->t_keepintvl = i * PR_SLOWHZ;
+            break;
+
+        case TCP_KEEPCNT:
+            if(m == NULL || m->m_len < sizeof(int))
+                error = EINVAL;
+            else if((i = *mtod(m, int *)) <= 0 || i > SHRT_MAX)
+                error = EINVAL;
+            else
+                tp->t_keepcnt = i;
+            break;
+
         default:
             error = ENOPROTOOPT;
             break;
@@ -643,6 +682,15 @@ struct mbuf **mp;
             break;
         case TCP_NOPUSH:
             *mtod(m, int *) = tp->t_flags & TF_NOPUSH;
+            break;
+        case TCP_KEEPIDLE:
+            *mtod(m, int *) = TP_KEEPIDLE(tp) / PR_SLOWHZ;
+            break;
+        case TCP_KEEPINTVL:
+            *mtod(m, int *) = TP_KEEPINTVL(tp) / PR_SLOWHZ;
+            break;
+        case TCP_KEEPCNT:
+            *mtod(m, int *) = TP_KEEPCNT(tp);
             break;
         default:
             error = ENOPROTOOPT;

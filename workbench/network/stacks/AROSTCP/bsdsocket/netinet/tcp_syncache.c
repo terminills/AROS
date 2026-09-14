@@ -705,7 +705,7 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct tcpiphdr *ti)
     tcp_mss(tp, sc->sc_peer_mss);
 
     tp->t_flags |= TF_ACKNOW;
-    tp->t_timer[TCPT_KEEP] = tcp_keepidle;
+    tp->t_timer[TCPT_KEEP] = TP_KEEPIDLE(tp);
 
     tcpstat.tcps_accepts++;
     tcpstat.tcps_connects++;

@@ -186,8 +186,8 @@ int timer;
      */
     case TCPT_2MSL:
         if(tp->t_state != TCPS_TIME_WAIT &&
-                tp->t_idle <= tcp_maxidle)
-            tp->t_timer[TCPT_2MSL] = tcp_keepintvl;
+                tp->t_idle <= TP_MAXIDLE(tp))
+            tp->t_timer[TCPT_2MSL] = TP_KEEPINTVL(tp);
         else
             tp = tcp_close(tp);
         break;
@@ -301,7 +301,7 @@ int timer;
             goto dropit;
         if(tp->t_inpcb->inp_socket->so_options & SO_KEEPALIVE &&
                 tp->t_state <= TCPS_CLOSE_WAIT) {
-            if(tp->t_idle >= tcp_keepidle + tcp_maxidle)
+            if(tp->t_idle >= TP_KEEPIDLE(tp) + TP_MAXIDLE(tp))
                 goto dropit;
             /*
              * Send a packet designed to force a response
@@ -329,9 +329,9 @@ int timer;
                         tp->rcv_nxt, tp->snd_una - 1, 0,
                         0, NULL, NULL);
 #endif
-            tp->t_timer[TCPT_KEEP] = tcp_keepintvl;
+            tp->t_timer[TCPT_KEEP] = TP_KEEPINTVL(tp);
         } else
-            tp->t_timer[TCPT_KEEP] = tcp_keepidle;
+            tp->t_timer[TCPT_KEEP] = TP_KEEPIDLE(tp);
         break;
 dropit:
         tcpstat.tcps_keepdrops++;
