@@ -21,8 +21,26 @@
     This entry point is safe to call from any task: it only reads the slot
     through exec (an absolute SysBase), never a rellib.  Nothing in this
     file may call into stdc/posixc.
+
+    The same LDFlush path is also why uv1.library vetoes its own expunge
+    from any task but its last closer (hooks below).  uv1 links the static
+    pthread emulation, whose EXIT-set function __pthread_Exit_Func reaps
+    leftover threads with Delay(1)/pthread_join - a Wait() under exec's
+    LibList WRITE lock when the expunge comes from LDFlush.  Every later
+    OpenLibrary then spins under Forbid in LDRequestObject, and if the
+    sleeper is pinned to the spinner's CPU it never wakes: the whole guest
+    stops taking input (node.library did exactly this, rtest6 2026-09-14,
+    qemu-test/logs/rtest6-deadlock.md).  The CLOSELIB set runs on the last
+    per-task close, just before genmodule drops the root open count and,
+    when LIBF_DELEXP is set, expunges from that same task with lddemon's
+    Forbid only (no list lock).  That task is remembered by its exec unique
+    ID (task pointers are recycled), and only it may expunge.  A stale
+    record can only ever match the same still-living task, which is the
+    same safe path.
 */
+#include <aros/symbolsets.h>
 #include <exec/types.h>
+#include <exec/libraries.h>
 #include <proto/exec.h>
 
 /* genmodule's per-task base lookup for this module (own slot, then the
@@ -34,3 +52,24 @@ int uv_aros_task_has_base(void)
 {
     return __aros_getoffsettable() != NULL;
 }
+
+static ULONG uv_aros_closer_id;
+
+static int uv_aros_close_last(struct Library *lh)
+{
+    (void)lh;
+    uv_aros_closer_id = GetETaskID(FindTask(NULL));
+    return 1;
+}
+
+static int uv_aros_expunge_prepare(struct Library *lh)
+{
+    ULONG closer = uv_aros_closer_id;
+
+    (void)lh;
+    uv_aros_closer_id = 0;
+    return closer != 0 && closer == GetETaskID(FindTask(NULL));
+}
+
+ADD2CLOSELIB(uv_aros_close_last, 0)
+ADD2EXPUNGELIB(uv_aros_expunge_prepare, 0)

@@ -69,22 +69,51 @@ static auto *const NodeGetEntropyAnchor __attribute__((used)) = &getentropy;
  * process, TDNestCnt 2).  Anything Expunge does must hold no exec list
  * lock and must not load.
  *
- * So the EXPUNGELIB hook only asks uv1 whether this task can use it -
- * uv_aros_task_has_base() reads the task's storage slot through exec and
- * touches no rellib - and vetoes the expunge otherwise.  LIBF_DELEXP stays
- * set; the next node process that closes the library (a task that opened
- * uv1 through node's own init, holding no list lock) runs the real expunge
- * from CloseLibrary.  A flush from a foreign task leaves node.library
- * resident, which is the only outcome that is safe from that task.
+ * Worse than the base: the expunge SLEEPS.  The pthread emulation linked
+ * into node.library registers __pthread_Exit_Func in the EXIT set, which
+ * reaps every thread it still knows about with Delay(1)/pthread_join - a
+ * Wait() under LDFlush's LibList write lock.  The next OpenLibrary on any
+ * task then spins in LDRequestObject's ObtainSystemLock(LibList, READ,
+ * LOCKF_FORBID); with the sleeper READY but pinned to the same CPU as the
+ * spinner (both Chromium threads on CPU0), it never runs again and the
+ * whole guest stops taking input (rtest6, 2026-09-14, logs/rtest6-
+ * deadlock.md).  Checking "does this task have a uv1 base" was not enough:
+ * the flushing renderer thread DID have node's uv1 dup base in its slot.
+ *
+ * So the expunge is only allowed from node.library's own last closer.
+ * genmodule's CloseLib decrements lib_OpenCnt, runs the CLOSELIB set, and
+ * only then expunges when the count is 0 and LIBF_DELEXP is set - so the
+ * CLOSELIB hook sees exactly the close that is about to expunge and
+ * records that task's exec unique ID (task pointers are recycled; C:Node's
+ * was already a Chromium thread by the time of the flush).  The EXPUNGELIB
+ * hook passes only for that task, and lddemon's CloseLibrary path holds no
+ * list lock (Forbid only), so the sleep in __pthread_Exit_Func is harmless
+ * there.  Any other caller - LDFlush on whatever task's AllocMem failed -
+ * is vetoed: LIBF_DELEXP stays set and the library stays resident until a
+ * node process closes it, which is the only outcome that is safe from a
+ * foreign task under the list lock.
  */
 extern "C" int uv_aros_task_has_base(void);
+
+static ULONG NodeCloserID;
+
+static int NodeCloseLast(LIBBASETYPEPTR lh)
+{
+  if (lh->lib_OpenCnt == 0 && (lh->lib_Flags & LIBF_DELEXP))
+    NodeCloserID = GetETaskID(FindTask(NULL));
+  return 1;
+}
 
 static int NodeExpungePrepare(LIBBASETYPEPTR lh)
 {
   (void)lh;
-  return uv_aros_task_has_base();
+  ULONG closer = NodeCloserID;
+  NodeCloserID = 0;
+  return closer != 0 && closer == GetETaskID(FindTask(NULL)) &&
+         uv_aros_task_has_base();
 }
 
+ADD2CLOSELIB(NodeCloseLast, 0)
 ADD2EXPUNGELIB(NodeExpungePrepare, 0)
 
 static std::shared_ptr<node::InitializationResult> NodeEmbedInitialization;
