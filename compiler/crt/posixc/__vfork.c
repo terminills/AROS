@@ -265,6 +265,18 @@ D(bug("launcher: executing command\n"));
             /* Inform parent that we won't use udata anymore */
             SETCHILDSTATE(CHILD_STATE_UDATA_NOT_USED);
             Signal(udata->parent, 1 << udata->parent_signal);
+
+            /* The parent is still pretending to be us: its PosixCBase->StdCBase
+               is OUR StdCBase until parent_leavepretendchild() runs, and its
+               fflush(NULL)/errno on the way there resolve through it.  Hold
+               our libraries open until it has stopped, exactly as the
+               executed path above does - closing them first left the parent
+               calling errno through a freed base (jump to PC 0 in C:Node's
+               second execFile(), a bare-name exec that failed PATH lookup). */
+            D(bug("launcher: waiting for parent to be after _exit()\n"));
+            Wait(1 << udata->child_signal);
+            ASSERTPARENTSTATE(PARENT_STATE_STOPPED_PRETENDING);
+            PRINTSTATE;
         }
     }
     else
@@ -330,8 +342,15 @@ pid_t __vfork(jmp_buf env)
     D(bug("__vfork: Parent: Setting jmp_buf at %p\n", udata->parent_newexitjmp));
     if (setjmp(udata->parent_newexitjmp) == 0)
     {
+        /* The old errorptr is the program's return-code cell, installed by
+           __stdc_program_startup().  A Task that reaches vfork() through a
+           library-opened posixc base (C:Node -> node.library -> uv1.library:
+           its per-Task PosixCBase opened stdc itself, no program startup ran
+           on that base) has none: there is no return code to carry across the
+           pretend-child, so it starts at 0.  Restoring NULL below then
+           leaves that base exactly as it was. */
         udata->parent_olderrorptr = __stdc_set_errorptr(&udata->child_error);
-        udata->child_error = *udata->parent_olderrorptr;
+        udata->child_error = udata->parent_olderrorptr ? *udata->parent_olderrorptr : 0;
         __stdc_set_exitjmp(udata->parent_newexitjmp, udata->parent_oldexitjmp);
 
         parent_enterpretendchild(udata);
@@ -409,11 +428,15 @@ static __attribute__((noinline)) void __vfork_exit_controlled_stack(struct vfork
 {
     jmp_buf dummy;
     jmp_buf env;
+    pid_t child_pid;
 
     D(bug("__vfork: ParentPretendingChild: freeing parent signal\n"));
     FreeSignal(udata->parent_signal);
 
-    errno = udata->child_errno;
+    /* Take the child's pid while the launcher Task is still alive: once we
+       signal it below it may finish and be removed, and udata is freed
+       before the final longjmp. */
+    child_pid = GetETaskID(udata->child);
 
     /* leavepretendchild will restore old StdCBase and thus also
        old startup jmp_buf.
@@ -422,12 +445,17 @@ static __attribute__((noinline)) void __vfork_exit_controlled_stack(struct vfork
     */
     parent_leavepretendchild(udata);
 
-    if(udata->child_executed)
-    {
-        D(bug("__vfork: Inform child that we are after _exit()\n"));
-        SETPARENTSTATE(PARENT_STATE_STOPPED_PRETENDING);
-        Signal(udata->child, 1 << udata->child_signal);
-    }
+    /* Now that our own StdCBase is back, hand the child's errno to the
+       parent.  Setting it before the restore wrote it into the child's
+       errno cell instead - and, when no exec had happened, into a StdCBase
+       the launcher was free to close already. */
+    errno = udata->child_errno;
+
+    /* The launcher waits for this in both the executed and the not-executed
+       case before it closes the libraries our pretend-child ran on. */
+    D(bug("__vfork: Inform child that we are after _exit()\n"));
+    SETPARENTSTATE(PARENT_STATE_STOPPED_PRETENDING);
+    Signal(udata->child, 1 << udata->child_signal);
 
     D(bug("__vfork: Parent: restoring startup buffer\n"));
     /* Restore parent errorptr and startup buffer */
@@ -442,7 +470,7 @@ static __attribute__((noinline)) void __vfork_exit_controlled_stack(struct vfork
 
     D(bug("__vfork: Parent jumping to jmp_buf %p\n", env));
     D(bug("__vfork: ip: %p, stack: %p\n", env->retaddr, env->regs[SP]));
-    vfork_longjmp(env, GetETaskID(udata->child));
+    vfork_longjmp(env, child_pid);
 }
 
 static void parent_createchild(struct vfork_data *udata)
