@@ -119,7 +119,14 @@ static Object *console_new(Class *cl, Object *o, struct opSet *msg)
         }
         unit->cu_TabStops[i] = (UWORD) - 1;
 
-        ICU(o)->conFlags = 0UL;
+        /* consoleng exists to carry Unicode, and what reaches it is
+           TERM=xterm-256color output (node/Ink, ncurses) that assumes a
+           UTF-8 terminal and never sends ESC % G.  Default the unit to
+           UTF-8; ESC % @ (or CSI >8l) still selects byte mode for a Latin-1
+           producer, and an invalid byte decodes as Latin-1 anyway (see
+           con_utf8_decode).  console.device keeps its byte-mode default. */
+        ICU(o)->conFlags = CF_UTF8;
+        ICU(o)->utf8StashLen = 0;
         ICU(o)->numStoredChars = 0;
 
         NEWLIST(&ICU(o)->pasteData);

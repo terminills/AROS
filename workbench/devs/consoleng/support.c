@@ -66,8 +66,14 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
 
 #define MAX_COMMAND_PARAMS 16
 
-/* Lenient UTF-8 decoder: invalid/incomplete input yields '?' and always
-   makes forward progress. Kept in sync with graphics.library TextUTF8(). */
+/* Lenient UTF-8 decoder that always makes forward progress.  A byte that
+   is not part of a well-formed sequence (stray continuation byte, lead byte
+   without its continuations) is taken as ONE Latin-1 character, so a
+   legacy 8-bit producer writing to a UTF-8 unit (the default for this
+   device) still shows its accented letters instead of '?'; only a
+   sequence that is truly cut off at the end of the span becomes '?', and
+   WriteToConsole() stashes such tails across CMD_WRITEs before it gets
+   here.  graphics.library TextUTF8() keeps its stricter '?' policy. */
 ULONG con_utf8_decode(const UBYTE **sp, LONG *left)
 {
     const UBYTE *p = *sp;
@@ -98,9 +104,10 @@ ULONG con_utf8_decode(const UBYTE **sp, LONG *left)
     }
     else
     {
+        /* 0x80-0xBF continuation without a lead, or 0xF8-0xFF: Latin-1 */
         *sp = p + 1;
         *left = n - 1;
-        return '?';
+        return b;
     }
 
     if (need > n)
@@ -114,9 +121,11 @@ ULONG con_utf8_decode(const UBYTE **sp, LONG *left)
     {
         if ((p[i] & 0xC0) != 0x80)
         {
-            *sp = p + i;
-            *left = n - i;
-            return '?';
+            /* lead byte not followed by continuations: Latin-1, and the
+               bytes after it get their own turn */
+            *sp = p + 1;
+            *left = n - 1;
+            return b;
         }
         cp = (cp << 6) | (p[i] & 0x3F);
     }
