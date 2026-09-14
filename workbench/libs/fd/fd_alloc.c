@@ -106,6 +106,7 @@ static fd_entry *fd_get_entry(struct fd_base *base, LONG fd)
         entry = &FDBase->fd_Table[fd];
         if (entry->owner == FD_OWNER_NONE) {
             entry->owner = owner;
+            entry->refs = 1;
             entry->data = data;
             *outfd = fd;
             goto done;
@@ -182,6 +183,7 @@ static fd_entry *fd_get_entry(struct fd_base *base, LONG fd)
     }
 
     entry->owner = owner;
+    entry->refs = 1;
     entry->data = data;
 
  done:
@@ -204,7 +206,10 @@ static fd_entry *fd_get_entry(struct fd_base *base, LONG fd)
         struct fd_base *, FDBase, 7, FD)
 
 /*  FUNCTION
-        Release a descriptor slot owned by a specific consumer.
+        Drop one holder of a descriptor slot owned by a specific consumer.
+        The slot becomes free again when its last holder lets go (see
+        FD_Share()); a slot that was only ever allocated or reserved has a
+        single holder and is released by this call.
 
     INPUTS
         fd     - Descriptor number to release.
@@ -214,13 +219,20 @@ static fd_entry *fd_get_entry(struct fd_base *base, LONG fd)
         0 on success, or an errno-style error code.
 
     NOTES
+        Descriptor numbers are system-wide, but a POSIX process and the
+        vfork() child that inherited a copy of its descriptor table both
+        hold the same numbers.  Before FD_Share() existed, the first of
+        the two to close() a shared number freed it for everyone: the other
+        table's slot turned stale (EBADF), and the DOS handle behind it was
+        never closed - a pipe whose write end was such a slot never reached
+        EOF.
 
     EXAMPLE
 
     BUGS
 
     SEE ALSO
-        FD_Reserve()
+        FD_Reserve(), FD_Share()
 
     INTERNALS
 
@@ -242,8 +254,80 @@ static fd_entry *fd_get_entry(struct fd_base *base, LONG fd)
         goto done;
     }
 
+    if (entry->refs > 1) {
+        entry->refs--;
+        goto done;
+    }
+
     entry->owner = FD_OWNER_NONE;
+    entry->refs = 0;
     entry->data = NULL;
+
+ done:
+    ReleaseSemaphore(&FDBase->fd_Lock);
+    return error;
+
+    AROS_LIBFUNC_EXIT
+}
+
+/*****************************************************************************
+
+    NAME */
+        AROS_LH2(LONG, FD_Share,
+
+/*  SYNOPSIS */
+        AROS_LHA(LONG, fd, D0),
+        AROS_LHA(fd_owner_t, owner, D1),
+
+/*  LOCATION */
+        struct fd_base *, FDBase, 14, FD)
+
+/*  FUNCTION
+        Add a holder to a descriptor slot that the given consumer already
+        owns.  Each holder must later drop the number with FD_Free(); the
+        slot is released when the last one does.
+
+    INPUTS
+        fd     - Descriptor number to share.
+        owner  - Descriptor owner identifier; must match the current owner.
+
+    RESULT
+        0 on success, or an errno-style error code (EBADF when the slot is
+        free or owned by someone else).
+
+    NOTES
+        Used by posixc.library when a vfork() child copies its parent's
+        descriptor table, and when dup2() targets a number another table
+        still holds.
+
+    EXAMPLE
+
+    BUGS
+
+    SEE ALSO
+        FD_Free()
+
+    INTERNALS
+
+*****************************************************************************/
+{
+    AROS_LIBFUNC_INIT
+
+    LONG error = 0;
+    fd_entry *entry = NULL;
+
+    if (owner == FD_OWNER_NONE)
+        return EINVAL;
+
+    ObtainSemaphore(&FDBase->fd_Lock);
+
+    entry = fd_get_entry(FDBase, fd);
+    if (!entry || entry->owner == FD_OWNER_NONE || entry->owner != owner) {
+        error = EBADF;
+        goto done;
+    }
+
+    entry->refs++;
 
  done:
     ReleaseSemaphore(&FDBase->fd_Lock);

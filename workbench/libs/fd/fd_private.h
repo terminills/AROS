@@ -12,6 +12,10 @@
 
 typedef struct fd_entry {
     fd_owner_t owner;
+    /* Number of holders of this descriptor number (FD_Alloc()/FD_Reserve()
+       start at 1, FD_Share() adds one, FD_Free() drops one); the slot is
+       released when it reaches zero. */
+    ULONG refs;
     APTR data;
 } fd_entry;
 

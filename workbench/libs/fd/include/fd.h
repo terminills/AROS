@@ -52,6 +52,10 @@ struct fd_hooks
 
 #define FD_HOOKS_VERSION 1
 
+/* Library version that introduced FD_Share(); open fd.library with this
+   version before calling it. */
+#define FD_LIBRARY_SHARE_VERSION 51
+
 LONG FD_Alloc(LONG startfd, fd_owner_t owner, APTR data, LONG *outfd);
 LONG FD_Reserve(LONG fd, fd_owner_t owner, APTR data);
 LONG FD_Free(LONG fd, fd_owner_t owner);
@@ -61,6 +65,8 @@ APTR FD_GetData(LONG fd);
 LONG FD_SetData(LONG fd, fd_owner_t owner, APTR data);
 LONG FD_SetOwnerHooks(fd_owner_t owner, const struct fd_hooks *hooks);
 const struct fd_hooks *FD_GetOwnerHooks(fd_owner_t owner);
+/* fd.library 51: reference-counted numbers (see FD_Free()). */
+LONG FD_Share(LONG fd, fd_owner_t owner);
 
 #ifdef __cplusplus
 }
