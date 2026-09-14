@@ -41,5 +41,10 @@ struct hostent *__gethostbyaddr_r(const char *addr, LONG len, LONG type,
 			LONG buflen, LONG *h_errnop,
 			struct SocketBase *libPtr);
 
+/* getaddrinfo() family selection and order for hints->ai_family /
+   ai_flags: configured families first, AI_ADDRCONFIG honoured.
+   Fills families[] (max 2) and returns the count. */
+int __getaddrinfo_families(int family, int flags, int families[2]);
+
 #endif /* API_GETHTBYNAMADR_H */
 

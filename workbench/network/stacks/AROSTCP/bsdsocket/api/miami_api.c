@@ -637,19 +637,10 @@ AROS_LH4(LONG, getaddrinfo,
         nstypes = 2;
     }
 
-    /* Determine which address families to iterate */
+    /* Determine which address families to iterate (configured ones
+       first, AI_ADDRCONFIG honoured - see __getaddrinfo_families) */
     int families[2];
-    int nfamilies = 0;
-
-    if(family == PF_INET || family == PF_INET6) {
-        families[0] = family;
-        nfamilies = 1;
-    } else {
-        /* PF_UNSPEC: try both */
-        families[0] = PF_INET6;
-        families[1] = PF_INET;
-        nfamilies = 2;
-    }
+    int nfamilies = __getaddrinfo_families(family, flags, families);
 
     for(int fi = 0; fi < nfamilies; fi++) {
         int af = families[fi];

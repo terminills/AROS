@@ -1708,6 +1708,95 @@ AROS_LH1(void, RS_freeaddrinfo,
     AROS_LIBFUNC_EXIT
 }
 
+/*
+ * Does this host have a usable address of family af?  The test glibc's
+ * resolver applies for AI_ADDRCONFIG (RFC 3493 6.1): some interface that
+ * is UP and not the loopback carries an address of the family, where an
+ * unspecified IPv4 address or a link-local IPv6 address does not count -
+ * an fe80:: address exists on every v6-capable link and says nothing
+ * about reaching the Internet.
+ */
+static int rs_family_configured(int af)
+{
+    struct ifnet *ifp;
+    struct ifaddr *ifa;
+    int found = 0;
+    spl_t s = splnet();
+
+    for (ifp = ifnet; ifp != NULL && !found; ifp = ifp->if_next) {
+        if ((ifp->if_flags & (IFF_UP | IFF_LOOPBACK)) != IFF_UP)
+            continue;
+        for (ifa = ifp->if_addrlist; ifa != NULL; ifa = ifa->ifa_next) {
+            const struct sockaddr *sa = ifa->ifa_addr;
+            if (sa == NULL || sa->sa_family != af)
+                continue;
+            if (af == AF_INET) {
+                const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+                if (sin->sin_addr.s_addr == htonl(INADDR_ANY))
+                    continue;
+            } else if (af == AF_INET6) {
+                const unsigned char *b =
+                    ((const struct sockaddr_in6 *)sa)->sin6_addr.s6_addr;
+                int i, zero = 1;
+                for (i = 0; i < 16 && zero; i++)
+                    zero = (b[i] == 0);
+                if (zero)                                   /* :: */
+                    continue;
+                if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80)  /* fe80::/10 */
+                    continue;
+            }
+            found = 1;
+            break;
+        }
+    }
+
+    splx(s);
+    return found;
+}
+
+/*
+ * Which address families getaddrinfo() should look up, in which order.
+ * family is the hints' ai_family (PF_UNSPEC for both), flags the hints'
+ * ai_flags; families[] receives the list and the count is returned.
+ *
+ * PF_UNSPEC used to mean "IPv6 first, always".  On a host whose only
+ * uplink is IPv4 that hands every caller an AAAA answer it cannot
+ * connect to (EADDRNOTAVAIL) before the A record it can, and a caller
+ * that stops at the first answer - node's dns.lookup, most getaddrinfo
+ * users - never gets there.  RFC 6724 orders destinations by
+ * reachability; the part of it that matters here is that a family this
+ * host has no address in sorts after one it has.  With AI_ADDRCONFIG
+ * (RFC 3493) such a family is left out altogether, which is what node's
+ * net.connect asks for by default.  If neither family is configured
+ * (loopback only) both are still tried, IPv4 first, so "localhost" and
+ * the hosts file keep resolving.
+ */
+int __getaddrinfo_families(int family, int flags, int families[2])
+{
+    int have4, have6, second_ok;
+
+    if (family == PF_INET || family == PF_INET6) {
+        families[0] = family;
+        return 1;
+    }
+
+    have4 = rs_family_configured(AF_INET);
+    have6 = rs_family_configured(AF_INET6);
+
+    if (!have4 && !have6) {
+        families[0] = PF_INET;
+        families[1] = PF_INET6;
+        return 2;
+    }
+
+    /* The configured family leads (IPv6 when both are); the other one
+       follows unless AI_ADDRCONFIG asks for configured families only. */
+    families[0] = have6 ? PF_INET6 : PF_INET;
+    families[1] = have6 ? PF_INET : PF_INET6;
+    second_ok = have6 ? have4 : have6;
+    return (second_ok || !(flags & AI_ADDRCONFIG)) ? 2 : 1;
+}
+
 AROS_LH4(LONG, RS_getaddrinfo,
          AROS_LHA(const char *, hostname, A0),
          AROS_LHA(const char *, servname, A1),
@@ -1783,12 +1872,7 @@ AROS_LH4(LONG, RS_getaddrinfo,
     else { stypes[0] = SOCK_STREAM; stypes[1] = SOCK_DGRAM; nstypes = 2; }
 
     int families[2];
-    int nfamilies = 0;
-    if (family == PF_INET || family == PF_INET6) {
-        families[0] = family; nfamilies = 1;
-    } else {
-        families[0] = PF_INET6; families[1] = PF_INET; nfamilies = 2;
-    }
+    int nfamilies = __getaddrinfo_families(family, flags, families);
 
     for (int fi = 0; fi < nfamilies; fi++) {
         int af = families[fi];
