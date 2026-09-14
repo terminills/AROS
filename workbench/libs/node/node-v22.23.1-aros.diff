@@ -2496,7 +2496,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    return scope.Escape(fun);
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node.cc
 --- node-v22.23.1/src/node.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node.cc	2026-09-13 23:21:46.353712018 -0500
++++ node-v22.23.1/src/node.cc	2026-09-14 00:19:28.282562330 -0500
 @@ -134,6 +134,15 @@
  #include <tuple>
  #include <vector>
@@ -2564,7 +2564,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
    // Cache the original command line to be
-@@ -905,8 +945,22 @@
+@@ -905,8 +945,37 @@
    // Node provides a "v8.setFlagsFromString" method to dynamically change flags.
    // Hence do not freeze flags when initializing V8. In a browser setting, this
    // is security relevant, for Node it's less important.
@@ -2582,12 +2582,27 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +  // the command line still overrides this (SetFlagsFromCommandLine runs
 +  // later).
 +  V8::SetFlagsFromString("--wasm-max-mem-pages=2048");
++
++  // The AROS NodePlatform is foreground-only (node_platform.cc: no worker
++  // threads; CallOnWorkerThread runs the task inline on the posting
++  // thread), so every "background" job V8 posts -- wasm tier-up, concurrent
++  // recompilation, concurrent marking/sweeping -- executes synchronously at
++  // the point it was posted, inside whatever callback happened to trigger
++  // it (llhttp's tier-up ran for seconds inside a TLS read callback and
++  // stalled the response).  --single-threaded is V8's contract for exactly
++  // this platform shape: it stops V8 posting background tasks at all and
++  // does the work where V8 expects it to be synchronous.  It does not
++  // cover budget-driven wasm tier-up (--wasm-dynamic-tiering), which still
++  // compiles one function with TurboFan inline when its budget runs out;
++  // that is bounded by a single function's compile and lives with a
++  // release V8 -- the seconds came from a DCHECK build's verifiers.
++  V8::SetFlagsFromString("--single-threaded");
 +#endif
 +
  #if defined(NODE_V8_OPTIONS)
    // Should come before the call to V8::SetFlagsFromCommandLine()
    // so the user can disable a flag --foo at run-time by passing
-@@ -923,6 +977,7 @@
+@@ -923,6 +992,7 @@
    // Specify this explicitly to avoid being affected by V8 changes to the
    // default value.
    V8::SetFlagsFromString("--rehash-snapshot");
@@ -2595,7 +2610,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    // TODO(joyeecheung): make this a per-env option and move the normalization
-@@ -933,10 +988,14 @@
+@@ -933,10 +1003,14 @@
      per_process::cli_options->use_system_ca = true;
    }
  #endif  // HAVE_OPENSSL
@@ -2610,7 +2625,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
    if (!env_files.empty()) {
      CHECK(!per_process::v8_initialized);
-@@ -1035,8 +1094,10 @@
+@@ -1035,8 +1109,10 @@
  #endif
  
    if (!(flags & ProcessInitializationFlags::kDisableCLIOptions)) {
@@ -2621,7 +2636,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (exit_code != ExitCode::kNoFailure) return exit_code;
    }
  
-@@ -1112,6 +1173,7 @@
+@@ -1112,6 +1188,7 @@
  InitializeOncePerProcessInternal(const std::vector<std::string>& args,
                                   ProcessInitializationFlags::Flags flags =
                                       ProcessInitializationFlags::kNoFlags) {
@@ -2629,7 +2644,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    auto result = std::make_shared<InitializationResultImpl>();
    result->args_ = args;
  
-@@ -1121,12 +1183,16 @@
+@@ -1121,12 +1198,16 @@
      per_process::enabled_debug_list.Parse(nullptr);
    }
  
@@ -2646,7 +2661,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (result->exit_code_enum() != ExitCode::kNoFailure) {
        result->early_return_ = true;
        return result;
-@@ -1282,14 +1348,45 @@
+@@ -1282,14 +1363,45 @@
  #endif  // HAVE_OPENSSL
    }
  
@@ -2693,7 +2708,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
-@@ -1297,12 +1394,18 @@
+@@ -1297,12 +1409,18 @@
      absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
    }
  
@@ -2713,7 +2728,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
  #if NODE_USE_V8_WASM_TRAP_HANDLER
-@@ -1355,6 +1458,27 @@
+@@ -1355,6 +1473,27 @@
      ResetSignalHandlers();
    }
  
@@ -2741,7 +2756,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
      cppgc::ShutdownProcess();
    }
-@@ -1380,6 +1504,7 @@
+@@ -1380,6 +1519,7 @@
      // will never be fully cleaned up.
      per_process::v8_platform.Dispose();
    }
@@ -2749,7 +2764,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    crypto::CleanupCachedRootCertificates();
-@@ -1568,14 +1693,19 @@
+@@ -1568,14 +1708,19 @@
  }
  
  static ExitCode StartInternal(int argc, char** argv) {
