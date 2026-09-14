@@ -1,4 +1,12 @@
+/*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+    Desc: node.library bridge - Node 22 embedder entry points and library
+          lifecycle glue (JOB-0092)
+*/
+
 #include <aros/libcall.h>
+#include <aros/symbolsets.h>
 #include <clib/exec_protos.h>
 #include <exec/libraries.h>
 #include <libraries/node.h>
@@ -41,6 +49,43 @@ extern "C" int getentropy(void *buffer, size_t length);
  * reference so bundled OpenSSL resolves to the shared PosixC implementation.
  */
 static auto *const NodeGetEntropyAnchor __attribute__((used)) = &getentropy;
+
+/*
+ * Expunge runs on whichever task asked exec for memory when lddemon flushed
+ * the library list - after C:Node has exited that is typically a Chromium
+ * thread.  node's static destructors (node::Mutex and friends) call into
+ * uv1.library, a pertaskbase library whose internal base lookups go through
+ * the *current* task's storage slot, not the base the caller jumped through.
+ * A task that never opened uv1 (and whose parent did not either) has no slot,
+ * so uv_mutex_destroy() faulted in uv1's own memset relwrapper with
+ * CR2 = the StdCBase offset inside the missing base (JOB-0092, 2026-09-14).
+ *
+ * Give the expunging task its own uv1 base for the duration: EXPUNGELIB
+ * hooks run before Remove()/set_libexpunge(), the EXIT set runs after the
+ * fini_array/dtors sets and before the autoinit bases are closed.  A failed
+ * open vetoes the expunge (LIBF_DELEXP stays set, lddemon retries later)
+ * rather than letting the destructors run without a base.
+ */
+static struct Library *NodeExpungeUv1Base;
+
+static int NodeExpungePrepare(LIBBASETYPEPTR lh)
+{
+  (void)lh;
+  NodeExpungeUv1Base = OpenLibrary("uv1.library", 0);
+  return NodeExpungeUv1Base != nullptr;
+}
+
+static void NodeExpungeRelease(void)
+{
+  if (NodeExpungeUv1Base != nullptr) {
+    CloseLibrary(NodeExpungeUv1Base);
+    NodeExpungeUv1Base = nullptr;
+  }
+}
+
+ADD2EXPUNGELIB(NodeExpungePrepare, 0)
+/* Lowest priority: EXIT is walked in reverse, so this runs last. */
+ADD2EXIT(NodeExpungeRelease, -127)
 
 static std::shared_ptr<node::InitializationResult> NodeEmbedInitialization;
 static node::IsolateData *NodeEmbedIsolateData;
