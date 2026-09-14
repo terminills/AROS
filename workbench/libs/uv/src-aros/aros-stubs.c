@@ -14,6 +14,11 @@
 #include "uv.h"
 #include "internal.h"
 
+/* D(bug()) traces of the spawn stdio hand-off; set DEBUG 1 to see them on
+   the hosted debug log. */
+#define DEBUG 0
+#include <aros/debug.h>
+
 #include <exec/libraries.h>
 #include <exec/memory.h>
 #include <proto/dos.h>
@@ -62,6 +67,8 @@ void uv__process_title_cleanup(void) { }
 void uv__aros_register_dos_pipe(int fd);
 void uv__aros_unregister_dos_pipe(int fd);
 
+extern char** environ;
+
 /*
  * AROS has real scheduled Processes and parent/child death notification but
  * no fork().  PosixC's vfork()+execvp() is the native adapter for exactly this
@@ -69,7 +76,26 @@ void uv__aros_unregister_dos_pipe(int fd);
  * writes through its ordinary PosixC descriptors; the parent endpoint is
  * opened as a normal libuv stream and driven by ACTION_WAIT_CHAR.
  */
+/*
+ * A DOS pipe is one-way.  Node asks for every 'pipe' stdio slot as
+ * UV_READABLE_PIPE | UV_WRITABLE_PIPE (it expects a duplex socketpair) and
+ * then only ever writes the child's stdin and reads its stdout/stderr, so a
+ * request for both directions is resolved by the slot's conventional role:
+ * slot 0 is the child's input, every other slot is child output.  This is
+ * what lets child_process.execFile/spawn exist at all on AROS; before it,
+ * every spawn (Claude Code's browser hand-off included) failed with ENOTSUP.
+ */
+static int uv__aros_pipe_child_reads(const uv_stdio_container_t* container,
+                                     int index) {
+  int dir = container->flags & (UV_READABLE_PIPE | UV_WRITABLE_PIPE);
+
+  if (dir == (UV_READABLE_PIPE | UV_WRITABLE_PIPE))
+    return index == 0;
+  return dir == UV_READABLE_PIPE;
+}
+
 static int uv__aros_process_init_stdio(uv_stdio_container_t* container,
+                                      int index,
                                       int fds[2]) {
   int mask;
   int fd;
@@ -85,13 +111,10 @@ static int uv__aros_process_init_stdio(uv_stdio_container_t* container,
       if (container->data.stream == NULL ||
           container->data.stream->type != UV_NAMED_PIPE)
         return UV_EINVAL;
-      if ((container->flags & (UV_READABLE_PIPE | UV_WRITABLE_PIPE)) ==
-          (UV_READABLE_PIPE | UV_WRITABLE_PIPE))
-        return UV_ENOTSUP;
       if (pipe(pair) != 0)
         return UV__ERR(errno);
 
-      if (container->flags & UV_READABLE_PIPE) {
+      if (uv__aros_pipe_child_reads(container, index)) {
         /* Child reads, parent writes. */
         fds[0] = pair[1];
         fds[1] = pair[0];
@@ -119,10 +142,14 @@ static int uv__aros_process_init_stdio(uv_stdio_container_t* container,
 }
 
 static int uv__aros_process_open_stream(uv_stdio_container_t* container,
+                                        int index,
                                         int fds[2]) {
   int flags;
   int err;
 
+  D(bug("[uv_spawn] open_stream slot %d flags=0x%x fds=%d,%d stream=%p type=%d\n",
+        index, container->flags, fds[0], fds[1], container->data.stream,
+        container->data.stream ? container->data.stream->type : -1));
   if (!(container->flags & UV_CREATE_PIPE) || fds[0] < 0)
     return 0;
 
@@ -138,15 +165,17 @@ static int uv__aros_process_open_stream(uv_stdio_container_t* container,
    */
   uv__aros_register_dos_pipe(fds[0]);
 
-  flags = 0;
-  if (container->flags & UV_WRITABLE_PIPE)
-    flags |= UV_HANDLE_READABLE;
-  if (container->flags & UV_READABLE_PIPE)
-    flags |= UV_HANDLE_WRITABLE;
-  if (!(container->flags & (UV_READABLE_PIPE | UV_WRITABLE_PIPE)))
-    flags |= UV_HANDLE_READABLE;
+  /* The parent end faces the other way from the child's (see
+   * uv__aros_pipe_child_reads); the stream is open in that one direction. */
+  if (uv__aros_pipe_child_reads(container, index))
+    flags = UV_HANDLE_WRITABLE;
+  else
+    flags = UV_HANDLE_READABLE;
 
   err = uv__stream_open(container->data.stream, fds[0], flags);
+  D(bug("[uv_spawn] open_stream slot %d: uv__stream_open(%d, 0x%x)=%d -> fd=%d flags=0x%x\n",
+        index, fds[0], flags, err, container->data.stream->io_watcher.fd,
+        container->data.stream->flags));
   if (err != 0)
     uv__aros_unregister_dos_pipe(fds[0]);
   return err;
@@ -398,6 +427,7 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
   int (*pipes)[2] = pipes_storage;
   int stdio_count;
   volatile int child_error;
+  char** volatile saved_environ;
   pid_t pid;
   int err;
   int i;
@@ -413,8 +443,14 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
   handle->exit_cb = options->exit_cb;
   handle->pid = 0;
 
-  if (options->flags &
-      (UV_PROCESS_DETACHED | UV_PROCESS_SETUID | UV_PROCESS_SETGID))
+  /*
+   * UV_PROCESS_DETACHED asks for a child that outlives its parent in its own
+   * process group.  An exec Process created by vfork()+exec has no process
+   * group and is never torn down with its parent (waitpid() merely collects
+   * its ETask), so the flag's contract already holds and is accepted; the
+   * `open` package spawns browsers this way.  Credentials cannot change.
+   */
+  if (options->flags & (UV_PROCESS_SETUID | UV_PROCESS_SETGID))
     return UV_ENOTSUP;
 
   stdio_count = options->stdio_count < 3 ? 3 : options->stdio_count;
@@ -428,10 +464,19 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
     pipes[i][0] = pipes[i][1] = -1;
 
   for (i = 0; i < options->stdio_count; i++) {
-    err = uv__aros_process_init_stdio(&options->stdio[i], pipes[i]);
+    err = uv__aros_process_init_stdio(&options->stdio[i], i, pipes[i]);
     if (err != 0)
       goto fail;
   }
+
+  D(bug("[uv_spawn] file=%s argv[1]=%s cwd=%s flags=0x%x stdio_count=%d\n",
+        options->file, options->args[0] ? (options->args[1] ? options->args[1] : "") : "",
+        options->cwd ? options->cwd : "(inherit)", (unsigned)options->flags,
+        options->stdio_count));
+  for (i = 0; i < stdio_count; i++)
+    D(bug("[uv_spawn] pre-vfork slot %d: flags=0x%x parent=%d child=%d\n", i,
+          i < options->stdio_count ? options->stdio[i].flags : 0,
+          pipes[i][0], pipes[i][1]));
 
   child_error = 0;
   pid = vfork();
@@ -441,8 +486,6 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
   }
 
   if (pid == 0) {
-    extern char** environ;
-
     for (i = 0; i < stdio_count; i++) {
       int source = pipes[i][1];
       int nullfd;
@@ -463,17 +506,28 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
     }
 
     /*
-     * PosixC vfork shares fd.library's descriptor namespace until exec.
-     * Closing the parent endpoint here would therefore destroy the descriptor
-     * the parent loop must adopt.  Close only the created child endpoint after
-     * dup2() has retained its fcb through numbered stdio.  Inherited
-     * descriptors remain owned by their caller.
+     * The pretend-child runs against the launcher's *copy* of the parent's
+     * descriptor table (posixc __init_fd -> __copy_fdarray under
+     * VFORK_PARENT; each copied slot bumps the shared fcb's opencount and
+     * adds the child table as a holder of the number in fd.library), so a
+     * close() here only drops the child table's reference: the parent's own
+     * slot for the same endpoint survives and is closed by the parent below.
+     * (Before fd.library counted holders, this close() freed the system-wide
+     * number under the parent: its later close() got EBADF, the PIPE: writer
+     * handle was never Closed and the reader never saw EOF.)
+     * Both created endpoints are dropped from the child table once dup2() has
+     * retained the child endpoint through numbered stdio; the exec'd program
+     * only inherits stdio anyway.  Inherited descriptors remain owned by
+     * their caller.
      */
     for (i = 0; i < stdio_count; i++) {
       if (i < options->stdio_count &&
-          (options->stdio[i].flags & UV_CREATE_PIPE) &&
-          pipes[i][1] >= stdio_count)
-        close(pipes[i][1]);
+          (options->stdio[i].flags & UV_CREATE_PIPE)) {
+        if (pipes[i][1] >= stdio_count)
+          close(pipes[i][1]);
+        if (pipes[i][0] >= stdio_count)
+          close(pipes[i][0]);
+      }
     }
 
     if (options->cwd != NULL && chdir(options->cwd) != 0) {
@@ -481,13 +535,31 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
       _exit(127);
     }
 
-    if (options->env != NULL)
+    /*
+     * vfork(): this runs on the parent's memory, so pointing environ at the
+     * caller's array is seen by the parent too.  The child copies the array
+     * into its own local variables inside execvp() (__exec_prepare runs on
+     * the launcher before vfork() returns here), after which the parent puts
+     * its environ back: node frees options->env right after uv_spawn(), and
+     * a parent left pointing at it read freed memory on its next
+     * uv_os_environ() (process.env enumeration).
+     */
+    if (options->env != NULL) {
+      saved_environ = environ;
       environ = options->env;
+    }
 
     execvp(options->file, options->args);
     child_error = errno;
     _exit(127);
   }
+
+  if (options->env != NULL)
+    environ = saved_environ;
+
+  for (i = 0; i < stdio_count; i++)
+    D(bug("[uv_spawn] post-vfork pid=%d child_error=%d slot %d: parent=%d child=%d\n",
+          (int)pid, child_error, i, pipes[i][0], pipes[i][1]));
 
   if (child_error != 0) {
     int status;
@@ -504,13 +576,14 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
 
   for (i = 0; i < options->stdio_count; i++) {
     /*
-     * The vfork child already closed each created child endpoint in the shared
-     * descriptor namespace after dup2().  Do not close the stale number a
-     * second time in uv__aros_process_open_stream().
+     * uv__aros_process_open_stream() closes the parent's own slot for the
+     * child endpoint (pipes[i][1]).  That slot is distinct from the one the
+     * pretend-child closed in its copied table, and it must go: PIPE: only
+     * reports EOF once the last writer is gone, so a parent still holding
+     * the child's write end never saw the child's stdout end (execFile()
+     * then completed only through its own timeout, with empty output).
      */
-    if (options->stdio[i].flags & UV_CREATE_PIPE)
-      pipes[i][1] = -1;
-    err = uv__aros_process_open_stream(&options->stdio[i], pipes[i]);
+    err = uv__aros_process_open_stream(&options->stdio[i], i, pipes[i]);
     if (err != 0)
       goto fail_active;
     pipes[i][0] = -1; /* owned by the stream */

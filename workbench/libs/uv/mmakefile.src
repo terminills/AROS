@@ -245,3 +245,12 @@ AROSFILES := \
 #MM- workbench-libs-uv-tcpdirectionaltest : workbench-libs-uv
 
 %common
+
+# Spawn bring-up diagnostic: the lifecycle test with every return value
+# printed, run in codex's stdio shape and in node's (READABLE|WRITABLE).
+%build_prog mmake=workbench-libs-uv-spawndiagtest \
+    progname=UVSpawnDiagTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVSpawnDiagTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-spawndiagtest : workbench-libs-uv
