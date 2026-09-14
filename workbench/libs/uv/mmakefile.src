@@ -1,4 +1,6 @@
 #
+#   Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
 #   Generate uv.library -- the libuv async runtime as a shared AROS library.
 #
 #   Core-first port: no POSIX socket layer yet, so this builds libuv's
@@ -61,9 +63,16 @@ USER_CPPFLAGS := $(LIBUV_CPPFLAGS)
 USER_LDFLAGS += -lpthread
 # Route generic close/read/write for socket fds to CloseSocket/recv/send
 # (src-aros/aros-net.c __wrap_*). Non-socket fds fall through to __real_*.
-USER_LDFLAGS += -Wl,--wrap=close -Wl,--wrap=read -Wl,--wrap=write
+# aros/features.h mangles every posixc function (POSIXC_MANGLE_FUNCS, so
+# write() is emitted as __posixc_write): the wrap must name the MANGLED
+# symbol or it never matches a reference and libuv's socket I/O silently
+# lands in posixc.library's fd table (EBADF at best, some unrelated open
+# file at worst).  aros-net.c #errors if the mangling ever goes away.
+USER_LDFLAGS += -Wl,--wrap=__posixc_close -Wl,--wrap=__posixc_read \
+                -Wl,--wrap=__posixc_write
 # uv_poll's uv__nonblock_fcntl toggles O_NONBLOCK; route socket fds to
-# IoctlSocket(FIONBIO) via src-aros/aros-net.c __wrap_fcntl.
+# IoctlSocket(FIONBIO) via src-aros/aros-net.c __wrap_fcntl.  fcntl() is
+# variadic and declared plain in fcntl.h, so it is NOT mangled.
 USER_LDFLAGS += -Wl,--wrap=fcntl
 
 # AROS glue + custom backend, compiled from the port dir (not the tarball).

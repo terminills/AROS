@@ -1,4 +1,6 @@
 /*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
     bsdsocket-backed POSIX socket layer for the AROS libuv port.
 
     AROS bsdsocket sockets live in a SEPARATE fd namespace from posixc files, and
@@ -9,8 +11,11 @@
         global SocketBase;
       - keep a REGISTRY of which fds are sockets (set on socket()/accept());
       - route close/read/write for registered fds to CloseSocket/recv/send via a
-        linker --wrap layer (__wrap_close/read/write), falling through to
-        __real_* (posixc) for file fds.
+        linker --wrap layer, falling through to posixc for file fds.  posixc
+        mangles its entry points (close -> __posixc_close, see
+        POSIXC_MANGLE_FUNCS), so the wrap is on the mangled name:
+        --wrap=__posixc_close gives __wrap___posixc_close/__real___posixc_close.
+        A --wrap=close would bind nothing and route silently fall through.
 
     bsdsocket and posixc have independent descriptor tables and both allocate
     from zero. Keep sockets in the upper half of WaitSelect's descriptor range
@@ -240,6 +245,10 @@ struct Library *uv__aros_socketbase(void)
 
 #define BASE (SocketBase ? SocketBase : uv__aros_socketbase())
 
+/* A shim must never return -1 with errno untouched: the caller (libuv's
+   UV__ERR(errno)) would report whatever the previous call left behind. */
+static int no_base(void) { errno = ENOSYS; return -1; }
+
 int socket(int domain, int type, int protocol)
 {
     int fd;
@@ -304,7 +313,7 @@ int connect(int s, const struct sockaddr *name, socklen_t namelen)
         a.sin_port        = htons(port);
         return __connect_WB(SocketBase, s, (struct sockaddr *)&a, sizeof(a));
     }
-    return BASE ? __connect_WB(SocketBase, s, (struct sockaddr *)name, namelen) : -1;
+    return BASE ? __connect_WB(SocketBase, s, (struct sockaddr *)name, namelen) : no_base();
 }
 
 int bind(int s, const struct sockaddr *name, socklen_t namelen)
@@ -329,38 +338,38 @@ int bind(int s, const struct sockaddr *name, socklen_t namelen)
             return -1;
         return 0;
     }
-    return BASE ? __bind_WB(SocketBase, s, (struct sockaddr *)name, namelen) : -1;
+    return BASE ? __bind_WB(SocketBase, s, (struct sockaddr *)name, namelen) : no_base();
 }
 
 int listen(int s, int backlog)
-{ return BASE ? __listen_WB(SocketBase, s, backlog) : -1; }
+{ return BASE ? __listen_WB(SocketBase, s, backlog) : no_base(); }
 
 ssize_t send(int s, const void *buf, size_t len, int flags)
-{ return BASE ? __send_WB(SocketBase, s, (void *)buf, len, flags) : -1; }
+{ return BASE ? __send_WB(SocketBase, s, (void *)buf, len, flags) : no_base(); }
 
 ssize_t recv(int s, void *buf, size_t len, int flags)
-{ return BASE ? __recv_WB(SocketBase, s, buf, len, flags) : -1; }
+{ return BASE ? __recv_WB(SocketBase, s, buf, len, flags) : no_base(); }
 
 ssize_t sendto(int s, const void *buf, size_t len, int flags,
                const struct sockaddr *to, socklen_t tolen)
 { return BASE ? __sendto_WB(SocketBase, s, (void *)buf, len, flags,
-                            (struct sockaddr *)to, tolen) : -1; }
+                            (struct sockaddr *)to, tolen) : no_base(); }
 
 ssize_t recvfrom(int s, void *buf, size_t len, int flags,
                  struct sockaddr *from, socklen_t *fromlen)
-{ return BASE ? __recvfrom_WB(SocketBase, s, buf, len, flags, from, fromlen) : -1; }
+{ return BASE ? __recvfrom_WB(SocketBase, s, buf, len, flags, from, fromlen) : no_base(); }
 
 int setsockopt(int s, int level, int optname, const void *optval, socklen_t optlen)
-{ return BASE ? __setsockopt_WB(SocketBase, s, level, optname, (void *)optval, optlen) : -1; }
+{ return BASE ? __setsockopt_WB(SocketBase, s, level, optname, (void *)optval, optlen) : no_base(); }
 
 int getsockopt(int s, int level, int optname, void *optval, socklen_t *optlen)
-{ return BASE ? __getsockopt_WB(SocketBase, s, level, optname, optval, optlen) : -1; }
+{ return BASE ? __getsockopt_WB(SocketBase, s, level, optname, optval, optlen) : no_base(); }
 
 int getsockname(int s, struct sockaddr *name, socklen_t *namelen)
-{ return BASE ? __getsockname_WB(SocketBase, s, name, namelen) : -1; }
+{ return BASE ? __getsockname_WB(SocketBase, s, name, namelen) : no_base(); }
 
 int getpeername(int s, struct sockaddr *name, socklen_t *namelen)
-{ return BASE ? __getpeername_WB(SocketBase, s, name, namelen) : -1; }
+{ return BASE ? __getpeername_WB(SocketBase, s, name, namelen) : no_base(); }
 
 /* socketpair(): bsdsocket has no AF_UNIX socketpair, so emulate it over an
    AF_INET 127.0.0.1 loopback pair -- listen on an ephemeral port, connect a
@@ -412,27 +421,38 @@ fail:
     return -1;
 }
 
-/* --- close/read/write routing via linker --wrap --- */
-extern int     __real_close(int fd);
-extern ssize_t __real_read(int fd, void *buf, size_t n);
-extern ssize_t __real_write(int fd, const void *buf, size_t n);
+/* --- close/read/write routing via linker --wrap ---
+   aros/features.h renames every posixc function to __posixc_<name>
+   (POSIXC_MANGLE_FUNCS), so the symbols libuv actually references - and
+   therefore the ones the mmakefile wraps - are the mangled spellings.
+   Wrapping the plain names matched nothing: socket reads/writes went to
+   posixc.library's fd table and close() leaked the bsdsocket socket. */
+#ifndef POSIXC_MANGLE_FUNCS
+#error "aros-net.c expects mangled posixc symbols; update the --wrap names in mmakefile.src"
+#endif
+#define UV_WRAP(name) __wrap___posixc_##name
+#define UV_REAL(name) __real___posixc_##name
 
-int __wrap_close(int fd)
+extern int     UV_REAL(close)(int fd);
+extern ssize_t UV_REAL(read)(int fd, void *buf, size_t n);
+extern ssize_t UV_REAL(write)(int fd, const void *buf, size_t n);
+
+int UV_WRAP(close)(int fd)
 {
     if (uv__aros_is_socket(fd)) {
-        int r = SocketBase ? __CloseSocket_WB(SocketBase, fd) : -1;
+        int r = SocketBase ? __CloseSocket_WB(SocketBase, fd) : no_base();
         reg_del(fd);
         ux_clr(fd);   /* JOB-0033: clear AF_UNIX tag (libuv unlinks the .sock path) */
         return r;
     }
     uv__aros_unregister_dos_pipe(fd);
-    return __real_close(fd);
+    return UV_REAL(close)(fd);
 }
 
-ssize_t __wrap_read(int fd, void *buf, size_t n)
+ssize_t UV_WRAP(read)(int fd, void *buf, size_t n)
 {
     if (uv__aros_is_socket(fd))
-        return SocketBase ? __recv_WB(SocketBase, fd, buf, n, 0) : -1;
+        return SocketBase ? __recv_WB(SocketBase, fd, buf, n, 0) : no_base();
     /*
      * DOS PIPE: reads are blocking.  The event backend dispatches them only
      * after ACTION_WAIT_CHAR says data or EOF is ready, but uv__read() may
@@ -443,20 +463,22 @@ ssize_t __wrap_read(int fd, void *buf, size_t n)
         errno = EAGAIN;
         return -1;
     }
-    return __real_read(fd, buf, n);
+    return UV_REAL(read)(fd, buf, n);
 }
 
-ssize_t __wrap_write(int fd, const void *buf, size_t n)
+ssize_t UV_WRAP(write)(int fd, const void *buf, size_t n)
 {
     if (uv__aros_is_socket(fd))
-        return SocketBase ? __send_WB(SocketBase, fd, (void *)buf, n, 0) : -1;
-    return __real_write(fd, buf, n);
+        return SocketBase ? __send_WB(SocketBase, fd, (void *)buf, n, 0) : no_base();
+    return UV_REAL(write)(fd, buf, n);
 }
 
 /* --- fcntl routing via linker --wrap ---
    libuv's uv__nonblock_fcntl() toggles O_NONBLOCK with F_GETFL/F_SETFL, which
    operate on posixc fds -- meaningless for a bsdsocket fd. Route socket fds to
-   IoctlSocket(FIONBIO); non-socket fds fall through to posixc __real_fcntl. */
+   IoctlSocket(FIONBIO); non-socket fds fall through to posixc __real_fcntl.
+   fcntl() is variadic and declared plain (not via POSIXCFUNC), so unlike
+   close/read/write it keeps its unmangled name. */
 extern int __real_fcntl(int fd, int cmd, ...);
 
 int __wrap_fcntl(int fd, int cmd, ...)
