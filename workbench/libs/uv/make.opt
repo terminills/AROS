@@ -9,7 +9,13 @@ ARCHSRCDIR   := $(PORTSDIR)/libuv/libuv/libuv-v$(LIBUVVERSION)
 # async, threadpool, fs) references struct sockaddr et al only in declarations,
 # so compiling needs the headers, NOT a socket implementation. pthread.h and
 # semaphore.h come from compiler/pthread.
+# AROS_HAVE_TTY_BACKEND: a terminal emulator exists (consoleng.device behind
+# the CONNG: mount), so uv_guess_handle() reports an interactive console as
+# UV_TTY and node builds a real tty.WriteStream over it (raw mode via termios
+# -> DOS SetMode, TIOCGWINSZ geometry). Without it every console is UV_FILE
+# and an Ink TUI never gets isTTY - see aros-stubs.c uv_guess_handle().
 LIBUV_CPPFLAGS := -D_GNU_SOURCE -DUV_AROS_INTERNAL_BUILD \
+                  -DAROS_HAVE_TTY_BACKEND \
                   -include $(SRCDIR)/$(CURDIR)/aros-compat.h
 # Port-local headers AROS lacks (poll.h etc) -- must precede the tarball/network
 # include dirs.
