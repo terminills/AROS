@@ -29,7 +29,7 @@
 #include "__fdesc.h"
 #include "__vfork.h"
 
-static BOOL containswhite(const char *str);
+static BOOL needsquote(const char *str);
 static char *escape(const char *str);
 static char *appendarg(char *argptr, int *argptrsize, const char *arg, APTR pool);
 static char *appendargs(char *argptr, int *argptrsize, char *const args[], APTR pool);
@@ -677,11 +677,33 @@ void __exec_cleanup_array()
 /* Support functions */
 /*********************/
 
-/* Return TRUE if there are any white spaces in the string */
-static BOOL containswhite(const char *str)
+/* Return TRUE if the argument must be quoted to survive as one argv
+   element.  The line built here is parsed by ReadArgs()/ReadItem() in the
+   child (and by the C runtime's process_cmdline() for posixc programs).
+   ReadItem() ends an unquoted item not only at white space but also at '='
+   (the KEY=value form), so an unquoted URL query string such as
+   "...?code=true&client_id=..." splits into several items and ReadArgs()
+   fails with ERROR_TOO_MANY_ARGS.  Both parsers strip quotes and undo the
+   '*' escapes escape() adds, and neither matches a quoted item against a
+   template keyword, so quote exactly the arguments whose unquoted form
+   would be read differently: those with white space, '=' or '"', a '*'
+   (escape character inside quotes, kept literal by quoting+escaping), the
+   empty argument (otherwise dropped from argv), and a lone '?' (which
+   ReadArgs() would take as the template query).  Plain words stay
+   unquoted so a KEY or /S switch passed to a ReadArgs() command still
+   matches its keyword. */
+static BOOL needsquote(const char *str)
 {
+    if(*str == '\0')
+        return TRUE;
+    if(str[0] == '?' && str[1] == '\0')
+        return TRUE;
     while(*str != '\0')
-        if(isspace(*str++)) return TRUE;
+    {
+        if(isspace(*str) || *str == '=' || *str == '"' || *str == '*')
+            return TRUE;
+        str++;
+    }
     return FALSE;
 }
 
@@ -758,7 +780,7 @@ static char *appendargs(char *argptr, int *argssizeptr, char *const args[], APTR
     
     for (argsit = args; *argsit && argptr; argsit++)
     {
-        if(containswhite(*argsit))
+        if(needsquote(*argsit))
         {
             char *escaped = escape(*argsit);
             if(!escaped)
