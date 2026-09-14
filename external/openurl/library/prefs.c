@@ -3,6 +3,7 @@
  openurl.library - universal URL display and browser launcher library
  Copyright (C) 1998-2005 by Troels Walsted Hansen, et al.
  Copyright (C) 2005-2018 openurl.library Open Source Team
+ AROS changes Copyright (C) 2026, The AROS Development Team.
 
  This library is free software; it has been placed in the public domain
  and you can freely redistribute it and/or modify it. Please note, however,
@@ -104,13 +105,13 @@ void initPrefs(struct URL_Prefs *p)
 
 /**************************************************************************/
 
-static void addBrowser(struct URL_Prefs *p, const char *name, const char *path, const char *port, const char *show, const char *toFront, const char *open, const char *openWin)
+static void addBrowser(struct URL_Prefs *p, ULONG flags, const char *name, const char *path, const char *port, const char *show, const char *toFront, const char *open, const char *openWin)
 {
   struct URL_BrowserNode *bn;
 
   if((bn = allocArbitrateVecPooled(sizeof(*bn))) != NULL)
   {
-    bn->ubn_Flags = UNF_DISABLED;
+    bn->ubn_Flags = flags;
     strlcpy(bn->ubn_Name, name, sizeof(bn->ubn_Name));
     strlcpy(bn->ubn_Path, path, sizeof(bn->ubn_Path));
     strlcpy(bn->ubn_Port, port, sizeof(bn->ubn_Port));
@@ -171,32 +172,39 @@ void setDefaultPrefs(struct URL_Prefs *p)
   p->up_DefLaunch       = DEF_DefLaunch;
 
   // Browsers: Chromium
-  // First in the list, so it is the default on a system that ships it. It has
-  // no ARexx port, so the port/show/tofront/open fields are empty and every
-  // request goes through the launch command - which is what we want anyway:
-  // Chromium's own single-instance handling takes a URL on an existing
-  // instance rather than starting a second browser.
-  // NOTE: this only works because the launcher below asks for a stack big
+  // First in the list, so it is the default on a system that ships it. A
+  // running Chromium owns the CHROMIUM message port (process_singleton_aros.cc,
+  // OWB-style verbs), so a second request lands as a tab in the running
+  // browser instead of starting a second one - which cannot reserve its
+  // PartitionAlloc range next to the first and CHECK-fails. Without the port
+  // (no browser running, or a Chromium older than the port) the request goes
+  // through the launch command as before.
+  // Enabled (the other defaults are UNF_DISABLED until the prefs program
+  // turns them on): with no OpenURL.prefs at all - a fresh install, the
+  // Live CD - sendToBrowser() skips disabled nodes and every URL_Open()
+  // failed with "Could not launch browser", so a shipped browser has to be
+  // usable out of the box.
+  // NOTE: the launch only works because the launcher asks for a stack big
   // enough for Chromium; see NP_STACKSIZE in api.c.
-  addBrowser(p, "Chromium", "SYS:Applications/Internet/Chromium/Chromium \"%u\"", "", "", "", "", "");
+  addBrowser(p, 0, "Chromium", "SYS:Applications/Internet/Chromium/Chromium \"%u\"", "CHROMIUM", "SHOW", "TOFRONT", "OPENURL \"%u\"", "NEWWINDOW \"%u\"");
 
   // Browsers: OWB
-  addBrowser(p, "OWB", "OWB \"%u\"", "OWB", "", "SCREENTOFRONT", "OPENURL \"%u\"", "OPENURL \"%u\"");
+  addBrowser(p, UNF_DISABLED, "OWB", "OWB \"%u\"", "OWB", "", "SCREENTOFRONT", "OPENURL \"%u\"", "OPENURL \"%u\"");
 
   // Browsers: MUIOWB
-  addBrowser(p, "MUIOWB", "MUIOWB \"%u\"", "MUIOWB", "SHOW", "SCREENTOFRONT", "OPEN NAME=\"%u\"", "OPEN NAME=\"%u\" NEWPAGE");
+  addBrowser(p, UNF_DISABLED, "MUIOWB", "MUIOWB \"%u\"", "MUIOWB", "SHOW", "SCREENTOFRONT", "OPEN NAME=\"%u\"", "OPEN NAME=\"%u\" NEWPAGE");
 
   // Browsers: NetSurf
-  addBrowser(p, "NetSurf", "NetSurf \"%u\"", "NETSURF", "", "TOFRONT", "OPEN \"%u\"", "OPEN \"%u\" NEW");
+  addBrowser(p, UNF_DISABLED, "NetSurf", "NetSurf \"%u\"", "NETSURF", "", "TOFRONT", "OPEN \"%u\"", "OPEN \"%u\" NEW");
 
   // Browsers: IBrowse
-  addBrowser(p, "IBrowse", "IBrowse \"%u\"", "IBROWSE", "SHOW", "SCREENTOFRONT", "GOTOURL \"%u\"", "NEWWINDOW \"%u\"");
+  addBrowser(p, UNF_DISABLED, "IBrowse", "IBrowse \"%u\"", "IBROWSE", "SHOW", "SCREENTOFRONT", "GOTOURL \"%u\"", "NEWWINDOW \"%u\"");
 
   // Browsers: AWeb
-  addBrowser(p, "AWeb", "AWeb \"%u\"", "AWEB", "ICONIFY SHOW", "SCREENTOFRONT", "OPEN \"%u\"", "NEW \"%u\"");
+  addBrowser(p, UNF_DISABLED, "AWeb", "AWeb \"%u\"", "AWEB", "ICONIFY SHOW", "SCREENTOFRONT", "OPEN \"%u\"", "NEW \"%u\"");
 
   // Browsers: Voyager
-  addBrowser(p, "Voyager", "V \"%u\"", "VOYAGER", "SHOW", "SCREENTOFRONT", "OPENURL \"%u\"", "OPENURL \"%u\" NEWWIN");
+  addBrowser(p, UNF_DISABLED, "Voyager", "V \"%u\"", "VOYAGER", "SHOW", "SCREENTOFRONT", "OPENURL \"%u\"", "OPENURL \"%u\" NEWWIN");
 
   // Mailers: YAM
   addMailer(p, "YAM", "YAM MAILTO=\"%a\" SUBJECT=\"%s\" LETTER=\"%f\"", "YAM", "SHOW", "SCREENTOFRONT", "MAILWRITE;WRITETO \"%a\";WRITESUBJECT \"%s\";WRITEEDITOR \"CLEAR\";WRITEEDITOR \"TEXT %b\"");
