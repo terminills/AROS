@@ -54,7 +54,7 @@ LONG readLine(ShellState *ss, struct CommandLineInterface *cli, Buffer *out, WOR
     BOOL comment = FALSE;
     BOOL quoted = FALSE;
     BOOL escaped = FALSE;
-    LONG c, i, j, len;
+    LONG c, j, len;
     TEXT pchar[3], mchar[3];
 
     len = GetVar("_pchar", pchar, sizeof pchar, GVF_LOCAL_ONLY | LV_VAR);
@@ -69,8 +69,19 @@ LONG readLine(ShellState *ss, struct CommandLineInterface *cli, Buffer *out, WOR
     ss->pchar0 = pchar[0];
     ss->mchar0 = mchar[0];
 
-    for (i = 0, j = 0; i < LINE_MAX; ++i)
+    /*
+     * The line is appended to 'out' one character at a time, so it is only
+     * bounded by memory: a command line built by another program (openurl's
+     * browser launch with a 400-character OAuth URL, a generated Execute
+     * script) is routinely longer than the 512 characters the fixed limit
+     * used to allow, and failing it with ERROR_LINE_TOO_LONG just dropped
+     * the command.  'buf' is re-read after every append because the buffer
+     * may move when it grows.
+     */
+    for (j = 0;;)
     {
+        TEXT ch;
+
         c = FGetC(fh);
 
         if (c == ENDSTREAMCH)
@@ -103,19 +114,17 @@ LONG readLine(ShellState *ss, struct CommandLineInterface *cli, Buffer *out, WOR
         else if (comment)
             continue;
 
-        buf[j++] = c;
+        ch = c;
+        if (bufferAppend(&ch, 1, out, ss) != 0)
+            return ERROR_NO_FREE_STORE;
+        buf = out->buf;
+        j++;
 
         if (c == '\n') /* end of line */
             break;
     }
 
-    if (i >= LINE_MAX) {
-        D(bug("[Shell] %s: ERROR_LINE_TOO_LONG\n", __func__);)
-        return ERROR_LINE_TOO_LONG;
-    }
-
-    buf[j] = '\0';
-    bufferAppend(buf, j, out, ss);
+    /* bufferAppend() kept out->len == j and NUL-terminated the line */
 
     if (checkPipe(pchar, mchar, buf, j))
         bufferInsert(PIPE_NAME, strlen(PIPE_NAME), out, ss);

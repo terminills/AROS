@@ -9,7 +9,6 @@
 #include <dos/dos.h>	/* for BPTR		*/
 
 #define FILE_MAX 256 /* max length of file name */
-#define LINE_MAX 512 /* max length of full command line */
 
 #define MAXARGS    32
 #define MAXARGLEN  32
