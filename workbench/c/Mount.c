@@ -669,6 +669,13 @@ void InitParams(IPTR *params)
   HandlerString          = NULL;
   DeviceString           = NULL;
   StartupString          = NULL;
+  /* Per-mount keywords too: with a pattern mount (Startup-Sequence's
+     DEVS:DOSDrivers/~(...)) one file's ACTIVATE=1 tooltype used to carry
+     over into every mount parsed after it, so e.g. CONNG: got its handler
+     (and its console window) started at boot because AUDIO.info sorts
+     first. */
+  Activate               = 0;
+  ForceLoad              = 0;
 }
 
 void FreeStuff(void)
