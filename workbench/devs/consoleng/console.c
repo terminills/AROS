@@ -14,6 +14,9 @@
 #include <proto/console.h>
 #include <proto/intuition.h>
 #include <proto/keymap.h>
+#include <proto/graphics.h>
+#include <proto/diskfont.h>
+#include <graphics/text.h>
 
 #include <exec/resident.h>
 #include <exec/errors.h>
@@ -155,11 +158,62 @@ static int GM_UNIQUENAME(Expunge) (LIBBASETYPEPTR ConsoleDevice)
  *
  * A caller that DOES pass a window keeps owning it; only what we opened
  * ourselves is tracked and closed again.
+ *
+ * THE FONT. A fresh window inherits the screen's font, and on a stock
+ * install that is a bitmap font (ttcourier/topaz): no .otag, no outline
+ * engine, so every codepoint above Latin-1 renders as the glyph path's
+ * reason digit ('2' = CONSOLENG_GLYPH_NOOTAG). The blocks, box lines and
+ * arrows a TUI is drawn with are exactly what this device exists for, so
+ * the window it opens for itself gets DejaVu Sans Mono - the monospace face
+ * the tree ships for this coverage - at the screen font's size. The unit's
+ * cell grid is derived from the RastPort font at New(), so this has to
+ * happen before the unit object is created. A caller-supplied window keeps
+ * whatever font its owner chose; OSC 50 can still switch either later.
  */
-static struct Window *ConsolengOpenOwnWindow(LIBBASETYPEPTR ConsoleDevice)
+#define CONSOLENG_OWNWIN_FONT   "DejaVuSansMono.font"
+#define CONSOLENG_OWNWIN_MINYSIZE 12
+
+static struct TextFont *ConsolengOpenOwnWindowFont(LIBBASETYPEPTR ConsoleDevice,
+    struct Screen *scr, struct Window *win)
+{
+    struct Library *GfxBase = TaggedOpenLibrary(TAGGEDOPEN_GRAPHICS);
+    struct Library *DiskfontBase = OpenLibrary("diskfont.library", 0);
+    struct TextFont *tf = NULL;
+
+    if (GfxBase && DiskfontBase)
+    {
+        struct TextAttr ta;
+
+        ta.ta_Name  = CONSOLENG_OWNWIN_FONT;
+        ta.ta_YSize = scr->Font ? scr->Font->ta_YSize : 0;
+        if (ta.ta_YSize < CONSOLENG_OWNWIN_MINYSIZE)
+            ta.ta_YSize = CONSOLENG_OWNWIN_MINYSIZE;
+        ta.ta_Style = FS_NORMAL;
+        ta.ta_Flags = 0;
+
+        tf = OpenDiskFont(&ta);
+        if (tf && (tf->tf_Flags & FPF_PROPORTIONAL))
+        {
+            /* the cell grid needs a fixed pitch; keep the screen font */
+            CloseFont(tf);
+            tf = NULL;
+        }
+        if (tf)
+            SetFont(win->RPort, tf);
+    }
+    if (DiskfontBase)
+        CloseLibrary(DiskfontBase);
+
+    return tf;
+}
+
+static struct Window *ConsolengOpenOwnWindow(LIBBASETYPEPTR ConsoleDevice,
+    struct TextFont **fontp)
 {
     struct Screen *scr;
     struct Window *win = NULL;
+
+    *fontp = NULL;
 
     /* Lock the default public screen rather than assuming one: a console can
        legitimately be opened before Wanderer, and LockPubScreen(NULL) failing
@@ -205,6 +259,9 @@ static struct Window *ConsolengOpenOwnWindow(LIBBASETYPEPTR ConsoleDevice)
         win = OpenWindowTagList(NULL, wintags);
     }
 
+    if (win)
+        *fontp = ConsolengOpenOwnWindowFont(ConsoleDevice, scr, win);
+
     UnlockPubScreen(NULL, scr);
 
     return win;
@@ -216,6 +273,7 @@ static int GM_UNIQUENAME(Open)
 {
     BOOL success = FALSE;
     struct Window *ownwin = NULL;
+    struct TextFont *ownfont = NULL;
 
     /* Keep compiler happy */
     flags = 0;
@@ -258,7 +316,7 @@ static int GM_UNIQUENAME(Open)
            without it every such open fails in consoleclass.c's New(). */
         if (ioreq->io_Data == NULL)
         {
-            ownwin = ConsolengOpenOwnWindow(ConsoleDevice);
+            ownwin = ConsolengOpenOwnWindow(ConsoleDevice, &ownfont);
             if (!ownwin)
             {
                 D(bug("consoleng/open: no window supplied and none could be"
@@ -321,9 +379,11 @@ static int GM_UNIQUENAME(Open)
                 {
                     ow->unit = ioreq->io_Unit;
                     ow->win  = ownwin;
+                    ow->font = ownfont;
                     AddTail((struct List *)&ConsoleDevice->ownWindows,
                             (struct Node *)&ow->node);
                     ownwin = NULL;      /* handed over to the list */
+                    ownfont = NULL;
                 }
             }
 
@@ -342,6 +402,12 @@ static int GM_UNIQUENAME(Open)
        so nothing else can be holding this window. */
     if (ownwin)
         CloseWindow(ownwin);
+    if (ownfont)
+    {
+        struct Library *GfxBase = TaggedOpenLibrary(TAGGEDOPEN_GRAPHICS);
+        if (GfxBase)
+            CloseFont(ownfont);
+    }
 
     ioreq->io_Error = IOERR_OPENFAIL;
 
@@ -358,6 +424,7 @@ static int GM_UNIQUENAME(Close)
         ULONG mid = OM_REMOVE;
         struct ConsolengOwnWin *ow;
         struct Window *ownwin = NULL;
+        struct TextFont *ownfont = NULL;
 
         /* Remove the consoe from the console list */
         ObtainSemaphore(&ConsoleDevice->unitListLock);
@@ -371,6 +438,7 @@ static int GM_UNIQUENAME(Close)
             {
                 Remove((struct Node *)&ow->node);
                 ownwin = ow->win;
+                ownfont = ow->font;
                 FreeMem(ow, sizeof(struct ConsolengOwnWin));
                 break;
             }
@@ -385,6 +453,13 @@ static int GM_UNIQUENAME(Close)
            layers. */
         if (ownwin)
             CloseWindow(ownwin);
+        /* ...and the font only once nothing renders with it any more. */
+        if (ownfont)
+        {
+            struct Library *GfxBase = TaggedOpenLibrary(TAGGEDOPEN_GRAPHICS);
+            if (GfxBase)
+                CloseFont(ownfont);
+        }
     }
 
     return TRUE;

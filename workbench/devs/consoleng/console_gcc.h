@@ -427,12 +427,15 @@ struct ConsoleBase
     struct Library *cb_UtilityBase;
 };
 
-/* One self-opened window, tied to the unit it was opened for. */
+/* One self-opened window, tied to the unit it was opened for.  font is the
+   outline font installed on its RastPort (NULL when the screen font had to
+   do); closed after the window. */
 struct ConsolengOwnWin
 {
-    struct MinNode  node;
-    struct Unit    *unit;
-    struct Window  *win;
+    struct MinNode   node;
+    struct Unit     *unit;
+    struct Window   *win;
+    struct TextFont *font;
 };
 
 #undef CB
