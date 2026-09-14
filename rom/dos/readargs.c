@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc:
 */
@@ -12,6 +12,7 @@
 #include <dos/rdargs.h>
 #include <dos/dosextens.h>
 #include <proto/utility.h>
+#include <string.h>
 
 #include "dos_intern.h"
 
@@ -189,7 +190,7 @@ static inline LONG is_question(BYTE * buff, LONG buffsize)
     /* Allocated resources */
     struct DAList *dalist = NULL;
     UBYTE *flags = NULL;
-    STRPTR strbuf = NULL, iline = NULL;
+    STRPTR strbuf = NULL, iline = NULL, argline = NULL;
     STRPTR *multvec = NULL, *argbuf = NULL;
     CONST_STRPTR numstr;
     ULONG multnum = 0, multmax = 0;
@@ -202,7 +203,8 @@ static inline LONG is_question(BYTE * buff, LONG buffsize)
     LONG it, item, chars, delthis;
     struct CSource lcs, *cs;
     BOOL is_file_not_buffer;
-    TEXT argbuff[256 + 1];        /* Maximum BCPL string length + injected \n + ASCIIZ */
+    TEXT argbuff[256 + 1];        /* Maximum BCPL string length + injected \n + ASCIIZ;
+                                     longer lines continue in argline */
 
     ASSERT_VALID_PTR(template);
     ASSERT_VALID_PTR(array);
@@ -301,9 +303,40 @@ static inline LONG is_question(BYTE * buff, LONG buffsize)
         }
 
         if (notempty)
-            FGets(input, lcs.CS_Buffer, sizeof(argbuff));
+        {
+            /*
+             * Read the whole line.  vbuf_inject() copies the command's
+             * argument string in full, whatever its length, so a line
+             * longer than argbuff (a long URL, a list of file names) is
+             * legal input; stopping after 256 characters cut a quoted item
+             * in two and ReadItem() reported it as ERROR_LINE_TOO_LONG.
+             * Keep reading into a growing heap buffer until the line ends.
+             */
+            ULONG asize = sizeof(argbuff);
+            ULONG alen = 0;
 
-        D(bug("[ReadArgs] Line: %s\n", argbuff));
+            while (FGets(input, lcs.CS_Buffer + alen, asize - alen))
+            {
+                STRPTR bigger;
+
+                alen += strlen(lcs.CS_Buffer + alen);
+                if (alen == 0 || lcs.CS_Buffer[alen - 1] == '\n' || alen < asize - 1)
+                    break;
+
+                bigger = (STRPTR)AllocVec(asize * 2, MEMF_ANY);
+                if (bigger == NULL)
+                {
+                    ERROR(ERROR_NO_FREE_STORE);
+                }
+                CopyMem(lcs.CS_Buffer, bigger, alen + 1);
+                FreeVec(argline);
+                argline = bigger;
+                lcs.CS_Buffer = argline;
+                asize *= 2;
+            }
+        }
+
+        D(bug("[ReadArgs] Line: %s\n", lcs.CS_Buffer));
 
         cs1 = lcs.CS_Buffer;
 
@@ -907,6 +940,7 @@ static inline LONG is_question(BYTE * buff, LONG buffsize)
 end:
     /* Cleanup and return. */
     FreeVec(iline);
+    FreeVec(argline);
     FreeVec(flags);
 
     if (error)
