@@ -1,4 +1,6 @@
 /*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
     Core-first link stubs for the AROS libuv port.
 
     The event loop (uv_loop + uv_timer) is functional, but it references entry
@@ -28,9 +30,12 @@
 #include <termios.h>
 #include <unistd.h>
 
-#ifndef UV_TTY_MODE_RAW_VT
-#define UV_TTY_MODE_RAW_VT UV_TTY_MODE_RAW
-#endif
+/* UV_TTY_MODE_RAW_VT (= 3) is an enum member that libuv-aros.diff adds to
+   uv.h, not a macro.  An "#ifndef UV_TTY_MODE_RAW_VT / #define ... RAW"
+   fallback used to live here; it was always taken, so uv_tty_set_mode()
+   below compared against 1 while node's TTYWrap::SetRawMode passes the enum
+   value 3 -> Ink's stdin.setRawMode(true) failed with EINVAL.  If the enum
+   is ever missing the build must fail, not silently degrade. */
 
 /* SocketBase now lives in src-aros/aros-net.c (opened lazily on first socket
    use). Byte-order helpers (htons/htonl in inet.c) resolve against it there. */
