@@ -71,7 +71,11 @@ SIPTR dopacket(SIPTR *res2, struct MsgPort *port, LONG action, SIPTR arg1, SIPTR
     struct List       deferredMsgs;
     struct Message   *msg;
 
-    ASSERT_VALID_PROCESS(me);
+    /* A plain Task is a legitimate caller here - see the temporary reply
+       port below - so the debug build must not raise AG_BadParm for one.
+       (consoleng.device's task seeks in an outline font through
+       FreeType and tripped this on every first glyph load.) */
+    ASSERT_VALID_TASK(&me->pr_Task);
 
     if (port == NULL)
     {
