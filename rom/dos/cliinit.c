@@ -641,10 +641,21 @@ static LONG internalBootCliHandler(void)
     AddBootAssign("SYS:S",                "S", DOSBase);
     AddBootAssign("SYS:Fonts",            "FONTS", DOSBase);
 
-    /* Let hidds in DRIVERS: directory be found by OpenLibrary */
+    /*
+     * Let hidds in DRIVERS: directory be found by OpenLibrary.
+     * DRIVERS: and the LIBS: multi-assign each need their own lock: an
+     * assign owns its locks, so a later 'Assign LIBS: <dir>' (non-ADD)
+     * UnLock()s every member of LIBS:.  With one shared lock that left
+     * DRIVERS: pointing at freed memory, and the next
+     * OpenLibrary("DRIVERS:xxx.hidd") handed the stale lock to the
+     * handler (cdrom-handler #GP on the Live CD).
+     */
     if ((lock = Lock("DEVS:Drivers", SHARED_LOCK)) != BNULL) {
+        BPTR liblock = DupLock(lock);
+
         AssignLock("DRIVERS", lock);
-        AssignAdd("LIBS", lock);
+        if (liblock != BNULL && !AssignAdd("LIBS", liblock))
+            UnLock(liblock);
     }
 
 #if !(mc68000)
