@@ -60,32 +60,32 @@ static auto *const NodeGetEntropyAnchor __attribute__((used)) = &getentropy;
  * so uv_mutex_destroy() faulted in uv1's own memset relwrapper with
  * CR2 = the StdCBase offset inside the missing base (JOB-0092, 2026-09-14).
  *
- * Give the expunging task its own uv1 base for the duration: EXPUNGELIB
- * hooks run before Remove()/set_libexpunge(), the EXIT set runs after the
- * fini_array/dtors sets and before the autoinit bases are closed.  A failed
- * open vetoes the expunge (LIBF_DELEXP stays set, lddemon retries later)
- * rather than letting the destructors run without a base.
+ * The expunge cannot give itself a base either: lddemon's LDFlush holds
+ * exec's LibList WRITE lock across RemLibrary()/Expunge, and
+ * OpenLibrary("uv1.library") takes the same lock in READ mode - on SMP the
+ * expunging task then spins forever in KrnSpinLock on its own lock (the
+ * pc-x86_64 guest froze that way on the first Chromium launch after C:Node
+ * had run, 2026-09-14: CPU0 in KrnSpinLock, s_Owner == the Chromium
+ * process, TDNestCnt 2).  Anything Expunge does must hold no exec list
+ * lock and must not load.
+ *
+ * So the EXPUNGELIB hook only asks uv1 whether this task can use it -
+ * uv_aros_task_has_base() reads the task's storage slot through exec and
+ * touches no rellib - and vetoes the expunge otherwise.  LIBF_DELEXP stays
+ * set; the next node process that closes the library (a task that opened
+ * uv1 through node's own init, holding no list lock) runs the real expunge
+ * from CloseLibrary.  A flush from a foreign task leaves node.library
+ * resident, which is the only outcome that is safe from that task.
  */
-static struct Library *NodeExpungeUv1Base;
+extern "C" int uv_aros_task_has_base(void);
 
 static int NodeExpungePrepare(LIBBASETYPEPTR lh)
 {
   (void)lh;
-  NodeExpungeUv1Base = OpenLibrary("uv1.library", 0);
-  return NodeExpungeUv1Base != nullptr;
-}
-
-static void NodeExpungeRelease(void)
-{
-  if (NodeExpungeUv1Base != nullptr) {
-    CloseLibrary(NodeExpungeUv1Base);
-    NodeExpungeUv1Base = nullptr;
-  }
+  return uv_aros_task_has_base();
 }
 
 ADD2EXPUNGELIB(NodeExpungePrepare, 0)
-/* Lowest priority: EXIT is walked in reverse, so this runs last. */
-ADD2EXIT(NodeExpungeRelease, -127)
 
 static std::shared_ptr<node::InitializationResult> NodeEmbedInitialization;
 static node::IsolateData *NodeEmbedIsolateData;

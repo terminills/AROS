@@ -85,7 +85,8 @@ AROSFILES := \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-net-test \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-dl \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-symbols \
-    $(SRCDIR)/$(CURDIR)/src-aros/aros-stubs
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-stubs \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-taskbase
 
 %build_module mmake=workbench-libs-uv \
   modname=uv1 modtype=library \
