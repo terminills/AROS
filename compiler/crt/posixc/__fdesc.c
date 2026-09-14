@@ -30,8 +30,12 @@
 
 static int __fdlib_available(struct PosixCIntBase *PosixCBase)
 {
+    /* The registry must count holders per number (FD_Share(), v51): with an
+       older fd.library the first close() of a number shared between a
+       vfork() parent and child would free it for both. */
     if (PosixCBase->PosixCFDBase == NULL)
-        PosixCBase->PosixCFDBase = OpenLibrary("fd.library", 0);
+        PosixCBase->PosixCFDBase = OpenLibrary("fd.library",
+                                               FD_LIBRARY_SHARE_VERSION);
 
     return PosixCBase->PosixCFDBase != NULL;
 }
@@ -255,6 +259,9 @@ int __getfirstfd(register int startfd)
         }
         FD_UNLOCK(PosixCBase);
 
+        /* Remember the reservation so __getfdslot() recognises it as ours
+           (see fd_reserved). */
+        PosixCBase->fd_reserved = got + 1;
         return got;
     }
 }
@@ -268,6 +275,9 @@ void __freefdslot(int fd)
 
     if (fd <= STDERR_FILENO || !__fdlib_available(PosixCBase))
         return;
+
+    if (PosixCBase->fd_reserved == fd + 1)
+        PosixCBase->fd_reserved = 0;
 
     FD_LOCK(PosixCBase);
     if (fd < FD_SLOTS(PosixCBase) && FD_ARRAY(PosixCBase)[fd]) {
@@ -342,19 +352,29 @@ int __getfdslot(int wanted_fd)
        numbers in the system-wide fd.library table (see __setfdesc()). */
     if (wanted_fd > STDERR_FILENO && __fdlib_available(PosixCBase)) {
         struct Library *FDBase = PosixCBase->PosixCFDBase;
-        /* A number already attributed to posixc is either the reservation
-           __getfirstfd() just made for this caller, or one a vfork child
-           inherited with the parent's descriptor table (__copy_fdarray):
-           those are reserved system-wide by the parent and shared, not
-           re-created.  Re-reserving would fail (EBUSY) and abort the child's
-           posixc OpenLib (seen as a spurious ENOMEM from fork()).  Only
-           reserve numbers not already owned by us. */
-        if (FD_GetOwner(wanted_fd) != FD_OWNER_POSIXC) {
+        /* Descriptor numbers are system-wide, so a number already attributed
+           to posixc is one of:
+             - the reservation __getfirstfd() just made for this caller
+               (fd_reserved): it already counts one holder, publish as is;
+             - one another descriptor table still holds - the parent's, when
+               a vfork child copies its table (__copy_fdarray), or a table a
+               close() just left a second holder of - so add this table as a
+               holder (FD_Share()).  Re-reserving would fail (EBUSY) and abort
+               the child's posixc OpenLib (seen as a spurious ENOMEM from
+               fork()); publishing without a holder would let the first
+               close() free the number under the other table.
+           Anything else is reserved fresh. */
+        if (PosixCBase->fd_reserved == wanted_fd + 1) {
+            PosixCBase->fd_reserved = 0;
+            error = 0;
+        } else if (FD_GetOwner(wanted_fd) == FD_OWNER_POSIXC) {
+            error = FD_Share(wanted_fd, FD_OWNER_POSIXC);
+        } else {
             error = FD_Reserve(wanted_fd, FD_OWNER_POSIXC, NULL);
-            if (error) {
-                __set_errno(PosixCBase, error);
-                return -1;
-            }
+        }
+        if (error) {
+            __set_errno(PosixCBase, error);
+            return -1;
         }
     }
 
@@ -779,6 +799,9 @@ static int __copy_fdarray(fdesc **__src_fd_array, int fd_slots)
     {
         if(__src_fd_array[i])
         {
+            /* The parent's table keeps holding number i: __getfdslot() adds
+               this table as a second holder in fd.library (FD_Share()), so
+               whichever side close()s first only drops its own hold. */
             if(__getfdslot(i) != i)
                 return 0;
 

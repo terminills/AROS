@@ -83,6 +83,12 @@ struct PosixCIntBase
        and dereferences freed/half-swapped memory. Initialised and held in
        the owner base only; borrowers reach it through __fd_owner(). */
     struct SignalSemaphore fd_sem;
+    /* Descriptor number this Task reserved in fd.library through
+       __getfirstfd() but has not published yet, stored as fd + 1 (0 = none).
+       __getfdslot() uses it to tell "my own fresh reservation" from "a
+       number another descriptor table (vfork child/parent) still holds",
+       which it must FD_Share() instead. */
+    int fd_reserved;
 
     /* __upath.c */
     char *upathbuf;  /* Buffer that holds intermediate converted paths */
