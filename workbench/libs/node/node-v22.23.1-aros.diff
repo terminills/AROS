@@ -2496,7 +2496,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    return scope.Escape(fun);
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node.cc
 --- node-v22.23.1/src/node.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node.cc	2026-09-13 02:12:04.236406548 -0500
++++ node-v22.23.1/src/node.cc	2026-09-13 23:21:46.353712018 -0500
 @@ -134,6 +134,15 @@
  #include <tuple>
  #include <vector>
@@ -2564,15 +2564,30 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
    // Cache the original command line to be
-@@ -905,6 +945,7 @@
+@@ -905,8 +945,22 @@
    // Node provides a "v8.setFlagsFromString" method to dynamically change flags.
    // Hence do not freeze flags when initializing V8. In a browser setting, this
    // is security relevant, for Node it's less important.
 +  NODE_AROS_PHASE("initialize-args v8-flags enter");
    V8::SetFlagsFromString("--no-freeze-flags-after-init");
  
++#ifdef __AROS__
++  // AROS has no lazily-committed address space: the platform mmap()
++  // (ArosMmap, deps/v8/src/base/platform/platform-posix.cc) backs every
++  // reservation with AllocMem(MEMF_CLEAR).  V8 sizes a wasm memory's
++  // backing store by its *maximum* (WasmMemoryObject::New: the engine
++  // maximum, 4 GiB, when the module declares none), so undici's llhttp --
++  // i.e. the first fetch() -- would commit and zero 4 GiB.  Cap the engine
++  // maximum at 128 MiB (2048 x 64 KiB pages); a --wasm-max-mem-pages on
++  // the command line still overrides this (SetFlagsFromCommandLine runs
++  // later).
++  V8::SetFlagsFromString("--wasm-max-mem-pages=2048");
++#endif
++
  #if defined(NODE_V8_OPTIONS)
-@@ -923,6 +964,7 @@
+   // Should come before the call to V8::SetFlagsFromCommandLine()
+   // so the user can disable a flag --foo at run-time by passing
+@@ -923,6 +977,7 @@
    // Specify this explicitly to avoid being affected by V8 changes to the
    // default value.
    V8::SetFlagsFromString("--rehash-snapshot");
@@ -2580,7 +2595,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    // TODO(joyeecheung): make this a per-env option and move the normalization
-@@ -933,10 +975,14 @@
+@@ -933,10 +988,14 @@
      per_process::cli_options->use_system_ca = true;
    }
  #endif  // HAVE_OPENSSL
@@ -2595,7 +2610,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
    if (!env_files.empty()) {
      CHECK(!per_process::v8_initialized);
-@@ -1035,8 +1081,10 @@
+@@ -1035,8 +1094,10 @@
  #endif
  
    if (!(flags & ProcessInitializationFlags::kDisableCLIOptions)) {
@@ -2606,7 +2621,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (exit_code != ExitCode::kNoFailure) return exit_code;
    }
  
-@@ -1112,6 +1160,7 @@
+@@ -1112,6 +1173,7 @@
  InitializeOncePerProcessInternal(const std::vector<std::string>& args,
                                   ProcessInitializationFlags::Flags flags =
                                       ProcessInitializationFlags::kNoFlags) {
@@ -2614,7 +2629,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    auto result = std::make_shared<InitializationResultImpl>();
    result->args_ = args;
  
-@@ -1121,12 +1170,16 @@
+@@ -1121,12 +1183,16 @@
      per_process::enabled_debug_list.Parse(nullptr);
    }
  
@@ -2631,7 +2646,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (result->exit_code_enum() != ExitCode::kNoFailure) {
        result->early_return_ = true;
        return result;
-@@ -1282,14 +1335,45 @@
+@@ -1282,14 +1348,45 @@
  #endif  // HAVE_OPENSSL
    }
  
@@ -2678,7 +2693,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
-@@ -1297,12 +1381,18 @@
+@@ -1297,12 +1394,18 @@
      absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
    }
  
@@ -2698,7 +2713,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
  #if NODE_USE_V8_WASM_TRAP_HANDLER
-@@ -1355,6 +1445,27 @@
+@@ -1355,6 +1458,27 @@
      ResetSignalHandlers();
    }
  
@@ -2726,7 +2741,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
      cppgc::ShutdownProcess();
    }
-@@ -1380,6 +1491,7 @@
+@@ -1380,6 +1504,7 @@
      // will never be fully cleaned up.
      per_process::v8_platform.Dispose();
    }
@@ -2734,7 +2749,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    crypto::CleanupCachedRootCertificates();
-@@ -1568,14 +1680,19 @@
+@@ -1568,14 +1693,19 @@
  }
  
  static ExitCode StartInternal(int argc, char** argv) {
