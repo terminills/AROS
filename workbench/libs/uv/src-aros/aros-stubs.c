@@ -19,10 +19,12 @@
 #define DEBUG 0
 #include <aros/debug.h>
 
+#include <dos/var.h>
 #include <exec/libraries.h>
 #include <exec/memory.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
+#include <utility/hooks.h>
 
 #include <netdb.h>
 #include <errno.h>
@@ -611,6 +613,104 @@ fail:
   if (pipes != pipes_storage)
     uv__free(pipes);
   return err;
+}
+
+/*
+ * process.env enumeration (RealEnvStore::Enumerate -> uv_os_environ).
+ *
+ * libuv's generic version walks `environ`.  In uv1.library that is ONE
+ * global for every client: stdcio's environ emulation fills it once, at
+ * library init, with a snapshot of the initialising task's DOS local
+ * variables, allocated from that opener's stdc pool.  Every later client -
+ * a C:Node beside ElectronShell, the VS Code extension host's spawns -
+ * read that same array, and once the pool that owned it was gone they read
+ * freed memory: strlen() faulted on 0x37f in uv__strdup() under
+ * uv_os_environ() (2026-09-15, run 23).
+ *
+ * The environment on AROS is the calling process's local variable list, so
+ * build the item list from ScanVars(GVF_LOCAL_ONLY) on every call: per
+ * process, current (setenv() changes are visible, which the static snapshot
+ * never showed) and without shared state.  Same source and scope as the
+ * stdcio snapshot; global ENV: variables are deliberately not enumerated,
+ * as there.  Items are laid out the way core.c and uv_os_free_environ()
+ * expect: one uv__malloc()ed "name\0value" buffer per item, the array from
+ * uv__calloc().
+ */
+struct uv__aros_env_scan {
+  uv_env_item_t* items;
+  int capacity;
+  int count;
+  int failed;
+};
+
+static LONG uv__aros_env_count(struct Hook* hook, APTR userdata,
+                               struct ScanVarsMsg* msg) {
+  struct uv__aros_env_scan* scan = userdata;
+
+  (void)hook; (void)msg;
+  scan->capacity++;
+  return 0;
+}
+
+static LONG uv__aros_env_collect(struct Hook* hook, APTR userdata,
+                                 struct ScanVarsMsg* msg) {
+  struct uv__aros_env_scan* scan = userdata;
+  size_t name_len;
+  char* buf;
+
+  (void)hook;
+  if (scan->failed || scan->count >= scan->capacity)
+    return 0;
+
+  name_len = strlen((const char*)msg->sv_Name);
+  buf = uv__malloc(name_len + 1 + msg->sv_VarLen + 1);
+  if (buf == NULL) {
+    scan->failed = 1;
+    return 0;
+  }
+
+  memcpy(buf, msg->sv_Name, name_len);
+  buf[name_len] = '\0';
+  memcpy(buf + name_len + 1, msg->sv_Var, msg->sv_VarLen);
+  buf[name_len + 1 + msg->sv_VarLen] = '\0';
+
+  scan->items[scan->count].name = buf;
+  scan->items[scan->count].value = buf + name_len + 1;
+  scan->count++;
+  return 0;
+}
+
+int uv_os_environ(uv_env_item_t** envitems, int* count) {
+  struct uv__aros_env_scan scan;
+  struct Hook hook;
+
+  *envitems = NULL;
+  *count = 0;
+
+  memset(&scan, 0, sizeof(scan));
+  memset(&hook, 0, sizeof(hook));
+
+  hook.h_Entry = (HOOKFUNC)uv__aros_env_count;
+  ScanVars(&hook, GVF_LOCAL_ONLY, &scan);
+
+  /* uv__calloc(0, ...) may legitimately return NULL; keep the empty
+     environment a success with a real (freeable) array. */
+  scan.items = uv__calloc(scan.capacity > 0 ? scan.capacity : 1,
+                          sizeof(*scan.items));
+  if (scan.items == NULL)
+    return UV_ENOMEM;
+
+  hook.h_Entry = (HOOKFUNC)uv__aros_env_collect;
+  ScanVars(&hook, GVF_LOCAL_ONLY, &scan);
+
+  if (scan.failed) {
+    uv_os_free_environ(scan.items, scan.count);
+    return UV_ENOMEM;
+  }
+
+  *envitems = scan.items;
+  *count = scan.count;
+  return 0;
 }
 
 int uv_process_kill(uv_process_t* handle, int signum) {

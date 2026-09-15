@@ -194,8 +194,8 @@ diff -ruN libuv-v1.48.0.orig/src/unix/core.c libuv-v1.48.0/src/unix/core.c
  # include <sys/filio.h>
  # include <sys/wait.h>
 @@ -631,7 +638,12 @@
-
-
+ 
+ 
  int uv__close(int fd) {
 +#ifdef __AROS__
 +  extern int uv__aros_is_socket(int fd);
@@ -208,8 +208,8 @@ diff -ruN libuv-v1.48.0.orig/src/unix/core.c libuv-v1.48.0/src/unix/core.c
  #endif
 @@ -785,6 +797,19 @@
  }
-
-
+ 
+ 
 +#if defined(__AROS__)
 +void uv_disable_stdio_inheritance(void) {
 +  int fd;
@@ -225,16 +225,19 @@ diff -ruN libuv-v1.48.0.orig/src/unix/core.c libuv-v1.48.0/src/unix/core.c
 +#else
  void uv_disable_stdio_inheritance(void) {
    int fd;
-
+ 
 @@ -795,6 +820,7 @@
      if (uv__cloexec(fd, 1) && fd > 15)
        break;
  }
 +#endif
-
-
+ 
+ 
  int uv_fileno(const uv_handle_t* handle, uv_os_fd_t* fd) {
-@@ -1182,0 +1209,29 @@ return_buffer:
+@@ -1180,6 +1206,35 @@
+   #endif
+ 
+ return_buffer:
 +#if defined(__AROS__)
 +  /*
 +   * POSIXC exposes the native T: assignment as /T to Unix-oriented callers.
@@ -264,6 +267,9 @@ diff -ruN libuv-v1.48.0.orig/src/unix/core.c libuv-v1.48.0/src/unix/core.c
 +  }
 +#endif
 +
+   len = strlen(buf);
+ 
+   if (len >= *size) {
 @@ -1239,6 +1294,21 @@
    if (result == NULL)
      return UV_ENOENT;
@@ -359,20 +365,38 @@ diff -ruN libuv-v1.48.0.orig/src/unix/core.c libuv-v1.48.0/src/unix/core.c
    return uv__getpwuid_r(pwd, geteuid());
  }
  
-@@ -1489,10 +1618,14 @@
+@@ -1372,6 +1501,9 @@
+ }
+ 
+ 
++#if !defined(__AROS__)
++/* AROS: src-aros/aros-stubs.c builds the list from the calling process's
++   DOS local variables on every call (no shared environ snapshot). */
+ int uv_os_environ(uv_env_item_t** envitems, int* count) {
+   int i, j, cnt;
+   uv_env_item_t* envitem;
+@@ -1426,6 +1558,7 @@
+   *count = 0;
+   return UV_ENOMEM;
+ }
++#endif
+ 
+ 
+ int uv_os_getenv(const char* name, char* buffer, size_t* size) {
+@@ -1489,10 +1622,14 @@
    if (buffer == NULL || size == NULL || *size == 0)
      return UV_EINVAL;
-
+ 
 +#if defined(__AROS__)
 +  memcpy(buf, "AROS", sizeof("AROS"));
 +#else
    if (gethostname(buf, sizeof(buf)) != 0)
      return UV__ERR(errno);
-
+ 
    buf[sizeof(buf) - 1] = '\0'; /* Null terminate, just to be safe. */
 +#endif
    len = strlen(buf);
-
+ 
    if (len >= *size) {
 diff -ruN libuv-v1.48.0.orig/src/unix/fs.c libuv-v1.48.0/src/unix/fs.c
 --- libuv-v1.48.0.orig/src/unix/fs.c	2024-02-07 14:20:07.000000000 -0600
