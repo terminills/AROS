@@ -564,13 +564,23 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
       err = waitpid(pid, &status, 0);
     while (err < 0 && errno == EINTR);
     err = UV__ERR(child_error);
-    goto fail;
+  } else {
+    err = 0;
+    handle->pid = pid;
+    uv__queue_insert_tail(&loop->process_handles, &handle->queue);
+    uv__handle_start(handle);
   }
 
-  handle->pid = pid;
-  uv__queue_insert_tail(&loop->process_handles, &handle->queue);
-  uv__handle_start(handle);
-
+  /*
+   * The parent's stream ends are opened whether or not the child got as far
+   * as exec (upstream unix/process.c does the same): node's ChildProcess
+   * treats ENOENT/EACCES/ENOTDIR as deliverable through the 'error' event and
+   * still wraps every UV_CREATE_PIPE slot in a Socket that starts reading,
+   * so a pipe handle left unopened here surfaced as an unhandled "read
+   * ENOTCONN" that took the whole process down (spawn-cwd-test, a bare name
+   * missing from PATH).  Opened, the pipe simply reports EOF: the child's
+   * copies were closed by the pretend-child and pipes[i][1] goes below.
+   */
   for (i = 0; i < options->stdio_count; i++) {
     /*
      * uv__aros_process_open_stream() closes the parent's own slot for the
@@ -580,15 +590,20 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
      * the child's write end never saw the child's stdout end (execFile()
      * then completed only through its own timeout, with empty output).
      */
-    err = uv__aros_process_open_stream(&options->stdio[i], i, pipes[i]);
-    if (err != 0)
-      goto fail_active;
+    int open_err = uv__aros_process_open_stream(&options->stdio[i], i, pipes[i]);
+    if (open_err != 0) {
+      if (err == 0) {
+        err = open_err;
+        goto fail_active;
+      }
+      goto fail;
+    }
     pipes[i][0] = -1; /* owned by the stream */
   }
 
   if (pipes != pipes_storage)
     uv__free(pipes);
-  return 0;
+  return err;
 
 fail_active:
   uv__queue_remove(&handle->queue);
