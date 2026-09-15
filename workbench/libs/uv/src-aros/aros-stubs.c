@@ -69,8 +69,6 @@ void uv__process_title_cleanup(void) { }
 void uv__aros_register_dos_pipe(int fd);
 void uv__aros_unregister_dos_pipe(int fd);
 
-extern char** environ;
-
 /*
  * AROS has real scheduled Processes and parent/child death notification but
  * no fork().  PosixC's vfork()+execvp() is the native adapter for exactly this
@@ -429,7 +427,6 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
   int (*pipes)[2] = pipes_storage;
   int stdio_count;
   volatile int child_error;
-  char** volatile saved_environ;
   pid_t pid;
   int err;
   int i;
@@ -538,26 +535,24 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
     }
 
     /*
-     * vfork(): this runs on the parent's memory, so pointing environ at the
-     * caller's array is seen by the parent too.  The child copies the array
-     * into its own local variables inside execvp() (__exec_prepare runs on
-     * the launcher before vfork() returns here), after which the parent puts
-     * its environ back: node frees options->env right after uv_spawn(), and
-     * a parent left pointing at it read freed memory on its next
-     * uv_os_environ() (process.env enumeration).
+     * The caller's environment goes in explicitly.  Upstream swaps it into
+     * `environ` around execvp(), but on AROS `environ` is a per-opener
+     * stdcio emulation: posixc's exec reads the array registered on ITS
+     * stdcio base, which for a pertaskbase uv1 is never the one this
+     * file's `environ` was registered on (the loader task's), so a swapped
+     * environ was simply not seen and every child inherited the parent's
+     * environment (JOB-0033 spawn-env-control8, 2026-09-15).  execvpe()
+     * copies envp into the child's local variables inside __exec_prepare,
+     * which runs on the launcher before vfork() returns here, so node may
+     * free options->env right after uv_spawn() as it does.
      */
-    if (options->env != NULL) {
-      saved_environ = environ;
-      environ = options->env;
-    }
-
-    execvp(options->file, options->args);
+    if (options->env != NULL)
+      execvpe(options->file, options->args, options->env);
+    else
+      execvp(options->file, options->args);
     child_error = errno;
     _exit(127);
   }
-
-  if (options->env != NULL)
-    environ = saved_environ;
 
   for (i = 0; i < stdio_count; i++)
     D(bug("[uv_spawn] post-vfork pid=%d child_error=%d slot %d: parent=%d child=%d\n",
