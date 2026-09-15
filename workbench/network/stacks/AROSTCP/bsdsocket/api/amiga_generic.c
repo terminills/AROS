@@ -1166,11 +1166,11 @@ AROS_LH2(LONG, Dup2Socket,
         else
             fd2 = newfd;
     else {
-        if((ULONG)fd2 >= libPtr->dTableSize) {
+        if(fd2 < 0) {
             error = EBADF;
             goto Return;
         }
-        if(libPtr->dTable[fd2] != NULL)
+        if((ULONG)fd2 < libPtr->dTableSize && libPtr->dTable[fd2] != NULL)
             __CloseSocket(fd2, libPtr);
         /*
          * Check if the fd is free on the link library
@@ -1181,6 +1181,31 @@ AROS_LH2(LONG, Dup2Socket,
                                  AROS_UFCA(int, FDCB_CHECK, D1)))
                 goto Return;
 
+#if defined(ENABLE_FDLIBRARY)
+        /*
+         * An explicit target number must be claimed in the system-wide
+         * table exactly like the sdFind() number above is: a socket sitting
+         * on an unreserved number is invisible to posixc, whose next open()
+         * is then handed the same number for a file.  A caller keeping its
+         * own socket/file routing by number (uv.library) then sends that
+         * file's read()/close() to recv()/CloseSocket().  EBUSY when the
+         * number is held by anyone else, so callers probing for a free
+         * number (Dup2Socket in a loop) simply move on.
+         */
+        if(FDBase != NULL) {
+            if((error = FD_Reserve(fd2, FD_OWNER_BSDSOCKET, so)) != 0)
+                goto Return;
+            if((error = sdGrow(libPtr, fd2)) != 0) {
+                FD_Free(fd2, FD_OWNER_BSDSOCKET);
+                goto Return;
+            }
+        }
+        else
+#endif
+        if((ULONG)fd2 >= libPtr->dTableSize) {
+            error = EBADF;
+            goto Return;
+        }
     }
     /*
      * Tell the link library about the new fd
@@ -1188,8 +1213,14 @@ AROS_LH2(LONG, Dup2Socket,
     if(libPtr->fdCallback)
         if(error = AROS_UFC2(int, libPtr->fdCallback,
                              AROS_UFCA(int, fd2, D0),
-                             AROS_UFCA(int, FDCB_ALLOC, D1)))
+                             AROS_UFCA(int, FDCB_ALLOC, D1))) {
+#if defined(ENABLE_FDLIBRARY)
+            /* Both branches above hold a reservation for fd2 by now. */
+            if(FDBase != NULL)
+                FD_Free(fd2, FD_OWNER_BSDSOCKET);
+#endif
             goto Return;
+        }
 
     FD_SET(fd2, (fd_set *)(libPtr->dTable + libPtr->dTableSize));
 
