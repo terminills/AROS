@@ -46,6 +46,9 @@
 #define CLOSE_AFTER_PAINT_TICKS 100
 #define CREATE_TIMEOUT_TICKS 30000
 #define CLOSE_TIMEOUT_TICKS 500
+/* App mode: after the last window closed, how long the main script gets to
+   run its shutdown (VS Code saves state before it calls app.quit()). */
+#define APP_CLOSE_GRACE_TICKS 3000
 #define SHUTDOWN_DRAIN_TICKS 200
 #define MAIN_SCRIPT_OPTION "--main-script="
 static cef_app_t app;
@@ -72,6 +75,11 @@ static int node_task_mismatch;
 static int node_marker_seen;
 static int completion_queued;
 static int external_url_mode;
+/* --main-script= runs the script as the application: no probe tick cap, no
+   auto-close after first paint, exit when the script asks (app.exit) or
+   its last window has been gone for APP_CLOSE_GRACE_TICKS. */
+static int app_mode;
+static ULONG browser_closed_tick;
 static ULONG node_pump_ticks;
 static int first_paint;
 static ULONG first_paint_tick;
@@ -812,6 +820,8 @@ static void service_native_window_requests(cef_window_info_t *window_info,
         rc = ElectronCreateCEFBrowser(window_info, &client, &url,
             browser_settings, NULL, NULL);
         KPrintF("[ELECTRON-CONTEXT] BrowserWindow create rc=%ld\n", rc);
+        if (rc != 0)
+            browser_closed = 0;
     }
     shell_sync_window_geometry();
 }
@@ -1174,7 +1184,14 @@ static void CEF_CALLBACK on_before_close(cef_life_span_handler_t *self,
     release_browser_reference(browser);
     browser = NULL;
     browser_closed = 1;
+    browser_closed_tick = pump_tick;
     KPrintF("[ELECTRON-CONTEXT] browser closed\n");
+#ifdef ELECTRON_SHELL_WINDOWED
+    /* The script's BrowserWindow learns it is gone from here ('closed',
+       then 'window-all-closed' on the app once no window is left). */
+    if (app_mode)
+        ElectronPostWindowEvent("closed", "");
+#endif
 }
 
 static void CEF_CALLBACK on_context_created(
@@ -1521,6 +1538,7 @@ int main(int argc, char **argv)
                 return 20;
             }
             selected_node_script = command_node_script;
+            app_mode = 1;
             KPrintF("[ELECTRON-CONTEXT] loading Node main script '%s'\n",
                 main_script_path);
             continue;
@@ -1722,8 +1740,12 @@ int main(int argc, char **argv)
 #endif
 
     for (ticks = 0;
-        ticks < CREATE_TIMEOUT_TICKS && !browser_closed &&
-            !exit_requested; ++ticks)
+        !exit_requested &&
+            (app_mode ?
+                !(browser_closed &&
+                    ticks > browser_closed_tick + APP_CLOSE_GRACE_TICKS) :
+                (ticks < CREATE_TIMEOUT_TICKS && !browser_closed));
+        ++ticks)
     {
         pump_tick = ticks;
         if (ticks == 0)
@@ -1740,7 +1762,7 @@ int main(int argc, char **argv)
         if (!node_marker_seen && marker_exists())
             node_marker_seen = 1;
 #ifdef ELECTRON_SHELL_WINDOWED
-        if (!external_url &&
+        if (!external_url && !app_mode &&
             node_attached && node_marker_seen && !node_task_mismatch &&
             first_paint && ticks > first_paint_tick + CLOSE_AFTER_PAINT_TICKS)
             request_browser_close();
@@ -1776,7 +1798,20 @@ int main(int argc, char **argv)
         node_detached = 1;
     }
 #endif
-    if (node_attached && node_detached && node_marker_seen &&
+    if (app_mode)
+    {
+        /* The application decides its own exit status; a script that just
+           let its last window close (no app.exit) exited normally. */
+        result = exit_requested ? (int)requested_exit_code : 0;
+        if (browser_closed && !exit_requested)
+            KPrintF("[ELECTRON-CONTEXT] app quit without app.exit "
+                "(last window closed %lu ticks ago)\n",
+                (unsigned long)(pump_tick - browser_closed_tick));
+        KPrintF("[ELECTRON-CONTEXT] app exited code=%ld pumps=%lu "
+            "painted=%ld closed=%ld\n", (LONG)result, node_pump_ticks,
+            (LONG)first_paint, (LONG)browser_closed);
+    }
+    else if (node_attached && node_detached && node_marker_seen &&
         !node_task_mismatch && node_pump_ticks >= NODE_PUMP_TICKS &&
         first_paint && browser_closed)
     {

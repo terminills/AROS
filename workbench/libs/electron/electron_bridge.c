@@ -391,9 +391,18 @@ static const char electron_module_bootstrap[] =
     "app.getLocale=()=>preferredSystemLanguages[0];"
     "app.getSystemLocale=()=>preferredSystemLanguages[0];"
     "app.exit=code=>binding.invoke('app.exit',String(code===undefined?0:code));"
+    /* Electron's quit is cancellable at both steps: VS Code's lifecycle
+       service preventDefault()s 'will-quit' once, runs its shutdown
+       promise, then calls app.quit() again with the listener removed. */
     "app.quit=()=>{"
-    "app.emit('before-quit');"
-    "app.emit('will-quit');"
+    "const quitEvent=()=>({defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}});"
+    "const beforeQuit=quitEvent();"
+    "app.emit('before-quit',beforeQuit);"
+    "if(beforeQuit.defaultPrevented)return;"
+    "const willQuit=quitEvent();"
+    "app.emit('will-quit',willQuit);"
+    "if(willQuit.defaultPrevented)return;"
+    "app.emit('quit',quitEvent(),0);"
     "return binding.invoke('app.exit','0');"
     "};"
     /* Menu/MenuItem keep Electron's object model in JS (VS Code walks
@@ -703,6 +712,7 @@ static const char electron_module_bootstrap[] =
     "screen.getCursorScreenPoint=()=>readScreen().cursor;"
     "let nextWindowId=1;"
     "const browserWindows=[];"
+    "const closedWindows=new Map();"
     /* IPC payloads cross the seam as JSON; binary chunks (VSBuffer wraps
        Uint8Array/Buffer) travel as {__arosBin:base64}. JSON.stringify runs
        Buffer.prototype.toJSON before the replacer sees the value, so the
@@ -980,11 +990,52 @@ static const char electron_module_bootstrap[] =
     "binding.invoke('browser-window.unmaximize',String(this.id));"
     "}"
     "close(){"
+    "if(this._destroyed)return;"
+    "const event={defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};"
+    "this.emit('close',event);"
+    "if(event.defaultPrevented)return;"
+    "this._retire();"
+    "binding.invoke('browser-window.close',String(this.id));"
+    "}"
+    /* The window leaves the live list at once (getAllWindows() must not
+       return it) but stays reachable by id until the shell reports the
+       Intuition window gone, which is when 'closed' fires. */
+    "_retire(){"
     "const index=browserWindows.indexOf(this);"
     "if(index>=0)browserWindows.splice(index,1);"
     "this._destroyed=true;"
     "this._visible=false;"
-    "binding.invoke('browser-window.close',String(this.id));"
+    "closedWindows.set(this.id,this);"
+    "}"
+    /* Window-system events posted by the shell (ElectronPostWindowEvent):
+       the shell already acted, these only bring the object model and its
+       listeners up to date. */
+    "_handleNativeEvent(name,payload){"
+    "if(name==='closed'){"
+    "if(!this._destroyed)this._retire();"
+    "closedWindows.delete(this.id);"
+    "this.webContents.emit('destroyed');"
+    "this.emit('closed');"
+    "if(browserWindows.length===0){"
+    "if(app.listenerCount('window-all-closed')===0)app.quit();"
+    "else app.emit('window-all-closed');"
+    "}"
+    "return;"
+    "}"
+    "if(name==='focus'){this._focused=true;this.emit('focus');return;}"
+    "if(name==='blur'){this._focused=false;this.emit('blur');return;}"
+    "if(name==='resize'||name==='move'){"
+    "const fields=payload.split('\\t').map(Number);"
+    "if(fields.length>=4&&fields.every(Number.isFinite)){"
+    "this._bounds={x:fields[0],y:fields[1],width:fields[2],height:fields[3]};"
+    "this._positioned=true;"
+    "}"
+    "this.emit(name);"
+    "return;"
+    "}"
+    "if(name==='maximize'){this._maximized=true;this.emit('maximize');return;}"
+    "if(name==='unmaximize'){this._maximized=false;this.emit('unmaximize');return;}"
+    "console.error('[AROS-ELECTRON] unknown window event '+name);"
     "}"
     "static getAllWindows(){return browserWindows.slice();}"
     "static getFocusedWindow(){"
@@ -1378,6 +1429,20 @@ static const char electron_module_bootstrap[] =
     "const idEnd=rest.indexOf('\\t');"
     "handleRendererMessage(Number(rest.slice(0,idEnd)),"
     "JSON.parse(rest.slice(idEnd+1),ipcReviver));"
+    "return;"
+    "}"
+    "if(kind==='window'){"
+    "const idEnd=rest.indexOf('\\t');"
+    "const nameEnd=rest.indexOf('\\t',idEnd+1);"
+    "const id=Number(rest.slice(0,idEnd));"
+    "const window=BrowserWindow.fromId(id)||closedWindows.get(id);"
+    "const name=nameEnd<0?rest.slice(idEnd+1):rest.slice(idEnd+1,nameEnd);"
+    "const payload=nameEnd<0?'':rest.slice(nameEnd+1);"
+    "if(!window){"
+    "console.error('[AROS-ELECTRON] window event '+name+' for unknown window '+id);"
+    "return;"
+    "}"
+    "window._handleNativeEvent(name,payload);"
     "return;"
     "}"
     "console.error('[AROS-ELECTRON] unknown native event '+kind);"
@@ -1941,6 +2006,17 @@ AROS_LH1(void, ElectronSetActiveBrowser,
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
     electron_set_active_browser((cef_browser_t *)browser);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH2(LONG, ElectronPostWindowEvent,
+    AROS_LHA(CONST_STRPTR, name, A0),
+    AROS_LHA(CONST_STRPTR, payload, A1),
+    LIBBASETYPEPTR, LIBBASE, 32, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return electron_post_window_event(name, payload);
     AROS_LIBFUNC_EXIT
 }
 

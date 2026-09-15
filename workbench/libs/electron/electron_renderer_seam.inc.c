@@ -524,6 +524,36 @@ static LONG electron_post_event(char *text)
     return 0;
 }
 
+/*
+ * The shell owns the native window, so window-system facts (the user closed
+ * it, resized it, ...) enter the Electron object model from there:
+ * `window\t<id>\t<name>\t<payload>` reaches the bootstrap's poll loop,
+ * which turns it into the BrowserWindow event of the same name.
+ */
+static LONG electron_post_window_event(CONST_STRPTR name, CONST_STRPTR payload)
+{
+    char id[16];
+    const char *parts[6];
+    ULONG value = electron_window_id;
+    int index = sizeof(id) - 1;
+
+    if (name == NULL || name[0] == '\0')
+        return 20;
+    id[index] = '\0';
+    do
+    {
+        id[--index] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value != 0 && index > 0);
+    parts[0] = "window\t";
+    parts[1] = id + index;
+    parts[2] = "\t";
+    parts[3] = (const char *)name;
+    parts[4] = "\t";
+    parts[5] = payload != NULL ? (const char *)payload : "";
+    return electron_post_event(electron_concat(parts, 6));
+}
+
 static CONST_STRPTR electron_poll_event(void)
 {
     struct ElectronEvent *event;
