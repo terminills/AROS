@@ -43,6 +43,18 @@ typedef struct _fcb
 static inline void __fcb_lock(fcb *f)   { if (f) ObtainSemaphore(&f->io_lock); }
 static inline void __fcb_unlock(fcb *f) { if (f) ReleaseSemaphore(&f->io_lock); }
 
+/* The reference count is NOT guarded by io_lock: a read() on a pipe holds
+   io_lock for as long as the pipe is empty, and a Task that merely takes or
+   drops a reference must not wait behind it.  Two vfork() launchers copying
+   the parent's table (__copy_fdarray) and tearing their copies down
+   (__exit_fd) while the parent's threads read the pipes of both children
+   deadlocked exactly so: reader A waits for launcher 2's write end, launcher
+   2 waits in close() for reader A's io_lock (spawn-concurrent, TRIG-1084).
+   __fcb_unref() returns the new count; at 0 the caller is the last holder
+   and may tear the fcb down without any lock. */
+static inline void __fcb_ref(fcb *f)           { __atomic_add_fetch(&f->opencount, 1, __ATOMIC_ACQ_REL); }
+static inline unsigned int __fcb_unref(fcb *f) { return __atomic_sub_fetch(&f->opencount, 1, __ATOMIC_ACQ_REL); }
+
 /* privflags */
 #define _FCB_ISDIR        ((unsigned int)1<<0)
 #define _FCB_DONTCLOSE_FH ((unsigned int)1<<1)
@@ -79,6 +91,7 @@ void __setfdarray(APTR array, int slots);
 void __setfdarraybase(struct PosixCIntBase *PosixCBase2);
 fdesc *__getfdesc(register int fd);
 void __setfdesc(register int fd, fdesc *fdesc);
+fdesc *__unlinkfdesc(register int fd);
 int __getfdslot(int wanted_fd);
 int __getfirstfd(register int startfd);
 void __freefdslot(int fd);

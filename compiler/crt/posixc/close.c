@@ -50,7 +50,9 @@
 {
     fdesc *fdesc;
 
-    if (!(fdesc = __getfdesc(fd)))
+    /* Take the descriptor out of the table before dropping its reference on
+       the shared fcb (see __unlinkfdesc()). */
+    if (!(fdesc = __unlinkfdesc(fd)))
     {
         /* Not a local posixc file descriptor: dispatch to the owning
            subsystem's close hook (e.g. a bsdsocket socket).  The owner
@@ -72,12 +74,11 @@
         return -1;
     }
 
-    /* Serialise the reference-count decrement and the final teardown
-       against other Tasks sharing this fcb. When the count reaches zero
-       no other Task holds a reference, so releasing the lock immediately
-       before FreeVec() is safe. */
-    __fcb_lock(fdesc->fcb);
-    if (--fdesc->fcb->opencount == 0)
+    /* Drop this descriptor's reference without touching io_lock (a reader
+       blocked on the handle may hold it indefinitely, see __fcb_unref()).
+       When the count reaches zero no other descriptor refers to the fcb,
+       so the teardown needs no lock either. */
+    if (__fcb_unref(fdesc->fcb) == 0)
     {
         /* Due to a *stupid* behaviour of the dos.library we cannot handle closing failures cleanly :-(
         if (
@@ -108,14 +109,10 @@
             }
         }
 
-        __fcb_unlock(fdesc->fcb);
         FreeVec(fdesc->fcb);
     }
-    else
-        __fcb_unlock(fdesc->fcb);
 
     __free_fdesc(fdesc);
-    __setfdesc(fd, NULL);
 
     return 0;
 } /* close */

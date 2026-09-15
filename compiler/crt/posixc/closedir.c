@@ -55,24 +55,22 @@
         return -1;
     }
 
-    desc = __getfdesc(dir->fd);
+    /* Unlinked from the table before its reference is dropped, see
+       __unlinkfdesc(). */
+    desc = __unlinkfdesc(dir->fd);
     if (!desc)
     {
         errno = EBADF;
         return -1;
     }
 
-    __fcb_lock(desc->fcb);
-    if (--desc->fcb->opencount == 0)
+    /* Reference drop and teardown without io_lock, see __fcb_unref(). */
+    if (__fcb_unref(desc->fcb) == 0)
     {
         UnLock(desc->fcb->handle);
-        __fcb_unlock(desc->fcb);
         FreeVec(desc->fcb);
     }
-    else
-        __fcb_unlock(desc->fcb);
     __free_fdesc(desc);
-    __setfdesc(dir->fd, NULL);
 
     FreeDosObject(DOS_FIB, dir->priv);
     free(dir);

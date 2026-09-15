@@ -210,6 +210,42 @@ void __setfdesc(register int fd, fdesc *desc)
     }
 }
 
+/* Take descriptor fd out of the table and give up its number, returning the
+   fdesc that held it (NULL if fd is not a posixc descriptor).  Unlinking
+   under the table guard, BEFORE the caller drops the fdesc's reference on
+   the shared fcb, means every fdesc visible in the table holds a live
+   reference: a Task copying the table under the guard (__copy_fdarray) can
+   take its own reference safely, and two close()s of one number cannot both
+   reach the same fdesc.  Previously close() dropped the reference first and
+   cleared the slot last, so a vfork() launcher copying the table while
+   another thread of the parent close()d a file bumped the count of an fcb
+   that was being freed and later obtained its io_lock from freed memory
+   ("Semaphore in an illegal state" at the launcher's CloseLibrary,
+   spawn-worker-fix2). */
+fdesc *__unlinkfdesc(register int fd)
+{
+    struct PosixCIntBase *PosixCBase =
+        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+    fdesc *desc;
+
+    if (!(desc = __getfdesc(fd)))
+        return NULL;
+
+    FD_LOCK(PosixCBase);
+    if (FD_ARRAY(PosixCBase)[fd] == desc)
+        FD_ARRAY(PosixCBase)[fd] = NULL;
+    else
+        desc = NULL;
+    FD_UNLOCK(PosixCBase);
+
+    if (desc && fd > STDERR_FILENO && __fdlib_available(PosixCBase)) {
+        struct Library *FDBase = PosixCBase->PosixCFDBase;
+        FD_Free(fd, FD_OWNER_POSIXC);
+    }
+
+    return desc;
+}
+
 /* Pick the lowest free descriptor number >= startfd.
 
    With fd.library present the number is *reserved* for this caller
@@ -800,18 +836,23 @@ int __init_stdfiles(struct PosixCIntBase *PosixCBase)
     return 1;
 }
 
-/* Copy the descriptor table of src (the vfork()/exec*() parent's base)
-   into this base's.  src's RESOLVED table is used: a base that only borrows
-   its creator's descriptors (fd_owner set, own fd_array NULL) has nothing in
-   its own fields. */
+/* Copy the descriptor table of src into this base's (a vfork()/exec*()
+   child).  The whole copy runs under src's table guard: the parent's other
+   threads keep running meanwhile (a node Worker's spawn while the main
+   thread writes a file), and without the guard the array could be grown
+   under us or a slot's fcb freed between reading it and taking our
+   reference (see __unlinkfdesc()). */
 static int __copy_fdarray(struct PosixCIntBase *src)
 {
     struct PosixCIntBase *PosixCBase =
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
-    fdesc **__src_fd_array = FD_ARRAY(src);
-    int i;
+    fdesc **__src_fd_array;
+    int i, res = 1;
 
-    for(i = FD_SLOTS(src) - 1; i >= 0; i--)
+    FD_LOCK(src);
+    __src_fd_array = FD_ARRAY(src);
+
+    for(i = FD_SLOTS(src) - 1; i >= 0 && res; i--)
     {
         if(__src_fd_array[i])
         {
@@ -819,22 +860,30 @@ static int __copy_fdarray(struct PosixCIntBase *src)
                this table as a second holder in fd.library (FD_Share()), so
                whichever side close()s first only drops its own hold. */
             if(__getfdslot(i) != i)
-                return 0;
+            {
+                res = 0;
+                break;
+            }
 
             if((FD_ARRAY(PosixCBase)[i] = __alloc_fdesc()) == NULL)
-                return 0;
+            {
+                res = 0;
+                break;
+            }
 
             FD_ARRAY(PosixCBase)[i]->fdflags = __src_fd_array[i]->fdflags;
             FD_ARRAY(PosixCBase)[i]->fcb = __src_fd_array[i]->fcb;
-            /* The source (parent) may still be using this fcb - bump its
-               shared reference count atomically. */
-            __fcb_lock(FD_ARRAY(PosixCBase)[i]->fcb);
-            FD_ARRAY(PosixCBase)[i]->fcb->opencount++;
-            __fcb_unlock(FD_ARRAY(PosixCBase)[i]->fcb);
+            /* The source (parent) may be using this fcb right now - one of
+               its threads blocked in read() on it holds io_lock, so the
+               reference is taken atomically and without that lock
+               (__fcb_ref()); the slot itself is stable under FD_LOCK(src). */
+            __fcb_ref(FD_ARRAY(PosixCBase)[i]->fcb);
         }
     }
 
-    return 1;
+    FD_UNLOCK(src);
+
+    return res;
 }
 
 int __init_fd(struct PosixCIntBase *PosixCBase)

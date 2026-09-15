@@ -126,11 +126,9 @@
         return -1;
     }
 
-    /* Bumping the shared fcb's reference count must be atomic against a
-       concurrent close() of another descriptor onto the same fcb. */
-    __fcb_lock(newfdesc->fcb);
-    newfdesc->fcb->opencount++;
-    __fcb_unlock(newfdesc->fcb);
+    /* Atomic against a concurrent close() of another descriptor onto the
+       same fcb, and independent of io_lock (see __fcb_ref()). */
+    __fcb_ref(newfdesc->fcb);
     __setfdesc(gotfd, newfdesc);
 
     return gotfd;
