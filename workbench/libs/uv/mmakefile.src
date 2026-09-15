@@ -109,6 +109,15 @@ AROSFILES := \
 
 #MM- workbench-libs-uv-worktest : workbench-libs-uv
 
+# Repeated async wakeups against an armed timer: a stale timer-port signal
+# must not turn the next early wake into a full-timeout WaitIO() sleep.
+%build_prog mmake=workbench-libs-uv-asyncwaketest \
+    progname=UVAsyncWakeTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVAsyncWakeTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-asyncwaketest : workbench-libs-uv
+
 # uv_fs file I/O smoke (sync round-trip + async open on the threadpool).
 %build_prog mmake=workbench-libs-uv-fstest \
     progname=UVFsTest \

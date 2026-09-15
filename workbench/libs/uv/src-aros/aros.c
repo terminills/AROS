@@ -1,4 +1,6 @@
 /*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
     AROS custom event-loop backend for libuv (the src/unix/aros.c equivalent).
 
     Core-first phase: no POSIX socket layer yet, so uv__io_poll() has no fds to
@@ -318,6 +320,21 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
 
     port = (struct MsgPort*)loop->aros_timerport;
     timermask = 1UL << port->mp_SigBit;
+
+    /*
+     * The reply port carries exactly one request and nothing is in flight
+     * here, so any port signal still set is stale. WaitIO() below returns
+     * without Wait()ing when the request has already been replied -- every
+     * early wake that AbortIO()s the timer, and every expiry that lands
+     * between Wait() and WaitIO() -- and that leaves the reply's signal bit
+     * pending. Carried into the next turn it makes Wait() return at once
+     * with `timermask` set for a timer that has NOT fired, and WaitIO() then
+     * sleeps on the timer bit alone for the whole timeout while async
+     * wakeups (threadpool completions, cross-thread uv_async_send) queue up
+     * unseen: a Node Worker loading modules saw its fs completions only at
+     * its 5 s interval ticks. Clear it before arming the timer.
+     */
+    SetSignal(0, timermask);
 
     if (timeout >= 0) {
         tr->tr_node.io_Command = TR_ADDREQUEST;
