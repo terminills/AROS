@@ -1520,6 +1520,55 @@ IPTR InstallStage__MUIM_IC_Install(Class * CLASS, Object * self, Msg message)
 
     DoMethod(data->installer, MUIM_Application_InputBuffered);
 
+    /* STEP : COPY APPLICATIONS
+
+       Applications is a system drawer like Tools or Utilities - its icons and
+       the programs' own PROGDIR: paths are relative to SYS: - so it goes to
+       the install target and not to EXTRASPATH, which may well be another
+       volume.  It is not part of the core copy because a distribution's
+       Applications drawer can be large (the Chromium build ships 724 MB), and
+       a source tree that has no Applications at all - stock AROS - must still
+       install exactly as before: both conditions are checked below.  */
+
+    GET(data->instc_options_main->opt_copyextra, MUIA_Selected, &option);
+    if (option && (data->inst_success == MUIV_Inst_InProgress))
+    {
+        ULONG srcLen = strlen(source_Path);
+        ULONG applicationsDirLen = srcLen + strlen("Applications") + 2;
+        TEXT applicationsDir[srcLen + applicationsDirLen];
+
+        CopyMem(source_Path, &applicationsDir, srcLen + 1);
+        AddPart(applicationsDir, "Applications", srcLen + applicationsDirLen);
+
+        if ((lock = Lock(applicationsDir, SHARED_LOCK)) != BNULL)
+        {
+            CONST_STRPTR application_dirs[] = {
+                "Applications", "Applications",
+                NULL
+            };
+            ULONG dstLen = strlen(data->install_SysTarget) + 2;
+            TEXT destinationPath[dstLen];
+            BOOL undoenabled = data->instc_copt_undoenabled;
+
+            /* Explicitly disable undo. Some users might not have RAM for backup */
+            data->instc_copt_undoenabled = FALSE;
+
+            UnLock(lock);
+
+            D(bug("[InstallAROS:Stage] %s: Copying Applications...\n", __func__));
+            SET(data->label, MUIA_Text_Contents, __(MSG_COPYEXTRA));
+            sprintf(destinationPath, "%s:", data->install_SysTarget);
+            CopyDirArray(CLASS, self, source_Path, destinationPath,
+                application_dirs, &SKIPLIST);
+
+            /* Restore undo state */
+            data->instc_copt_undoenabled = undoenabled;
+            ClearSkipList(&SKIPLIST);
+        }
+    }
+
+    DoMethod(data->installer, MUIM_Application_InputBuffered);
+
     /* STEP : COPY EXTRAS */
 
     GET(data->instc_options_main->opt_copyextra, MUIA_Selected, &option);
