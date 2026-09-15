@@ -43,6 +43,8 @@
 #include <exec/libraries.h>
 #include <proto/exec.h>
 
+#include "aros-intbase.h"
+
 /* genmodule's per-task base lookup for this module (own slot, then the
    creator's slot).  Emitted hidden into uv1_start.c; the same module may
    use it. */
@@ -51,6 +53,36 @@ extern char *__aros_getoffsettable(void);
 int uv_aros_task_has_base(void)
 {
     return __aros_getoffsettable() != NULL;
+}
+
+/*
+ * uv_default_loop() storage for the calling task's process: the per-task
+ * base (see aros-intbase.h).  src/uv-common.c reaches its two upstream
+ * statics through these, so a Node process and the C:Node it spawned no
+ * longer share one loop.  A task without any base (only an expunge sweep
+ * running on a foreign task ever gets here without one) falls back to a
+ * guest-wide pair rather than dereferencing NULL; such a task cannot run a
+ * loop anyway, every relwrapper it reached would fault first.
+ */
+static uv_loop_t  uv_aros_orphan_default_loop_struct;
+static uv_loop_t *uv_aros_orphan_default_loop_ptr;
+
+uv_loop_t **uv_aros_default_loop_ptr(void)
+{
+    struct UV1IntBase *base = (struct UV1IntBase *)__aros_getoffsettable();
+
+    if (base == NULL)
+        return &uv_aros_orphan_default_loop_ptr;
+    return &base->default_loop_ptr;
+}
+
+uv_loop_t *uv_aros_default_loop_struct(void)
+{
+    struct UV1IntBase *base = (struct UV1IntBase *)__aros_getoffsettable();
+
+    if (base == NULL)
+        return &uv_aros_orphan_default_loop_struct;
+    return &base->default_loop_struct;
 }
 
 static ULONG uv_aros_closer_id;

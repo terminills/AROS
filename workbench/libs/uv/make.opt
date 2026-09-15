@@ -19,6 +19,9 @@ LIBUV_CPPFLAGS := -D_GNU_SOURCE -DUV_AROS_INTERNAL_BUILD \
                   -include $(SRCDIR)/$(CURDIR)/aros-compat.h
 # Port-local headers AROS lacks (poll.h etc) -- must precede the tarball/network
 # include dirs.
+# uv1.library's private per-task base (aros-intbase.h), included by the
+# genmodule start file through uv1.conf's cdefprivate block.
+USER_INCLUDES += -I$(SRCDIR)/$(CURDIR)/src-aros
 USER_INCLUDES += -idirafter $(SRCDIR)/$(CURDIR)/include-aros
 USER_INCLUDES += -idirafter $(ARCHSRCDIR)/include
 USER_INCLUDES += -idirafter $(ARCHSRCDIR)/src
