@@ -55,6 +55,7 @@
 #undef getsockopt
 #undef getsockname
 #undef getpeername
+#undef shutdown
 #undef IoctlSocket
 #undef CloseSocket
 #undef WaitSelect
@@ -370,6 +371,52 @@ int getsockname(int s, struct sockaddr *name, socklen_t *namelen)
 
 int getpeername(int s, struct sockaddr *name, socklen_t *namelen)
 { return BASE ? __getpeername_WB(SocketBase, s, name, namelen) : no_base(); }
+
+/*
+ * shutdown(): libuv half-closes a stream's write side with shutdown(SHUT_WR)
+ * (uv__drain, after uv_shutdown()); node's spawnSync does exactly that on the
+ * child's stdin pipe once the input is written.  Without this function the
+ * call was the bsdsocket LVO macro (uv/aros.h left `shutdown` defined) on
+ * uv1's global SocketBase, which is NULL until the first socket is created:
+ * every spawnSync in a process that had not touched the network jumped
+ * through -0x70 (JOB-0033 run 24 control probe, C:Node page fault in
+ * uv__drain).  Sockets go to bsdsocket.  A DOS descriptor cannot be
+ * half-closed, so the descriptor number is re-pointed at NIL: for the
+ * direction being shut: the PIPE: end is Closed (the reader on the other
+ * side sees EOF once the last writer is gone) while the number stays valid
+ * for the stream's later uv__close().
+ */
+int shutdown(int s, int how)
+{
+    int nullfd;
+    int mode;
+
+    if (uv__aros_is_socket(s))
+        return BASE ? __shutdown_WB(SocketBase, s, how) : no_base();
+
+    if (how == SHUT_RD)
+        mode = O_RDONLY;
+    else if (how == SHUT_WR)
+        mode = O_WRONLY;
+    else if (how == SHUT_RDWR)
+        mode = O_RDWR;
+    else {
+        errno = EINVAL;
+        return -1;
+    }
+
+    nullfd = open("NIL:", mode);
+    if (nullfd < 0)
+        return -1;
+    if (dup2(nullfd, s) < 0) {
+        int saved = errno;
+        close(nullfd);
+        errno = saved;
+        return -1;
+    }
+    close(nullfd);
+    return 0;
+}
 
 /* socketpair(): bsdsocket has no AF_UNIX socketpair, so emulate it over an
    AF_INET 127.0.0.1 loopback pair -- listen on an ephemeral port, connect a
