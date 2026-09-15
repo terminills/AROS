@@ -1072,16 +1072,37 @@ static const char electron_module_bootstrap[] =
     "\"if(Number(pid)===process.pid&&(signal===0||signal==='0'))return true;\"+"
     "\"return nativeKill(pid,signal);\"+"
     "\"};\"+"
+    /* Electron's ParentPort starts its port only when the first 'message'
+       listener is added, so the payload and the MessagePort the main process
+       posts right after fork wait until the module is loaded and listening
+       (VS Code's shared process, extension host and file watcher all attach
+       their listener after tens of seconds of module loading).  Queue until
+       then; 'newListener' fires before the listener is on, hence the
+       deferred flush.  A real utility process also lives until it exits or
+       is killed, whatever its event loop holds - a Worker would leave once
+       the loop drains, so a ref'd timer keeps it. */
     "\"const parent=new EventEmitter();\"+"
-    "\"parentPort.on('message',envelope=>parent.emit('message',{\"+"
-    "\"data:envelope&&envelope.data,\"+"
-    "\"ports:MessagePortMain.wrapAll(envelope&&envelope.ports)}));\"+"
+    "\"const pendingEnvelopes=[];let parentStarted=false;\"+"
+    "\"const toParentEvent=envelope=>({data:envelope&&envelope.data,\"+"
+    "\"ports:MessagePortMain.wrapAll(envelope&&envelope.ports)});\"+"
+    "\"parentPort.on('message',envelope=>{\"+"
+    "\"if(parentStarted)parent.emit('message',toParentEvent(envelope));\"+"
+    "\"else pendingEnvelopes.push(envelope);\"+"
+    "\"});\"+"
+    "\"parent.on('newListener',name=>{\"+"
+    "\"if(name!=='message'||parentStarted)return;\"+"
+    "\"parentStarted=true;\"+"
+    "\"setImmediate(()=>{for(const envelope of pendingEnvelopes.splice(0))\"+"
+    "\"parent.emit('message',toParentEvent(envelope));});\"+"
+    "\"});\"+"
     "\"parent.postMessage=(message,transfer)=>{\"+"
     "\"const ports=MessagePortMain.unwrapAll(transfer);\"+"
     "\"parentPort.postMessage({data:message,ports},ports);\"+"
     "\"};\"+"
     "\"parent.start=()=>{};parent.close=()=>{};\"+"
     "\"process.parentPort=parent;\"+"
+    "\"setInterval(()=>{},2147483647);\"+"
+    "\"process.on('exit',code=>console.error('[AROS-UTILITY-EXIT] '+workerData.serviceName+' code '+code));\"+"
     "\"require(workerData.modulePath);\";"
     "let nextUtilityId=1;"
     "class UtilityProcess extends EventEmitter{"
