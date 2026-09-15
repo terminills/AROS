@@ -143,10 +143,48 @@ ADD2EXPUNGELIB(NodeExpungePrepare, 0)
  */
 extern "C" void __aros_setoffsettable(void *base);
 
+/*
+ * Callbacks another library makes on a thread that is none of ours.
+ *
+ * The wrappers below carry the base down every thread NODE creates, but a
+ * global callback node registers with V8 is also called on threads Chromium
+ * creates.  V8::SetEntropySource() is one: Blink starts a service worker,
+ * that thread builds its own Isolate, Heap::SetUpSpaces constructs a
+ * v8::base::RandomNumberGenerator, and the entropy source runs node's
+ * OpenSSL CSPRNG - inside node.library, on a task that never opened it and
+ * whose creator did not either.  Its first rel-wrapper then read a NULL base
+ * and faulted dereferencing the rellib offset (desktop VS Code gate 11,
+ * 2026-09-15: __strcmp_StdCBase_relwrapper, RAX = 0xF0, under
+ * ossl_drbg_get_ctx_params_no_lock <- ncrypto::CSPRNG <- v8.library
+ * RandomNumberGenerator <- Isolate::Init on a "ServiceWorker thread").
+ *
+ * Such a thread has no business owning a Node runtime, so it borrows the
+ * base of the Node that installed the callback - remembered here while a
+ * valid base is in hand.  The call it makes is a leaf into OpenSSL, which
+ * keeps its state in the library rather than in the base, so borrowing is
+ * enough to make it work and is never a thread's permanent identity: a task
+ * that later opens node.library for real gets its own base as usual.
+ *
+ * The base is not reference-counted here; it stays valid because the process
+ * that started Node keeps node.library open for its whole life, which is
+ * also as long as any Blink thread of that process lives.
+ */
+static void *NodeCallbackTaskBase;
+
+extern "C" void __node_aros_bind_callback_task_base(void)
+{
+  if (__aros_getoffsettable() == nullptr && NodeCallbackTaskBase != nullptr)
+    __aros_setoffsettable(NodeCallbackTaskBase);
+}
+
 static inline void NodeBindTaskBase(LIBBASETYPEPTR lh)
 {
   if (__aros_getoffsettable() == nullptr)
     __aros_setoffsettable(lh);
+  /* Every entry point passes through here, so this is where the base a
+     foreign-thread callback borrows is kept up to date - NodeStart() and the
+     embedder path (ElectronShell) alike. */
+  NodeCallbackTaskBase = __aros_getoffsettable();
 }
 
 /*
