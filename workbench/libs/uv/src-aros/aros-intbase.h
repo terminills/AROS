@@ -31,7 +31,9 @@ struct UV1IntBase
     struct Library lib;
 
     /* uv_default_loop() for the opener task and its pthreads; lazily
-       initialised, NULL until first use, NULL again after uv_loop_close(). */
+       initialised, NULL until first use, NULL again after uv_loop_close()
+       or after the last per-task close reclaimed its exec resources
+       (aros-taskbase.c uv_aros_reclaim_default_loop). */
     uv_loop_t *default_loop_ptr;
     uv_loop_t  default_loop_struct;
 };

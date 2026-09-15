@@ -1,7 +1,7 @@
 diff -ruN libuv-v1.48.0.orig/include/uv/aros.h libuv-v1.48.0/include/uv/aros.h
 --- libuv-v1.48.0.orig/include/uv/aros.h	1969-12-31 18:00:00.000000000 -0600
 +++ libuv-v1.48.0/include/uv/aros.h	2026-09-15 07:11:13.941157378 -0500
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,50 @@
 +/* AROS custom event-loop backend platform loop fields.
 + *
 + * Core-first (no socket layer yet): the loop times out via timer.device and
@@ -10,7 +10,9 @@ diff -ruN libuv-v1.48.0.orig/include/uv/aros.h libuv-v1.48.0/include/uv/aros.h
 + * dos headers; src backend aros.c casts them.
 + *
 + * Fields: aros_timerport (MsgPort), aros_timerio (timerequest), aros_task
-+ * (Task), aros_async_sig (signal bit or -1), aros_timer_open (0 or 1).
++ * (Task), aros_async_sig (signal bit or -1), aros_task_id (exec unique ID of
++ * aros_task).  All are owned by the task that runs the loop and are NULL/-1/0
++ * until it first polls (src-aros/aros.c uv__aros_loop_bind).
 + */
 +#ifndef UV_AROS_H
 +#define UV_AROS_H
@@ -47,7 +49,7 @@ diff -ruN libuv-v1.48.0.orig/include/uv/aros.h libuv-v1.48.0/include/uv/aros.h
 +  void* aros_timerio; \
 +  void* aros_task; \
 +  int aros_async_sig; \
-+  int aros_timer_open;
++  unsigned int aros_task_id;
 +
 +#endif /* UV_AROS_H */
 diff -ruN libuv-v1.48.0.orig/include/uv/unix.h libuv-v1.48.0/include/uv/unix.h

@@ -9,6 +9,9 @@
     readiness (WaitSelect over bsdsocket) is added in the networking phase.
 
     Replaces linux-core.c / kqueue.c / posix-poll.c.
+
+    Exec resources belong to the task that RUNS the loop, not the one that
+    initialised it (uv__aros_loop_bind below).
 */
 #include "uv.h"
 #include "internal.h"
@@ -93,15 +96,82 @@ static void uv__aros_dispatch_dos_pipes(uv_loop_t* loop,
     }
 }
 
-int uv__platform_loop_init(uv_loop_t* loop) {
+/*
+ * Exec resources of a loop -- the timer.device open, its IORequest, the reply
+ * MsgPort (one signal) and the async wake signal -- are per TASK: a signal
+ * bit lives in the allocating task's tc_SigAlloc, a port wakes its
+ * mp_SigTask, and FreeSignal()/DeleteMsgPort() operate on the CALLING task.
+ * libuv lets a loop be initialised on one thread and run on another (node's
+ * tracing Agent and Watchdog init in a constructor and uv_run on a worker
+ * thread; the Agent's loop is also process-global and outlives the process
+ * that constructed it on AROS), so binding them at uv_loop_init() time was
+ * wrong three ways: the running task waited on bits it never owned while
+ * uv_async_send() woke the constructing task, a loop closed from another
+ * task freed bits out of the closer's own allocation, and a never-run loop
+ * pinned two bits of a task until it exited (the Shell's "returned with
+ * unfreed signal 0x20000/0x40000" after every C:Node, JOB-0033).
+ *
+ * So the loop owns nothing until it is polled: uv__aros_loop_bind() acquires
+ * the resources on the task that calls uv__io_poll(), re-homes them when a
+ * different task runs the loop, and uv__aros_loop_unbind() frees them fully
+ * only on the owning task -- from any other task (or after the owner died)
+ * the memory and device open are released and the owner's bits are left to
+ * die with it, never touched through the wrong task.  The owner is
+ * identified by task pointer AND exec unique ID; task pointers are recycled,
+ * and the kept tracing loop must not mistake a later process's main task at
+ * the same address for its dead owner.  uv_async_send() from any thread
+ * reads the (task, signal) pair with acquire semantics and merely leaves the
+ * handle pending while the loop is unbound; a fresh binding raises its own
+ * async bit so such pre-binding sends are drained on the first poll.
+ */
+int uv__aros_loop_owned_by_caller(uv_loop_t* loop) {
+    struct Task* me = FindTask(NULL);
+
+    return loop->aros_task == me && loop->aros_task_id == GetETaskID(me);
+}
+
+static void uv__aros_loop_unbind(uv_loop_t* loop) {
+    struct timerequest* tr = (struct timerequest*)loop->aros_timerio;
+    struct MsgPort* port = (struct MsgPort*)loop->aros_timerport;
+    int owner = uv__aros_loop_owned_by_caller(loop);
+
+    /* uv__io_poll always reaps its timer request before returning, so no
+       request is ever in flight here -- just close and free. (Calling WaitIO
+       on a request that was never sent removes a non-existent message and
+       faults.) */
+    if (tr != NULL) {
+        CloseDevice((struct IORequest*)tr);
+        DeleteIORequest((struct IORequest*)tr);
+    }
+    if (port != NULL) {
+        if (owner)
+            DeleteMsgPort(port);
+        else
+            FreeMem(port, sizeof(*port));   /* the owner's signal stays its own */
+    }
+    if (loop->aros_async_sig >= 0 && owner)
+        FreeSignal(loop->aros_async_sig);
+
+    loop->aros_timerio = NULL;
+    loop->aros_timerport = NULL;
+    loop->aros_async_sig = -1;
+    __atomic_store_n(&loop->aros_task, NULL, __ATOMIC_RELEASE);
+    loop->aros_task_id = 0;
+}
+
+/* Returns 0 with the loop's exec resources owned by the calling task, or a
+   UV_E* code with none of them held (a later poll retries). */
+static int uv__aros_loop_bind(uv_loop_t* loop) {
+    struct Task* me = FindTask(NULL);
     struct MsgPort* port;
     struct timerequest* tr;
+    BYTE sig;
 
-    loop->aros_timerport = NULL;
-    loop->aros_timerio = NULL;
-    loop->aros_task = FindTask(NULL);
-    loop->aros_async_sig = -1;
-    loop->aros_timer_open = 0;
+    if (loop->aros_task != NULL) {
+        if (uv__aros_loop_owned_by_caller(loop))
+            return 0;
+        uv__aros_loop_unbind(loop);
+    }
 
     port = CreateMsgPort();
     if (port == NULL)
@@ -120,30 +190,40 @@ int uv__platform_loop_init(uv_loop_t* loop) {
         return UV_ENOSYS;
     }
 
+    sig = AllocSignal(-1);
+    if (sig == -1) {
+        CloseDevice((struct IORequest*)tr);
+        DeleteIORequest((struct IORequest*)tr);
+        DeleteMsgPort(port);
+        return UV_EMFILE;
+    }
+
     loop->aros_timerport = port;
     loop->aros_timerio = tr;
-    loop->aros_timer_open = 1;
+    loop->aros_async_sig = sig;
+    loop->aros_task_id = GetETaskID(me);
+    /* Publish the task last: a sender that sees it also sees the signal. */
+    __atomic_store_n(&loop->aros_task, me, __ATOMIC_RELEASE);
+
+    /* Anything uv_async_send()ed before this binding only set its handle's
+       pending flag; make the first wait drain it. */
+    SetSignal(1UL << sig, 1UL << sig);
+    return 0;
+}
+
+int uv__platform_loop_init(uv_loop_t* loop) {
+    loop->aros_timerport = NULL;
+    loop->aros_timerio = NULL;
+    loop->aros_task = NULL;
+    loop->aros_async_sig = -1;
+    loop->aros_task_id = 0;
+
     uv__aros_net_loop_init();
     return 0;
 }
 
 void uv__platform_loop_delete(uv_loop_t* loop) {
-    struct timerequest* tr = (struct timerequest*)loop->aros_timerio;
-
-    /* uv__io_poll always reaps its timer request before returning, so no
-       request is ever in flight here -- just close and free. (Calling WaitIO
-       on a request that was never sent removes a non-existent message and
-       faults.) */
-    if (loop->aros_timer_open && tr != NULL)
-        CloseDevice((struct IORequest*)tr);
-    if (tr != NULL)
-        DeleteIORequest((struct IORequest*)tr);
-    if (loop->aros_timerport != NULL)
-        DeleteMsgPort((struct MsgPort*)loop->aros_timerport);
-
-    loop->aros_timerio = NULL;
-    loop->aros_timerport = NULL;
-    loop->aros_timer_open = 0;
+    uv__aros_loop_unbind(loop);
     uv__aros_net_loop_delete();
 }
 
@@ -174,6 +254,12 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
     ULONG timermask;
     ULONG asyncmask = 0;
     ULONG got;
+
+    /* Own (or take over) the loop's exec resources on this task.  On failure
+       the loop runs unbound this turn: no timer, no async wake, and the
+       branches below fall back to a non-waiting turn rather than sleeping
+       on signals this task does not hold. */
+    (void)uv__aros_loop_bind(loop);
 
     /* Fold each queued watcher's pending mask into its active mask. Do this
        first, unconditionally -- it is the contract of uv__io_start/stop. */
@@ -287,8 +373,8 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
          * where a worker raises wq_async just after the nonblocking check,
          * without taxing idle/check-only turns with a full timer tick.
          */
-        if (uv__aros_threadpool_pending(loop) != 0 && loop->aros_timer_open &&
-            tr != NULL && loop->aros_timerport != NULL) {
+        if (uv__aros_threadpool_pending(loop) != 0 && tr != NULL &&
+            loop->aros_timerport != NULL) {
             timeout = 1;
         } else {
             uv__aros_dispatch_ttys(loop, tty_watchers, ntty);
@@ -308,9 +394,11 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
     if (timeout < 0 && asyncmask == 0)
         return;
 
-    if (!loop->aros_timer_open || tr == NULL) {
+    if (tr == NULL) {
         if (asyncmask)
             Wait(asyncmask);
+        else if (timeout != 0)
+            Delay(1);   /* unbound loop (bind failed): pace, do not spin */
         uv__update_time(loop);
         uv__aros_dispatch_dos_pipes(loop, pipe_watchers, npipe);
         uv__aros_dispatch_ttys(loop, tty_watchers, ntty);

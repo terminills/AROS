@@ -44,6 +44,10 @@
 #include <proto/exec.h>
 
 #include "aros-intbase.h"
+#include "internal.h"   /* uv__platform_loop_delete */
+
+/* aros.c: is the calling task the one holding this loop's exec resources? */
+int uv__aros_loop_owned_by_caller(uv_loop_t* loop);
 
 /* genmodule's per-task base lookup for this module (own slot, then the
    creator's slot).  Emitted hidden into uv1_start.c; the same module may
@@ -87,9 +91,38 @@ uv_loop_t *uv_aros_default_loop_struct(void)
 
 static ULONG uv_aros_closer_id;
 
+/*
+ * The exec-side half of "process death frees everything".  An embedder that
+ * never uv_loop_close()s the default loop relies on process exit to reclaim
+ * it (on Linux the kernel does).  On AROS a loop that has been polled holds
+ * exec resources of the polling task (aros.c uv__aros_loop_bind: timer port
+ * signal, async signal, timer.device open) and nothing reclaims them at exit;
+ * the Shell that ran the command reports each leaked bit as
+ *   *** '<cmd>' returned with unfreed signal 0x<bit>
+ * and frees it.  Reclaim them on the last per-task close, which runs on the
+ * closing task with LIBBASE = its own copy, so default_loop_ptr here is that
+ * process's loop.  Safe at any exit point: a callback (hence exit()) only
+ * ever runs after uv__io_poll has reaped its timer request, so nothing is in
+ * flight.  Handle memory comes from the task's stdc pool and goes with the
+ * process; only exec resources matter.  Only the task that runs the loop
+ * tears it down -- a pthread worker's own copy has default_loop_ptr NULL,
+ * and a foreign closer must not free another task's signals.
+ * (node closes its default loop itself, c12662e16b; this covers the rest.)
+ */
+static void uv_aros_reclaim_default_loop(struct UV1IntBase *base)
+{
+    uv_loop_t *loop = base->default_loop_ptr;
+
+    if (loop == NULL || !uv__aros_loop_owned_by_caller(loop))
+        return;
+
+    uv__platform_loop_delete(loop);
+    base->default_loop_ptr = NULL;
+}
+
 static int uv_aros_close_last(struct Library *lh)
 {
-    (void)lh;
+    uv_aros_reclaim_default_loop((struct UV1IntBase *)lh);
     uv_aros_closer_id = GetETaskID(FindTask(NULL));
     return 1;
 }

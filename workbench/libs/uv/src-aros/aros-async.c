@@ -1,4 +1,6 @@
 /*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
     AROS uv_async implementation for the libuv port.
 
     Replaces libuv's fd-based async wakeup (eventfd / self-pipe) with AROS exec
@@ -8,6 +10,11 @@
     arrives. This is required for uv_loop_init to succeed -- the loop creates an
     internal work-queue async handle (loop->wq_async) -- and is the wakeup path
     for threadpool completions and cross-thread uv_async_send().
+
+    The signal bit itself belongs to the task that runs the loop: aros.c
+    allocates it together with the timer port when that task first polls
+    (uv__aros_loop_bind) and frees it with the loop.  Until then a send only
+    leaves the handle pending; the binding drains it on the first poll.
 
     The queue-drain and spin logic mirror libuv's async.c verbatim; only the
     wakeup primitive differs.
@@ -44,18 +51,7 @@ static void uv__async_spin(uv_async_t* handle) {
 }
 
 static int uv__async_start(uv_loop_t* loop) {
-    BYTE sig;
-
-    if (loop->aros_async_sig >= 0)
-        return 0;
-
-    sig = AllocSignal(-1);
-    if (sig == -1)
-        return UV_EMFILE;
-
-    loop->aros_async_sig = sig;
-    if (loop->aros_task == NULL)
-        loop->aros_task = FindTask(NULL);
+    (void)loop;   /* the wake signal is bound with the loop (aros.c) */
     return 0;
 }
 
@@ -86,8 +82,12 @@ int uv_async_send(uv_async_t* handle) {
     atomic_fetch_add(busy, 1);
 
     if (atomic_exchange(pending, 1) == 0) {
-        if (loop->aros_task != NULL && loop->aros_async_sig >= 0)
-            Signal((struct Task*)loop->aros_task, 1UL << loop->aros_async_sig);
+        /* Acquire pairs with the release publish in uv__aros_loop_bind: a
+           task seen here also has its signal bit in place. */
+        struct Task* task = __atomic_load_n(&loop->aros_task, __ATOMIC_ACQUIRE);
+
+        if (task != NULL && loop->aros_async_sig >= 0)
+            Signal(task, 1UL << loop->aros_async_sig);
     }
 
     atomic_fetch_add(busy, -1);
@@ -124,10 +124,7 @@ void uv__async_close(uv_async_t* handle) {
 }
 
 void uv__async_stop(uv_loop_t* loop) {
-    if (loop->aros_async_sig >= 0) {
-        FreeSignal(loop->aros_async_sig);
-        loop->aros_async_sig = -1;
-    }
+    (void)loop;   /* freed by uv__platform_loop_delete with the binding */
 }
 
 int uv__async_fork(uv_loop_t* loop) {

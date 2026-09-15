@@ -16,7 +16,7 @@ ARCHSUFFIX := "tar.gz"
 
 # libuv-aros.diff is REQUIRED, not optional: it adds include/uv/aros.h and the
 # __AROS__ branch of include/uv/unix.h that puts aros_timerport/aros_timerio/
-# aros_task/aros_async_sig/aros_timer_open into uv_loop_t. Without it a clean
+# aros_task/aros_async_sig/aros_task_id into uv_loop_t. Without it a clean
 # fetch compiles vanilla upstream headers and src-aros/aros.c + aros-async.c
 # fail on every one of those fields. Spec form is
 # patch_name[:patch_subdir[:patch_opt]] applied under `destination`; the diff is
