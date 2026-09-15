@@ -885,6 +885,21 @@ uv_handle_type uv_guess_handle(uv_file file) {
   if (S_ISREG(status.st_mode) || S_ISDIR(status.st_mode))
     return UV_FILE;
 
+  /* Every DOS handle that is not a file reaches posixc's fstat as a character
+     device: a console, NIL:, and - since isatty() stopped calling a pipe a
+     terminal (compiler/crt/posixc/isatty.c) - the PIPE: endpoints a spawned
+     child inherits as its stdio.  Upstream's unix/tty.c answers UV_FILE for a
+     character device too, and that is the right answer here: node then drives
+     the descriptor with fs.writeSync / fs.ReadStream, which is what a DOS
+     handle supports.  Falling through to UV_UNKNOWN_HANDLE instead made node
+     install its black-hole stdout ("Provide a dummy black-hole output"), so a
+     child's every write vanished silently. */
+  if (S_ISCHR(status.st_mode))
+    return UV_FILE;
+
+  if (S_ISFIFO(status.st_mode))
+    return UV_NAMED_PIPE;
+
   return UV_UNKNOWN_HANDLE;
 }
 
