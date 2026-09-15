@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2004-2013, The AROS Development Team. All rights reserved.
+    Copyright (C) 2004-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <sys/types.h>
@@ -41,17 +41,13 @@
 
 ******************************************************************************/
 {
-  struct PosixCIntBase *PosixCBase =
-        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+  struct vfork_data *udata = __posixc_pretending();
   struct Task *ParentTask;
   struct ETask *eThisTask;
   struct ETask *et;
 
-  if(PosixCBase->flags & PRETEND_CHILD)
-  {
-    struct vfork_data *udata = PosixCBase->vfork_data;
+  if (udata)
     eThisTask = GetETask(udata->child);
-  }
   else
     eThisTask = GetETask(FindTask(NULL));
   assert(eThisTask);

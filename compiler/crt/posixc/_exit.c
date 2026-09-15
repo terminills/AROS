@@ -46,14 +46,11 @@
 
 ******************************************************************************/
 {
-    struct PosixCIntBase *PosixCBase =
-        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+    struct vfork_data *udata = __posixc_pretending();
 
-    if (PosixCBase->flags & PRETEND_CHILD)
+    if (udata)
     {
-        struct vfork_data *udata = PosixCBase->vfork_data;
-
-        D(bug("_exit(%d): PRETEND_CHILD, longjmp to vfork exit\n", code));
+        D(bug("_exit(%d): pretending vfork child, longjmp to vfork exit\n", code));
 
         udata->child_error = code;
         longjmp(udata->parent_newexitjmp, 1);

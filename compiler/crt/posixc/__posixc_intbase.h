@@ -40,7 +40,12 @@ struct PosixCIntBase
 
     /* common */
     APTR internalpool;
-    int32_t flags;
+
+    /* __taskctx.c: the base this one inherited from at OpenLib time and how
+       (VFORK_PARENT, EXEC_PARENT, or 0 for the plain per-task lineage).
+       Read by __init_fd(), __umask_init() and __posixc_nixmain(). */
+    struct PosixCIntBase *parentbase;
+    int parentmode;
 
     struct Device *timerBase;
     struct timerequest timerReq;
@@ -95,9 +100,6 @@ struct PosixCIntBase
     int doupath;   /* BOOL - does the conversion need to be done?  */
     int parent_does_upath; /* BOOL - parent does upath conversion */
 
-    /* __vfork.c */
-    struct vfork_data *vfork_data;
-
     /* chdir.c/fchdir.c */
     int cd_changed;
     BPTR cd_lock;
@@ -122,18 +124,35 @@ struct PosixCIntBase
     gid_t egid; /* Effective group id of process */
 };
 
-/* flags; values of flags are power of two so they can be ORed together */
+/* __taskctx.c: per-Task vfork()/exec*() state.  None of it lives in base
+   fields, because one base serves every Task that reaches posixc through a
+   caller holding it (AROS_GM_STACKCALL); see __taskctx.c. */
 
-/* When a program is started with the exec functions and from vfork,
-   this is indicated in the flags of the library.
-   This way the child can use the parent posixc.library during its
-   initialization phase */
+/* How a child base inherits from its parent: started by the exec functions
+   or by vfork.  The child copies the parent's descriptor table, umask and
+   environment during its own initialisation. */
 #define EXEC_PARENT 0x00000001
 #define VFORK_PARENT 0x00000002
 
-/* This flag is set by vfork() to correctly report child process ID during
-   execution of child code, even though that it's actually executed by parent
-   process until execve() is called. */
-#define PRETEND_CHILD 0x00000004
+/* The parent names itself for the window in which its child opens posixc:
+   vfork() around the launcher's setup (key = the launcher's vfork_data, its
+   NP_UserData), exec*() around RunCommand() (task = the Task the program runs
+   on).  Lives on the parent's stack for that window. */
+struct __posixc_parentctx
+{
+    struct PosixCIntBase *base;
+    int mode;               /* VFORK_PARENT or EXEC_PARENT */
+    struct Task *task;      /* exec*(): the consuming Task */
+    APTR key;               /* vfork(): the consuming launcher's tc_UserData */
+};
+IPTR __posixc_setparentctx(struct __posixc_parentctx *ctx);
+void __posixc_restoreparentctx(IPTR old);
+
+/* The vfork_data of a Task that is a vfork() parent running its child's code
+   until the child's _exit()/exec*(): its descriptor calls resolve to the
+   child base (__fd_owner()), getpid() reports the child, _exit() and the
+   exec*() family hand over to the launcher.  NULL for every other Task. */
+struct vfork_data *__posixc_pretending(void);
+void __posixc_setpretending(struct vfork_data *udata);
 
 #endif //__POSIXC_INTBASE_H

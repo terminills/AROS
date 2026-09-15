@@ -266,13 +266,13 @@ D(bug("launcher: executing command\n"));
             SETCHILDSTATE(CHILD_STATE_UDATA_NOT_USED);
             Signal(udata->parent, 1 << udata->parent_signal);
 
-            /* The parent is still pretending to be us: its PosixCBase->StdCBase
-               is OUR StdCBase until parent_leavepretendchild() runs, and its
-               fflush(NULL)/errno on the way there resolve through it.  Hold
-               our libraries open until it has stopped, exactly as the
-               executed path above does - closing them first left the parent
-               calling errno through a freed base (jump to PC 0 in C:Node's
-               second execFile(), a bare-name exec that failed PATH lookup). */
+            /* The parent is still pretending to be us: its descriptor calls
+               resolve to OUR table until parent_leavepretendchild() runs, and
+               its fflush(NULL) on the way there writes through it.  Hold our
+               libraries open until it has stopped, exactly as the executed
+               path above does - closing them first left the parent calling
+               through a freed base (jump to PC 0 in C:Node's second
+               execFile(), a bare-name exec that failed PATH lookup). */
             D(bug("launcher: waiting for parent to be after _exit()\n"));
             Wait(1 << udata->child_signal);
             ASSERTPARENTSTATE(PARENT_STATE_STOPPED_PRETENDING);
@@ -332,7 +332,7 @@ pid_t __vfork(jmp_buf env)
     D(hexdump(env, 0, sizeof(jmp_buf) + sizeof(void *) * 4));
 
     udata->parent = this;
-    udata->prev = PosixCBase->vfork_data;
+    udata->prev = __posixc_pretending();
 
     D(bug("__vfork: Parent: Saved old parent's vfork_data: %p\n", udata->prev));
     udata->parent_posixcbase = PosixCBase;
@@ -375,7 +375,7 @@ pid_t __vfork(jmp_buf env)
          * we jump to here from a function lower in the call chain
          */
         PosixCBase = (struct PosixCIntBase *)__aros_getbase_PosixCBase();
-        udata = PosixCBase->vfork_data;
+        udata = __posixc_pretending();
 
         D(bug("__vfork: ParentPretendingChild: vfork_data = %x\n", udata));
 
@@ -438,17 +438,11 @@ static __attribute__((noinline)) void __vfork_exit_controlled_stack(struct vfork
        before the final longjmp. */
     child_pid = GetETaskID(udata->child);
 
-    /* leavepretendchild will restore old StdCBase and thus also
-       old startup jmp_buf.
-       This is also the reason this function has to be called before
-       signaling child that we are after _exit().
-    */
+    /* Stop resolving to the child's descriptor table and directory before
+       the launcher is told it may close them. */
     parent_leavepretendchild(udata);
 
-    /* Now that our own StdCBase is back, hand the child's errno to the
-       parent.  Setting it before the restore wrote it into the child's
-       errno cell instead - and, when no exec had happened, into a StdCBase
-       the launcher was free to close already. */
+    /* Hand the child's errno to the parent. */
     errno = udata->child_errno;
 
     /* The launcher waits for this in both the executed and the not-executed
@@ -480,6 +474,10 @@ static void parent_createchild(struct vfork_data *udata)
     jmp_buf vfork_jmp;
     struct Task *self = FindTask(NULL);
     struct Process *parent = (struct Process *)self;
+    /* Names this base as the launcher's parent for as long as it may open
+       posixc; keyed by udata, the launcher's NP_UserData (__taskctx.c). */
+    struct __posixc_parentctx ctx = { PosixCBase, VFORK_PARENT, NULL, udata };
+    IPTR oldctx;
 
     /* Inherit the parent's stack size for the child process.  An exec*()ed
      * child runs via RunCommand() using the child CLI's cli_DefaultStack,
@@ -524,7 +522,15 @@ static void parent_createchild(struct vfork_data *udata)
         vfork_longjmp(vfork_jmp, -1);
     }
 
-    PosixCBase->flags |= VFORK_PARENT;
+    /* The launcher's OpenLibrary("posixc.library") must copy from THIS base,
+       which is the base this call reached posixc with - for a pthread worker
+       calling through a library that carries its creator's base that is not
+       the base in the worker's own per-task slot that genmodule would hand
+       the launcher as parent.  Name it for the launcher (it reads its
+       creator's slot and proves itself with udata) until setup is done; the
+       context is dropped on every exit path, so a failed vfork() cannot leave
+       a later, unrelated child inheriting this table. */
+    oldctx = __posixc_setparentctx(&ctx);
 
     D(bug("__vfork: Parent: Creating child\n"));
     udata->child = (struct Task*) CreateNewProc(tags);
@@ -533,6 +539,7 @@ static void parent_createchild(struct vfork_data *udata)
     {
         D(bug("__vfork: Child could not be created\n"));
         /* Something went wrong, return -1 */
+        __posixc_restoreparentctx(oldctx);
         FreeMem(udata, sizeof(struct vfork_data));
         errno = ENOMEM; /* Most likely */
         vfork_longjmp(vfork_jmp, -1);
@@ -544,6 +551,8 @@ static void parent_createchild(struct vfork_data *udata)
     ASSERTCHILDSTATE(CHILD_STATE_SETUP_FAILED | CHILD_STATE_SETUP_FINISHED);
     PRINTSTATE;
 
+    __posixc_restoreparentctx(oldctx);
+
     if (udata->child_errno)
     {
         /* An error occured during child setup */
@@ -551,76 +560,34 @@ static void parent_createchild(struct vfork_data *udata)
         errno = udata->child_errno;
         vfork_longjmp(vfork_jmp, -1);
     }
-
-    PosixCBase->flags &= ~VFORK_PARENT;
 }
 
 static void parent_enterpretendchild(struct vfork_data *udata)
 {
-    struct PosixCIntBase *PosixCBase =
-        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
     D(bug("parent_enterpretendchild(%x): entered\n", udata));
 
-    PosixCBase->vfork_data = udata;
+    /* Pretend to be running as the child created by vfork: from here until
+       parent_leavepretendchild() this Task's descriptor calls resolve to the
+       child base's table (__fd_owner()), chdir() records into the child base,
+       getpid()/_exit()/the exec*() family act for the child.
 
-    /* Remember and switch StdCBase */
-    udata->parent_stdcbase = PosixCBase->PosixCBase.StdCBase;
-    PosixCBase->PosixCBase.StdCBase = udata->child_posixcbase->PosixCBase.StdCBase;
-    /* _[eE]xit() can also be called with the switched StdCBase so we also
-       register the exit jmp_buf in this StdCBase. We don't need to remember
-       old as child will overwrite these if it should call __exec_do().
-    */
-    __stdc_program_startup(udata->parent_newexitjmp, &udata->child_error);
+       This is Task state, not base state: the base this call came in on may
+       serve other Tasks at the same time (a pthread worker of C:Node reaches
+       posixc through uv1.library carrying the main thread's base), and those
+       must keep seeing their own table, heap and directory (__taskctx.c). */
+    __posixc_setpretending(udata);
 
-#if (0)
-    /* Remember and switch env var list */
-    udata->parent_env_list = __posixc_get_envlistptr();
-    __posixc_set_envlistptr(udata->child_posixcbase->PosixCBase.StdCIOBase->env_list);
-#endif
-
-    /* Redirect this base's descriptor-table OWNER to the child base for the
-       pretend-child window, rather than mutating this base's own fd_array/
-       fd_slots/internalpool in place.
-
-       pthread workers created by this Process (e.g. git's sideband-demux
-       thread) share our descriptor table by routing every access through
-       __fd_owner(worker)->fd_array, which is *our* fd_array.  If we mutated
-       our fields in place, a concurrently-running worker would momentarily see
-       the child's partial (copied) table and dereference a NULL slot -> crash.
-       Redirecting our fd_owner leaves our own fd_array/fd_slots/internalpool
-       fields untouched (so workers keep seeing the real table) while our own
-       pretend-child accesses, which resolve through __fd_owner(us), now see the
-       child's copied table. */
-    udata->parent_fd_owner = PosixCBase->fd_owner;
-    PosixCBase->fd_owner = udata->child_posixcbase;
-    
-    /* Remember and switch chdir fields */
-    udata->parent_cd_changed = PosixCBase->cd_changed;
-    PosixCBase->cd_changed = udata->child_posixcbase->cd_changed;
-    udata->parent_cd_lock = PosixCBase->cd_lock;
-    PosixCBase->cd_lock = udata->child_posixcbase->cd_lock;
     udata->parent_curdir = CurrentDir(((struct Process *)udata->child)->pr_CurrentDir);
-
-    /* Remember and switch upathbuf */
-    udata->parent_upathbuf = PosixCBase->upathbuf;
-    PosixCBase->upathbuf = udata->child_posixcbase->upathbuf;
-
-    /* Pretend to be running as the child created by vfork */
-    udata->parent_flags = PosixCBase->flags;
-    PosixCBase->flags |= PRETEND_CHILD;
 
     D(bug("parent_enterpretendchild: leaving\n"));
 }
 
 static void child_takeover(struct vfork_data *udata)
 {
-    struct PosixCIntBase *PosixCBase =
-        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
     D(bug("child_takeover(%x): entered\n", udata));
 
-    /* Set current dir to parent's current dir */
-    PosixCBase->cd_changed = udata->parent_posixcbase->cd_changed;
-    PosixCBase->cd_lock = udata->parent_posixcbase->cd_lock;
+    /* Set current dir to parent's current dir.  A chdir() the pretend child
+       made was recorded in this base already (chdir.c). */
     CurrentDir(((struct Process *)udata->parent)->pr_CurrentDir);
 
     D(bug("child_takeover(): leaving\n"));
@@ -628,32 +595,13 @@ static void child_takeover(struct vfork_data *udata)
 
 static void parent_leavepretendchild(struct vfork_data *udata)
 {
-    struct PosixCIntBase *PosixCBase =
-        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
     D(bug("parent_leavepretendchild(%x): entered\n", udata));
 
-    /* Restore parent's StdCBase */
-    PosixCBase->PosixCBase.StdCBase = udata->parent_stdcbase;
-
-#if (0)
-    /* Restore parent's env var list */
-    __posixc_set_envlistptr(udata->parent_env_list);
-#endif
-
-    /* Restore parent's descriptor-table owner (see parent_enterpretendchild) */
-    PosixCBase->fd_owner = udata->parent_fd_owner;
-
     /* Switch to currentdir from before vfork() call */
-    PosixCBase->cd_changed = udata->parent_cd_changed;
-    PosixCBase->cd_lock = udata->parent_cd_lock;
     CurrentDir(udata->parent_curdir);
 
-    /* Restore parent's upathbuf */
-    PosixCBase->upathbuf = udata->parent_upathbuf;
-
     /* Switch to previous vfork_data */
-    PosixCBase->vfork_data = udata->prev;
-    PosixCBase->flags = udata->parent_flags;
+    __posixc_setpretending(udata->prev);
 
     D(bug("parent_leavepretendchild: leaving\n"));
 }

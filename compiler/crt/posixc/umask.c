@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2012, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <aros/symbolsets.h>
@@ -47,16 +47,14 @@
 
 static int __umask_init(struct PosixCIntBase *PosixCBase)
 {
-    struct PosixCIntBase *pPosixCBase;
-
-    pPosixCBase = __GM_GetBaseParent(PosixCBase);
+    struct PosixCIntBase *pPosixCBase = PosixCBase->parentbase;
 
     /* TODO: Implement umask() properly
        Currently information is not used in any of the related functions
     */
 
      /* Child of exec*()/vfork() functions inherit umask of parent */
-    if (pPosixCBase && (pPosixCBase->flags & (VFORK_PARENT | EXEC_PARENT)))
+    if (pPosixCBase && (PosixCBase->parentmode & (VFORK_PARENT | EXEC_PARENT)))
         PosixCBase->umask = pPosixCBase->umask;
     else
         PosixCBase->umask = S_IWGRP|S_IWOTH;

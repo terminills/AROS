@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2013, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     POSIX.1-2008 function chdir().
 */
@@ -12,6 +12,7 @@
 #include <aros/symbolsets.h>
 #include <errno.h>
 #include "__upath.h"
+#include "__vfork.h"
 
 /*****************************************************************************
 
@@ -55,6 +56,7 @@
 {
     struct PosixCIntBase *PosixCBase =
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+    struct vfork_data *udata = __posixc_pretending();
     BPTR oldlock;
     BPTR newlock;
     
@@ -73,6 +75,12 @@
 
     oldlock = CurrentDir( newlock );
     
+    /* A vfork() parent running its child's code changes the directory for
+       the child: record it in the child's base, which restores the original
+       directory when the child closes posixc (__taskctx.c). */
+    if (udata)
+        PosixCBase = udata->child_posixcbase;
+
     if( PosixCBase->cd_changed )
     {
         UnLock( oldlock );

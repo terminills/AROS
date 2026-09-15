@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2008-2013, The AROS Development Team. All rights reserved.
+    Copyright (C) 2008-2026, The AROS Development Team. All rights reserved.
 */
 
 #include "__posixc_intbase.h"
@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include "__upath.h"
+#include "__vfork.h"
 #include <aros/debug.h>
 
 /*****************************************************************************
@@ -52,6 +53,7 @@
 {
     struct PosixCIntBase *PosixCBase =
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+    struct vfork_data *udata = __posixc_pretending();
     BPTR oldlock = BNULL;
     BPTR newlock = BNULL;
     BPTR handle = BNULL;
@@ -77,6 +79,11 @@
         goto error;
     }
     oldlock = CurrentDir( newlock );
+
+    /* A vfork() parent running its child's code changes the directory for
+       the child: record it in the child's base (see chdir.c). */
+    if (udata)
+        PosixCBase = udata->child_posixcbase;
 
     if( PosixCBase->cd_changed )
     {

@@ -13,6 +13,7 @@ POSIXC := \
     __ftello \
     __assert \
     __optionallibs \
+    __taskctx \
     __posixc_env \
     __posixc_init \
     __posixc_nixmain \

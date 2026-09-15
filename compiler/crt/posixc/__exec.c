@@ -56,7 +56,7 @@ void __exec_do(APTR id)
     /* id is unused */
     (void)id;
 
-    if (PosixCBase->flags & PRETEND_CHILD)
+    if (__posixc_pretending())
     {
         /* forking parent executing child code prior to child taking over */
         __exec_do_pretend_child(PosixCBase);
@@ -104,7 +104,7 @@ APTR __exec_prepare(const char *filename, int searchpath, char *const argv[], ch
     if (!filename2)
         goto error;
 
-    if (PosixCBase->flags & PRETEND_CHILD)
+    if (__posixc_pretending())
     {
         /* forking parent executing child code prior to child taking over */
         return __exec_prepare_pretend_child(filename2, argv, envp, PosixCBase);
@@ -239,7 +239,7 @@ static char * assign_filename(const char *filename, int searchpath, char **envir
 static APTR __exec_prepare_pretend_child(char *filename2, char *const argv[], char *const envp[],
         struct PosixCIntBase *PosixCBase)
 {
-    struct vfork_data *udata = PosixCBase->vfork_data;
+    struct vfork_data *udata = __posixc_pretending();
 
     udata->exec_filename = filename2;
     udata->exec_argv = argv;
@@ -475,13 +475,14 @@ error:
 
 static void __exec_do_pretend_child(struct PosixCIntBase *PosixCBase)
 {
-    /* When exec is called under vfork condition, the PRETEND_CHILD flag is set
-       and we need to signal child that exec is called.
+    /* When exec is called under vfork condition, this Task is pretending to
+       be its child (__taskctx.c) and we need to signal the child that exec is
+       called.
     */
 
-    struct vfork_data *udata = PosixCBase->vfork_data;
+    struct vfork_data *udata = __posixc_pretending();
 
-    D(bug("[__exec_do_pretend_child] PRETEND_CHILD\n"));
+    D(bug("[__exec_do_pretend_child] pretending child\n"));
 
     __close_on_exec_fdescs();
 
@@ -496,7 +497,7 @@ static void __exec_do_pretend_child(struct PosixCIntBase *PosixCBase)
     __exec_cleanup(PosixCBase);
 
     /* Continue as parent process */
-    D(bug("[__exec_do_pretend_child] Stop running as PRETEND_CHILD\n"));
+    D(bug("[__exec_do_pretend_child] Stop pretending\n"));
     _exit(0);
 
     assert(0); /* Should not be reached */
@@ -508,8 +509,12 @@ static void __exec_do_regular(struct PosixCIntBase *PosixCBase)
     struct CommandLineInterface *cli = Cli();
     struct Task *self = FindTask(NULL);
     LONG returncode;
-
-    PosixCBase->flags |= EXEC_PARENT;
+    /* The program's startup opens posixc on this very Task and copies its
+       descriptors/umask from this base: name it for the program (see
+       __taskctx.c) - the Task's per-task slot may hold another one when
+       exec*() was reached through a library carrying the creator's base. */
+    struct __posixc_parentctx ctx = { PosixCBase, EXEC_PARENT, self, NULL };
+    IPTR oldctx = __posixc_setparentctx(&ctx);
 
     oldtaskname = self->tc_Node.ln_Name;
     self->tc_Node.ln_Name = PosixCBase->exec_taskname;
@@ -571,6 +576,8 @@ static void __exec_do_regular(struct PosixCIntBase *PosixCBase)
         (STRPTR)PosixCBase->exec_args,
         strlen(PosixCBase->exec_args)
     );
+
+    __posixc_restoreparentctx(oldctx);
 
     /* RunCommand() does not Close() standard output so may not flush either.
        So to be sure flush them here */

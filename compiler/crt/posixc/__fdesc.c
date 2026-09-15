@@ -27,6 +27,7 @@
 #include "__fdesc.h"
 #include "__dos64.h"
 #include "__upath.h"
+#include "__vfork.h"
 
 static int __fdlib_available(struct PosixCIntBase *PosixCBase)
 {
@@ -56,9 +57,19 @@ static void __set_errno(struct PosixCIntBase *PosixCBase, int enval)
    resolves the base that actually holds the descriptor array/slots/pool;
    it is the base itself for an ordinary Process or CLI child.  All descriptor
    table accesses go through FD_ARRAY()/FD_SLOTS()/FD_POOL() so a worker sees
-   its creator's table. */
+   its creator's table.
+
+   A Task running its vfork() child's code sees the child base's table
+   instead, whichever base its call came in on: the decision is the Task's,
+   not the base's, as the base may serve other Tasks at the same time (see
+   __taskctx.c). */
 static struct PosixCIntBase *__fd_owner(struct PosixCIntBase *PosixCBase)
 {
+    struct vfork_data *udata = __posixc_pretending();
+
+    if (udata)
+        return udata->child_posixcbase;
+
     return PosixCBase->fd_owner ? PosixCBase->fd_owner : PosixCBase;
 }
 
@@ -789,13 +800,18 @@ int __init_stdfiles(struct PosixCIntBase *PosixCBase)
     return 1;
 }
 
-static int __copy_fdarray(fdesc **__src_fd_array, int fd_slots)
+/* Copy the descriptor table of src (the vfork()/exec*() parent's base)
+   into this base's.  src's RESOLVED table is used: a base that only borrows
+   its creator's descriptors (fd_owner set, own fd_array NULL) has nothing in
+   its own fields. */
+static int __copy_fdarray(struct PosixCIntBase *src)
 {
     struct PosixCIntBase *PosixCBase =
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+    fdesc **__src_fd_array = FD_ARRAY(src);
     int i;
-    
-    for(i = fd_slots - 1; i >= 0; i--)
+
+    for(i = FD_SLOTS(src) - 1; i >= 0; i--)
     {
         if(__src_fd_array[i])
         {
@@ -823,13 +839,14 @@ static int __copy_fdarray(fdesc **__src_fd_array, int fd_slots)
 
 int __init_fd(struct PosixCIntBase *PosixCBase)
 {
-    struct PosixCIntBase *pPosixCBase =
-        (struct PosixCIntBase *)__GM_GetBaseParent(PosixCBase);
+    /* The base a vfork()/exec*() parent ran on and how this base inherits
+       from it (pmode), not necessarily the base in the creating Task's
+       per-task slot (see __taskctx.c). */
+    int pmode = PosixCBase->parentmode;
+    struct PosixCIntBase *pPosixCBase = PosixCBase->parentbase;
     struct Task *task = FindTask(NULL);
 
-    D(bug("Found parent PosixCBase %p with flags 0x%x\n",
-          pPosixCBase, pPosixCBase ? pPosixCBase->flags : 0
-    ));
+    D(bug("Found parent PosixCBase %p, mode 0x%x\n", pPosixCBase, pmode));
 
     /* Initialise this base's own table lock up front, before any descriptor
        call can reach FD_LOCK: the owner path's __init_stdfiles() below takes
@@ -843,8 +860,7 @@ int __init_fd(struct PosixCIntBase *PosixCBase)
        seen for pthread workers under load. */
     InitSemaphore(&PosixCBase->fd_sem);
 
-    if (pPosixCBase &&
-        !(pPosixCBase->flags & (VFORK_PARENT | EXEC_PARENT)) &&
+    if (pPosixCBase && !pmode &&
         (task->tc_Node.ln_Type == NT_TASK ||
          (task->tc_Node.ln_Type == NT_PROCESS &&
           ((struct Process *)task)->pr_CLI == BNULL)))
@@ -867,12 +883,17 @@ int __init_fd(struct PosixCIntBase *PosixCBase)
 
     PosixCBase->fd_owner = PosixCBase;
 
-    if (pPosixCBase && (pPosixCBase->flags & (VFORK_PARENT | EXEC_PARENT)))
+    if (pPosixCBase && pmode)
     {
-        /* VFORK_PARENT use case - child manipulates file descriptors prior to calling exec* */
-        int res = __copy_fdarray(pPosixCBase->fd_array, pPosixCBase->fd_slots);
+        /* VFORK_PARENT use case - child manipulates file descriptors prior to
+           calling exec*.  Copy the parent's RESOLVED table: a base that only
+           borrows its creator's descriptors (fd_owner set, own fd_array NULL)
+           has nothing in its own fields.  This runs on the launcher Task,
+           which is not pretending, so the parent's real owner and not a
+           child table is copied. */
+        int res = __copy_fdarray(pPosixCBase);
 
-        if (pPosixCBase->flags & EXEC_PARENT)
+        if (pmode & EXEC_PARENT)
             /* EXEC_PARENT called through RunCommand which injected parameters to Input() */
             FD_ARRAY(PosixCBase)[STDIN_FILENO]->fcb->privflags |= _FCB_FLUSHONREAD;
 

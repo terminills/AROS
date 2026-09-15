@@ -29,17 +29,7 @@ struct vfork_data
     BYTE parent_signal;
     BYTE parent_state;
     struct PosixCIntBase *parent_posixcbase;
-    struct StdCBase *parent_stdcbase;
-    int parent_cd_changed;
-    BPTR parent_cd_lock;
     BPTR parent_curdir;
-    struct __env_item *parent_env_list;
-    APTR parent_internalpool;
-    int parent_numslots;
-    fdesc **parent_fd_array;
-    struct PosixCIntBase *parent_fd_owner;
-    int parent_flags;
-    char *parent_upathbuf;
 
     struct Task *child;
     int child_executed;

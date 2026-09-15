@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2021, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: special main function for code which has to use special *nix features.
           This function gets called from a function with a similar name statically
@@ -63,11 +63,11 @@ int __posixc_nixmain(int (*main)(int argc, char *argv[]), int argc, char *argv[]
        with the caller, but we do not want that. It's kind of wasteful to do
        it even if we've been started as a fresh process, though, so if we can
        we avoid it.
-       The cloning does not need to be performed if flags of parent have VFORK_PARENT
-       or EXEC_PARENT flags */
-    pPosixCBase = __GM_GetBaseParent(PosixCBase);
-    D(bug("__posixc_nixmain: pPosixCBase = %x, Task=%x\n", pPosixCBase, FindTask(NULL)));
-    if (!pPosixCBase || !(pPosixCBase->flags & (VFORK_PARENT | EXEC_PARENT)))
+       The cloning does not need to be performed if this base was inherited
+       from a VFORK_PARENT or EXEC_PARENT base (__taskctx.c). */
+    pPosixCBase = PosixCBase->parentbase;
+    D(bug("__posixc_nixmain: pPosixCBase = %x, mode %d, Task=%x\n", pPosixCBase, PosixCBase->parentmode, FindTask(NULL)));
+    if (!pPosixCBase || !(PosixCBase->parentmode & (VFORK_PARENT | EXEC_PARENT)))
     {
         D(bug("__posixc_nixmain: Cloning LocalVars"));
         if (!clone_vars(&old_vars))
@@ -99,7 +99,7 @@ int __posixc_nixmain(int (*main)(int argc, char *argv[]), int argc, char *argv[]
         D(bug("__posixc_nixmain: setjmp() != 0\n"));
 
     D(bug("__posixc_nixmain: pPosixCBase = %x, Task=%x\n", pPosixCBase, FindTask(NULL)));
-    if (!pPosixCBase || !(pPosixCBase->flags & (VFORK_PARENT | EXEC_PARENT)))
+    if (!pPosixCBase || !(PosixCBase->parentmode & (VFORK_PARENT | EXEC_PARENT)))
         restore_vars(&old_vars);
 
 err_vars:
