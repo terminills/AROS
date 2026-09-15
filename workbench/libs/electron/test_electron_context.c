@@ -1,4 +1,8 @@
 /*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+*/
+
+/*
  * First simultaneous CEF and Node context probe.
  *
  * CEF owns V8 initialization and creates the renderer isolate/context.  The
@@ -67,8 +71,13 @@ static int first_paint;
 static ULONG first_paint_tick;
 static ULONG pump_tick;
 
-static cef_char_t resources_path[] = u"Developer:Chromium";
-static cef_char_t locales_path[] = u"Developer:Chromium/locales";
+/*
+ * Developer:CEF, not Developer:Chromium: the paks must come from the build
+ * cef-blink.library was linked from (grit numbers IDR_* per build).  See the
+ * lifecycle probe for the failure a chrome-target pak produces.
+ */
+static cef_char_t resources_path[] = u"Developer:CEF";
+static cef_char_t locales_path[] = u"Developer:CEF/locales";
 static cef_char_t root_cache_path[] = u"T:ElectronContext";
 static cef_char_t cache_path[] = u"T:ElectronContext/Default";
 #ifdef ELECTRON_SHELL_WINDOWED
@@ -856,11 +865,21 @@ static int make_node_main_script(const char *path)
         "process._rawDebug('[ELECTRON-MODULE] loading main entry "
         MAIN_SCRIPT_OPTION "');"
         "const __arosElectronMain='";
+    /*
+     * A synchronous throw from the main script never reaches the module
+     * bootstrap's uncaughtException hook (it leaves LoadEnvironment directly)
+     * and node.library only reports it through NodeBridgeLog(), which is
+     * compiled out of a non-debug tree - so it came back as a bare rc=20.
+     * Report it through the bootstrap's console.error hook (the [ELECTRON-JS]
+     * line in the debug log), then rethrow so the attach fails as before.
+     */
     static const char suffix[] =
         "';const __arosRequire=require('module').createRequire("
         "__arosElectronMain);"
         "globalThis.__arosElectronMainModuleRequest=__arosElectronMain;"
-        "__arosRequire(__arosElectronMain);";
+        "try{__arosRequire(__arosElectronMain);}catch(e){"
+        "console.error('[ELECTRON-MODULE] main threw: '+"
+        "((e&&e.stack)||e));throw e;}";
     const size_t prefix_length = sizeof(prefix) - 1;
     const size_t suffix_length = sizeof(suffix) - 1;
     const size_t path_length = strlen(path);
