@@ -598,7 +598,28 @@ static void parent_leavepretendchild(struct vfork_data *udata)
     D(bug("parent_leavepretendchild(%x): entered\n", udata));
 
     /* Switch to currentdir from before vfork() call */
-    CurrentDir(udata->parent_curdir);
+    BPTR pretend_curdir = CurrentDir(udata->parent_curdir);
+
+    /* A chdir() the pretend child made left its new lock as our current
+       directory and the child's own start directory in the child base
+       (cd_lock, chdir.c).  When the child exec()ed, child_takeover() moved
+       the new lock into the launcher, whose posixc close swaps cd_lock back
+       and UnLock()s it: both locks end up freed once.  When the child
+       _exit()ed instead (exec failed: uv_spawn of a name that is not on
+       PATH, with a cwd), nothing took the new lock over, and the launcher
+       still sits on its start directory: its __exit_chdir() then UnLock()ed
+       that start directory, and the Process exit UnLock()ed it again - a
+       FileLock freed twice in emul-handler, the whole guest dead (VS Code
+       run 26, the Claude CLI's first spawn).  Drop the orphaned lock here
+       and clear the record, so the launcher's start directory is freed once,
+       by the Process exit. */
+    if (!udata->child_executed && udata->child_posixcbase
+        && udata->child_posixcbase->cd_changed)
+    {
+        UnLock(pretend_curdir);
+        udata->child_posixcbase->cd_changed = FALSE;
+        udata->child_posixcbase->cd_lock = BNULL;
+    }
 
     /* Switch to previous vfork_data */
     __posixc_setpretending(udata->prev);
