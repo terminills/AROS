@@ -13,8 +13,10 @@
 #include <proto/node-v8.h>
 #include <proto/v8.h>
 
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <pthread.h>
 
 #include <node.h>
 #include <node_version.h>
@@ -145,6 +147,121 @@ static inline void NodeBindTaskBase(LIBBASETYPEPTR lh)
 {
   if (__aros_getoffsettable() == nullptr)
     __aros_setoffsettable(lh);
+}
+
+/*
+ * Threads node starts itself get the base handed down at creation.
+ *
+ * The one-level borrow above covers a thread the opener creates, and no
+ * more.  A worker_threads Worker (VS Code's extension host) is such a
+ * thread; the CA-certificate loader that node's crypto init starts FROM the
+ * Worker is two creations from the opener: its own slot is empty, its
+ * creator's slot is empty, and its first relwrapper faulted at CR2 = 0xF0
+ * (the StdCBase offset) in __malloc_StdCBase_relwrapper under
+ * LoadCACertificates (desktop VS Code run 25, 2026-09-15).  No entry point
+ * of node.library runs on such a thread, so NodeBindTaskBase() never sees
+ * it.
+ *
+ * include-aros/aros-node-compat.h renames uv_thread_create(),
+ * uv_thread_create_ex() and pthread_create() in node's own units to the
+ * wrappers below.  Each wrapper records the CREATING thread's effective base
+ * (own slot or the borrowed one) and the new thread binds it before running
+ * the entry, so the base follows every chain of creations however deep.
+ * The start block is exec memory: it is freed on the new thread before its
+ * slot is bound, where a stdc relwrapper would have no base to free through.
+ */
+struct NodeThreadStart {
+  void (*uv_entry)(void *);
+  void *(*pthread_entry)(void *);
+  void *arg;
+  void *base;
+};
+
+static NodeThreadStart *NodeThreadStartCreate(void *arg)
+{
+  auto *start = static_cast<NodeThreadStart *>(
+      AllocVec(sizeof(NodeThreadStart), MEMF_ANY | MEMF_CLEAR));
+  if (start == nullptr)
+    return nullptr;
+  start->arg = arg;
+  start->base = __aros_getoffsettable();
+  return start;
+}
+
+static NodeThreadStart NodeThreadStartBind(void *raw)
+{
+  auto *start = static_cast<NodeThreadStart *>(raw);
+  NodeThreadStart local = *start;
+  FreeVec(start);
+  if (local.base != nullptr && __aros_getoffsettable() == nullptr)
+    __aros_setoffsettable(local.base);
+  return local;
+}
+
+static void NodeUvThreadEntry(void *raw)
+{
+  NodeThreadStart local = NodeThreadStartBind(raw);
+  local.uv_entry(local.arg);
+}
+
+static void *NodePthreadEntry(void *raw)
+{
+  NodeThreadStart local = NodeThreadStartBind(raw);
+  return local.pthread_entry(local.arg);
+}
+
+/* uv1.conf does not export the thread creators; node reached them through
+   the lazy thunks the uv1 ABI generator emits for what libnode.a references.
+   This unit is not a generator input, so resolve the one it needs itself,
+   the way those thunks do. */
+extern "C" void *uv_aros_find_internal_symbol(const char *symbol_name);
+
+using NodeUvThreadCreateExFn = int (*)(uv_thread_t *,
+                                       const uv_thread_options_t *,
+                                       uv_thread_cb, void *);
+static NodeUvThreadCreateExFn NodeUvThreadCreateEx;
+
+extern "C" int aros_node_uv_thread_create_ex(uv_thread_t *tid,
+                                             const uv_thread_options_t *params,
+                                             uv_thread_cb entry, void *arg)
+{
+  if (NodeUvThreadCreateEx == nullptr) {
+    NodeUvThreadCreateEx = reinterpret_cast<NodeUvThreadCreateExFn>(
+        uv_aros_find_internal_symbol("uv_thread_create_ex"));
+    if (NodeUvThreadCreateEx == nullptr)
+      return UV_ENOSYS;
+  }
+  NodeThreadStart *start = NodeThreadStartCreate(arg);
+  if (start == nullptr)
+    return UV_ENOMEM;
+  start->uv_entry = entry;
+  int r = NodeUvThreadCreateEx(tid, params, NodeUvThreadEntry, start);
+  if (r != 0)
+    FreeVec(start);
+  return r;
+}
+
+extern "C" int aros_node_uv_thread_create(uv_thread_t *tid, uv_thread_cb entry,
+                                          void *arg)
+{
+  uv_thread_options_t params;
+  params.flags = UV_THREAD_NO_FLAGS;
+  params.stack_size = 0;
+  return aros_node_uv_thread_create_ex(tid, &params, entry, arg);
+}
+
+extern "C" int aros_node_pthread_create(pthread_t *thread,
+                                        const pthread_attr_t *attr,
+                                        void *(*entry)(void *), void *arg)
+{
+  NodeThreadStart *start = NodeThreadStartCreate(arg);
+  if (start == nullptr)
+    return EAGAIN;
+  start->pthread_entry = entry;
+  int r = pthread_create(thread, attr, NodePthreadEntry, start);
+  if (r != 0)
+    FreeVec(start);
+  return r;
 }
 
 static std::shared_ptr<node::InitializationResult> NodeEmbedInitialization;

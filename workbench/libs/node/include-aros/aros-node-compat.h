@@ -6,6 +6,22 @@
 #ifndef AROS_NODE_COMPAT_H
 #define AROS_NODE_COMPAT_H
 
+/*
+ * node.library is a pertaskbase module whose rellib bases live in the
+ * calling Task's storage slot.  A thread node starts gets no slot of its own
+ * and genmodule lets it borrow its creator's - one level only, so a thread
+ * started from a thread (the CA-certificate loader started from a Worker)
+ * has no base at all.  These rename node's thread creation to wrappers in
+ * node_bridge.cc that bind the creator's base on the new thread first; the
+ * renamed declarations come from uv.h and pthread.h themselves.  The bridge
+ * is compiled without this header and calls the real functions.  Defined
+ * before any include: signal.h already brings pthread.h in, and a
+ * declaration seen before the rename would stay pthread_create.
+ */
+#define uv_thread_create aros_node_uv_thread_create
+#define uv_thread_create_ex aros_node_uv_thread_create_ex
+#define pthread_create aros_node_pthread_create
+
 #include <stddef.h>
 #include <signal.h>
 #include <string.h>

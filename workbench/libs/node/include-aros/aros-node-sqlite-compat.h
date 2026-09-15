@@ -7,6 +7,9 @@
 #ifndef AROS_NODE_SQLITE_COMPAT_H
 #define AROS_NODE_SQLITE_COMPAT_H
 
+/* The wrapper passes this header first; the thread-creation renames in
+   aros-node-compat.h must precede pthread.h's declarations. */
+#include "aros-node-compat.h"
 #include <pthread.h>
 #undef GLOBAL
 
