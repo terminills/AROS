@@ -558,6 +558,7 @@ pid_t getpgrp(void);
 pid_t vfork(void);
 int link(const char *name1, const char *name2);
 int usleep(useconds_t microseconds);
+int execvpe(const char *file, char *const argv[], char *const envp[]);
 #endif
 
 #if defined(_GNU_SOURCE) || (_POSIX_C_SOURCE >= 200809L)

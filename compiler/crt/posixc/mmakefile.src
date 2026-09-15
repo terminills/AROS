@@ -58,6 +58,7 @@ POSIXC := \
     execv \
     execve \
     execvp \
+    execvpe \
     fchdir \
     fchmod \
     fchmodat \
