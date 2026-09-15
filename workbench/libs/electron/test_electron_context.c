@@ -22,6 +22,11 @@
 #include <proto/dos.h>
 #include <proto/electron.h>
 #include <proto/exec.h>
+#ifdef ELECTRON_SHELL_WINDOWED
+#include <intuition/intuition.h>
+#include <intuition/screens.h>
+#include <proto/intuition.h>
+#endif
 
 #include "include/capi/cef_app_capi.h"
 #include "include/capi/cef_browser_capi.h"
@@ -405,6 +410,310 @@ static void service_renderer_pump_port(void)
 }
 
 #ifdef ELECTRON_SHELL_WINDOWED
+/*
+ * BrowserWindow geometry.  Electron's BrowserWindow owns a native top-level
+ * window and its setBounds/maximize/setMinimumSize/setTitle are window-system
+ * calls; here the window system is Intuition.  Before the browser exists the
+ * requests shape the CefWindowInfo it is created with; afterwards CEF hands
+ * the Intuition window back through get_window_handle() (as the X11 build
+ * hands back its ::Window) and the shell drives it with ChangeWindowBox &
+ * co.  The Ozone platform sees the IDCMP_CHANGEWINDOW like any user resize
+ * and relays it to the renderer.
+ */
+struct shell_window_geometry
+{
+    LONG x, y, width, height;   /* client bounds Electron asked for */
+    int has_position;           /* x/y were given (else Intuition's choice) */
+    LONG min_width, min_height;
+    int maximized;
+    int fullscreen;
+    LONG restore_x, restore_y, restore_width, restore_height;
+    int restore_valid;
+    int bounds_dirty;
+    int limits_dirty;
+    int title_dirty;
+    int activate_dirty;
+    char title[256];
+};
+
+static struct shell_window_geometry window_geometry;
+
+static struct Window *shell_native_window(void)
+{
+    cef_browser_host_t *host = get_browser_host();
+    struct Window *native_window = NULL;
+
+    if (host != NULL)
+    {
+        native_window = (struct Window *)host->get_window_handle(host);
+        release_browser_host(host);
+    }
+    return native_window;
+}
+
+/* The screen area a window may cover: everything below the screen title bar,
+   or the whole screen for full-screen.  Same policy as the Ozone platform's
+   work area, so pre- and post-creation clamping agree. */
+static void shell_work_area(struct Window *native_window, int fullscreen,
+    LONG *x, LONG *y, LONG *width, LONG *height)
+{
+    struct Screen *screen = native_window != NULL ? native_window->WScreen :
+        LockPubScreen(NULL);
+
+    *x = 0;
+    *y = 0;
+    *width = 640;
+    *height = 480;
+    if (screen != NULL)
+    {
+        *y = fullscreen ? 0 : screen->BarHeight + 1;
+        *width = screen->Width;
+        *height = screen->Height - *y;
+        if (native_window == NULL)
+            UnlockPubScreen(NULL, screen);
+    }
+}
+
+static LONG clamp_long(LONG value, LONG low, LONG high)
+{
+    if (value < low)
+        return low;
+    if (value > high)
+        return high;
+    return value;
+}
+
+/* Resolve the client bounds to apply: the maximize/full-screen work area or
+   the requested bounds clamped into it. */
+static void shell_resolve_bounds(struct Window *native_window,
+    LONG *x, LONG *y, LONG *width, LONG *height, int *has_position)
+{
+    LONG area_x, area_y, area_width, area_height;
+    LONG border_x = 0, border_y = 0;
+
+    if (native_window != NULL)
+    {
+        border_x = native_window->BorderLeft + native_window->BorderRight;
+        border_y = native_window->BorderTop + native_window->BorderBottom;
+    }
+    shell_work_area(native_window, window_geometry.fullscreen,
+        &area_x, &area_y, &area_width, &area_height);
+    if (window_geometry.maximized || window_geometry.fullscreen)
+    {
+        *x = area_x;
+        *y = area_y;
+        *width = area_width - border_x;
+        *height = area_height - border_y;
+        *has_position = 1;
+        return;
+    }
+    *width = clamp_long(window_geometry.width, 1, area_width - border_x);
+    *height = clamp_long(window_geometry.height, 1, area_height - border_y);
+    *has_position = window_geometry.has_position;
+    *x = clamp_long(window_geometry.x, area_x,
+        area_x + area_width - (*width + border_x));
+    *y = clamp_long(window_geometry.y, area_y,
+        area_y + area_height - (*height + border_y));
+}
+
+/* Apply whatever changed to the live Intuition window; a no-op until the
+   browser (and with it the window) exists. */
+static void shell_sync_window_geometry(void)
+{
+    struct Window *native_window;
+    LONG x, y, width, height;
+    int has_position;
+
+    if (browser == NULL)
+        return;
+    native_window = shell_native_window();
+    if (native_window == NULL)
+    {
+        if (window_geometry.bounds_dirty || window_geometry.title_dirty ||
+            window_geometry.limits_dirty)
+            KPrintF("[ELECTRON-CONTEXT] BrowserWindow has no native window "
+                "handle; geometry request dropped\n");
+        window_geometry.bounds_dirty = 0;
+        window_geometry.limits_dirty = 0;
+        window_geometry.title_dirty = 0;
+        window_geometry.activate_dirty = 0;
+        return;
+    }
+    if (window_geometry.limits_dirty)
+    {
+        window_geometry.limits_dirty = 0;
+        WindowLimits(native_window,
+            window_geometry.min_width + native_window->BorderLeft +
+                native_window->BorderRight,
+            window_geometry.min_height + native_window->BorderTop +
+                native_window->BorderBottom,
+            ~0, ~0);
+    }
+    if (window_geometry.bounds_dirty)
+    {
+        window_geometry.bounds_dirty = 0;
+        shell_resolve_bounds(native_window, &x, &y, &width, &height,
+            &has_position);
+        if (!has_position)
+        {
+            x = native_window->LeftEdge;
+            y = native_window->TopEdge;
+        }
+        KPrintF("[ELECTRON-CONTEXT] BrowserWindow bounds -> %ld,%ld %ldx%ld "
+            "(maximized=%ld fullscreen=%ld window=%p)\n", x, y, width, height,
+            (LONG)window_geometry.maximized, (LONG)window_geometry.fullscreen,
+            native_window);
+        ChangeWindowBox(native_window, x, y,
+            width + native_window->BorderLeft + native_window->BorderRight,
+            height + native_window->BorderTop + native_window->BorderBottom);
+    }
+    if (window_geometry.title_dirty)
+    {
+        window_geometry.title_dirty = 0;
+        SetWindowTitles(native_window, window_geometry.title, (STRPTR)~0);
+    }
+    if (window_geometry.activate_dirty)
+    {
+        window_geometry.activate_dirty = 0;
+        WindowToFront(native_window);
+        ActivateWindow(native_window);
+    }
+}
+
+/* Remember the normal bounds before maximize/full-screen so restore has
+   something to go back to. */
+static void shell_save_restore_bounds(void)
+{
+    if (window_geometry.restore_valid || window_geometry.maximized ||
+        window_geometry.fullscreen)
+        return;
+    window_geometry.restore_x = window_geometry.x;
+    window_geometry.restore_y = window_geometry.y;
+    window_geometry.restore_width = window_geometry.width;
+    window_geometry.restore_height = window_geometry.height;
+    window_geometry.restore_valid = 1;
+}
+
+static void shell_restore_bounds(void)
+{
+    if (window_geometry.maximized || window_geometry.fullscreen ||
+        !window_geometry.restore_valid)
+        return;
+    window_geometry.x = window_geometry.restore_x;
+    window_geometry.y = window_geometry.restore_y;
+    window_geometry.width = window_geometry.restore_width;
+    window_geometry.height = window_geometry.restore_height;
+    window_geometry.restore_valid = 0;
+}
+
+/* Tab-separated numeric fields after the window id; an empty field leaves
+   its value untouched and returns 0 for that slot. */
+static int parse_geometry_fields(const char *payload, LONG *values,
+    int count, int *given)
+{
+    const char *cursor = strchr(payload, '\t');
+    int i;
+
+    for (i = 0; i < count; ++i)
+        given[i] = 0;
+    for (i = 0; i < count && cursor != NULL; ++i)
+    {
+        char *end;
+        long value;
+
+        ++cursor;
+        if (*cursor != '\t' && *cursor != '\0')
+        {
+            value = strtol(cursor, &end, 10);
+            if (end != cursor)
+            {
+                values[i] = (LONG)value;
+                given[i] = 1;
+            }
+        }
+        cursor = strchr(cursor, '\t');
+    }
+    return i;
+}
+
+static int handle_window_geometry_request(const char *method,
+    const char *payload)
+{
+    LONG values[4];
+    int given[4];
+
+    if (strcmp(method, "browser-window.set-bounds") == 0)
+    {
+        values[0] = window_geometry.x;
+        values[1] = window_geometry.y;
+        values[2] = window_geometry.width;
+        values[3] = window_geometry.height;
+        parse_geometry_fields(payload, values, 4, given);
+        window_geometry.x = values[0];
+        window_geometry.y = values[1];
+        if (given[0] && given[1])
+            window_geometry.has_position = 1;
+        if (values[2] > 0)
+            window_geometry.width = values[2];
+        if (values[3] > 0)
+            window_geometry.height = values[3];
+        window_geometry.restore_valid = 0;
+        window_geometry.bounds_dirty = 1;
+    }
+    else if (strcmp(method, "browser-window.set-minimum-size") == 0)
+    {
+        values[0] = window_geometry.min_width;
+        values[1] = window_geometry.min_height;
+        parse_geometry_fields(payload, values, 2, given);
+        window_geometry.min_width = values[0] > 0 ? values[0] : 0;
+        window_geometry.min_height = values[1] > 0 ? values[1] : 0;
+        window_geometry.limits_dirty = 1;
+    }
+    else if (strcmp(method, "browser-window.maximize") == 0)
+    {
+        shell_save_restore_bounds();
+        window_geometry.maximized = 1;
+        window_geometry.bounds_dirty = 1;
+    }
+    else if (strcmp(method, "browser-window.unmaximize") == 0 ||
+        strcmp(method, "browser-window.restore") == 0)
+    {
+        window_geometry.maximized = 0;
+        shell_restore_bounds();
+        window_geometry.bounds_dirty = 1;
+    }
+    else if (strcmp(method, "browser-window.set-full-screen") == 0)
+    {
+        const char *value = strchr(payload, '\t');
+        int fullscreen = value != NULL && strcmp(value + 1, "true") == 0;
+
+        if (fullscreen)
+            shell_save_restore_bounds();
+        window_geometry.fullscreen = fullscreen;
+        if (!fullscreen)
+            shell_restore_bounds();
+        window_geometry.bounds_dirty = 1;
+    }
+    else if (strcmp(method, "browser-window.set-title") == 0)
+    {
+        const char *value = strchr(payload, '\t');
+
+        if (value != NULL)
+        {
+            strncpy(window_geometry.title, value + 1,
+                sizeof(window_geometry.title) - 1);
+            window_geometry.title[sizeof(window_geometry.title) - 1] = '\0';
+            window_geometry.title_dirty = 1;
+        }
+    }
+    else if (strcmp(method, "browser-window.show") == 0 ||
+        strcmp(method, "browser-window.focus") == 0)
+        window_geometry.activate_dirty = 1;
+    else
+        return 0;
+    return 1;
+}
+
 static void service_native_window_requests(cef_window_info_t *window_info,
     cef_browser_settings_t *browser_settings,
     cef_char_t *browser_url, size_t browser_url_length)
@@ -458,6 +767,13 @@ static void service_native_window_requests(cef_window_info_t *window_info,
                     requested_url, (unsigned long)browser_url_length);
             }
         }
+        else if (handle_window_geometry_request(method, payload))
+            ;
+        else if (strcmp(method, "browser-window.close") == 0)
+        {
+            if (browser != NULL)
+                request_browser_close();
+        }
         else if (strcmp(method, "app.exit") == 0)
         {
             requested_exit_code = strtol(payload, NULL, 10);
@@ -474,13 +790,30 @@ static void service_native_window_requests(cef_window_info_t *window_info,
     if (create_requested && browser == NULL)
     {
         cef_string_t url;
+        LONG x, y, width, height;
+        int has_position;
 
+        /* Everything queued before creation shapes the window CEF opens. */
+        shell_resolve_bounds(NULL, &x, &y, &width, &height, &has_position);
+        if (has_position)
+        {
+            window_info->bounds.x = x;
+            window_info->bounds.y = y;
+        }
+        window_info->bounds.width = width;
+        window_info->bounds.height = height;
+        window_geometry.bounds_dirty = 0;
+        KPrintF("[ELECTRON-CONTEXT] BrowserWindow initial bounds %ld,%ld "
+            "%ldx%ld (maximized=%ld)\n", (LONG)window_info->bounds.x,
+            (LONG)window_info->bounds.y, width, height,
+            (LONG)window_geometry.maximized);
         memset(&url, 0, sizeof(url));
         set_static_cef_string(&url, browser_url, browser_url_length);
         rc = ElectronCreateCEFBrowser(window_info, &client, &url,
             browser_settings, NULL, NULL);
         KPrintF("[ELECTRON-CONTEXT] BrowserWindow create rc=%ld\n", rc);
     }
+    shell_sync_window_geometry();
 }
 
 static void pump_node_on_main_task(void)
@@ -824,6 +1157,9 @@ static void CEF_CALLBACK on_after_created(cef_life_span_handler_t *self,
     first_paint_tick = pump_tick;
     KPrintF("[ELECTRON-CONTEXT] visible browser ready tick=%lu\n",
         first_paint_tick);
+    /* Title/limits/activation queued before creation apply to the window
+       now that it exists. */
+    shell_sync_window_geometry();
 #endif
 }
 
@@ -1344,6 +1680,10 @@ int main(int argc, char **argv)
 #ifdef ELECTRON_SHELL_WINDOWED
     set_static_cef_string(&window_info.window_name, window_title,
         (sizeof(window_title) / sizeof(window_title[0])) - 1);
+    /* Electron's BrowserWindow default until the script says otherwise. */
+    memset(&window_geometry, 0, sizeof(window_geometry));
+    window_geometry.width = 800;
+    window_geometry.height = 600;
 #else
     window_info.windowless_rendering_enabled = 1;
 #endif
