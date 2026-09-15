@@ -972,9 +972,10 @@ static int parse_scheme_switch(const char *arg)
         { "--secure-schemes=", CEF_SCHEME_OPTION_SECURE },
         { "--cors-schemes=", CEF_SCHEME_OPTION_CORS_ENABLED },
         { "--fetch-schemes=", CEF_SCHEME_OPTION_FETCH_ENABLED },
+        /* Electron's allowServiceWorkers privilege (AROS CEF extension). */
+        { "--service-worker-schemes=", CEF_SCHEME_OPTION_SERVICE_WORKER },
         /* Accepted for command-line compatibility; no CEF option bit. */
         { "--code-cache-schemes=", CEF_SCHEME_OPTION_NONE },
-        { "--service-worker-schemes=", CEF_SCHEME_OPTION_NONE },
         { "--streaming-schemes=", CEF_SCHEME_OPTION_NONE },
     };
     size_t i;
