@@ -323,8 +323,13 @@ USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
     $(NODE_SUPPORT_ARCHIVES) \
     -Wl,--end-group
 
-NODE_USELIBS := z1 uv1 usergroup node-v8 v8 \
-    stdc++ stdc stdcio posixc pthread m atomic debug dos exec
+# posixc, stdc, uv1 and z1 are node.conf rellibs: genmodule appends their
+# _rel linklibs (node_LIBS) after this list, and the AROS driver's trailing
+# -lposixc -lstdcio -lstdc only catch what no _rel archive provides.  Listing
+# the plain archives here would put them before the _rel ones in the link
+# group and hand node.library global bases again (see node.conf).
+NODE_USELIBS := usergroup node-v8 v8 \
+    stdc++ pthread m atomic debug dos exec
 
 NODE_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
 

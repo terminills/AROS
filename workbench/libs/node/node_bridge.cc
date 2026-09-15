@@ -20,7 +20,11 @@
 #include <node_version.h>
 #include <uv.h>
 
+/* genmodule's libdefs are plain C: they declare the per-task base lookup
+   (__aros_getoffsettable) that node_start.c defines with C linkage. */
+extern "C" {
 #include "node_libdefs.h"
+}
 
 /*
  * Diagnostics.
@@ -81,17 +85,20 @@ static auto *const NodeGetEntropyAnchor __attribute__((used)) = &getentropy;
  * the flushing renderer thread DID have node's uv1 dup base in its slot.
  *
  * So the expunge is only allowed from node.library's own last closer.
- * genmodule's CloseLib decrements lib_OpenCnt, runs the CLOSELIB set, and
- * only then expunges when the count is 0 and LIBF_DELEXP is set - so the
- * CLOSELIB hook sees exactly the close that is about to expunge and
- * records that task's exec unique ID (task pointers are recycled; C:Node's
- * was already a Chromium thread by the time of the flush).  The EXPUNGELIB
- * hook passes only for that task, and lddemon's CloseLibrary path holds no
- * list lock (Forbid only), so the sleep in __pthread_Exit_Func is harmless
- * there.  Any other caller - LDFlush on whatever task's AllocMem failed -
- * is vetoed: LIBF_DELEXP stays set and the library stays resident until a
- * node process closes it, which is the only outcome that is safe from a
- * foreign task under the list lock.
+ * node.library is a pertaskbase module (node.conf): genmodule's CloseLib
+ * runs the CLOSELIB set on a task's last close of its dup base, before it
+ * drops the root open count and, when that reaches 0 with LIBF_DELEXP set,
+ * expunges from that same task.  The hook is handed the dup base, whose
+ * counters say nothing about the root, so it records every last-per-task
+ * closer's exec unique ID (task pointers are recycled; C:Node's was already
+ * a Chromium thread by the time of the flush) - the latest record is the
+ * task that is about to expunge, exactly as uv1's hook does.  The
+ * EXPUNGELIB hook passes only for that task, and lddemon's CloseLibrary
+ * path holds no list lock (Forbid only), so the sleep in
+ * __pthread_Exit_Func is harmless there.  Any other caller - LDFlush on
+ * whatever task's AllocMem failed - is vetoed: LIBF_DELEXP stays set and
+ * the library stays resident until a node process closes it, which is the
+ * only outcome that is safe from a foreign task under the list lock.
  */
 extern "C" int uv_aros_task_has_base(void);
 
@@ -99,8 +106,8 @@ static ULONG NodeCloserID;
 
 static int NodeCloseLast(LIBBASETYPEPTR lh)
 {
-  if (lh->lib_OpenCnt == 0 && (lh->lib_Flags & LIBF_DELEXP))
-    NodeCloserID = GetETaskID(FindTask(NULL));
+  (void)lh;
+  NodeCloserID = GetETaskID(FindTask(NULL));
   return 1;
 }
 
@@ -115,6 +122,30 @@ static int NodeExpungePrepare(LIBBASETYPEPTR lh)
 
 ADD2CLOSELIB(NodeCloseLast, 0)
 ADD2EXPUNGELIB(NodeExpungePrepare, 0)
+
+/*
+ * Per-task base binding for the entry points below.
+ *
+ * Everything node.library calls in its C runtime and in libuv goes through
+ * the rellib bases stored in the dup base that genmodule keeps in the
+ * CALLING task's storage slot (posixc, stdc, uv1, z1 in node.conf), so a
+ * Node process gets its own fd table, environment and uv default loop, not
+ * those of whichever task loaded the library first.  OpenLibrary() fills
+ * that slot for the opener, and a task that never opened node.library
+ * borrows its creator's slot (__aros_getoffsettable, one et_Parent level).
+ * An entry point is regcall, so unlike uv1's stackcall entries nothing sets
+ * the slot on the way in: an embedder thread two creations away from the
+ * opener (an ElectronShell renderer helper) would reach the first
+ * relwrapper with no base and fault at CR2 = the rellib offset.  Such a
+ * caller still jumped in through its process's own dup base, so bind that.
+ */
+extern "C" void __aros_setoffsettable(void *base);
+
+static inline void NodeBindTaskBase(LIBBASETYPEPTR lh)
+{
+  if (__aros_getoffsettable() == nullptr)
+    __aros_setoffsettable(lh);
+}
 
 static std::shared_ptr<node::InitializationResult> NodeEmbedInitialization;
 static node::IsolateData *NodeEmbedIsolateData;
@@ -392,9 +423,21 @@ AROS_LH2(LONG, NodeStart,
     LIBBASETYPEPTR, LIBBASE, 5, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
   bool close_socket_base = false;
 
+  /*
+   * uv_default_loop() here is this process's loop: uv1 is a rellib of this
+   * pertaskbase module, so the call goes through the uv1 base that
+   * OpenLibrary("node.library") opened on this task, and uv1 keeps the
+   * default loop in that base.  Before node.library was pertaskbase its one
+   * global UV1Base re-pointed every caller's uv1 slot to the first loader's
+   * base, and a C:Node spawned by another Node process tore down its
+   * parent's loop: uv_run() drove the parent's check handle into the
+   * parent's isolate and V8 aborted the child with "Entering the V8 API
+   * without proper locking in place" (JOB-0033, spawn-env-control2..6,
+   * 2026-09-15).
+   */
   if (SocketBase == nullptr) {
     SocketBase = OpenLibrary("bsdsocket.library", 4);
     close_socket_base = SocketBase != nullptr;
@@ -426,7 +469,7 @@ AROS_LH0(CONST_STRPTR, NodeVersion,
     LIBBASETYPEPTR, LIBBASE, 6, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
   return NODE_VERSION;
   AROS_LIBFUNC_EXIT
 }
@@ -435,7 +478,7 @@ AROS_LH0(LONG, NodePrepareEmbedder,
     LIBBASETYPEPTR, LIBBASE, 7, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
 
   if (NodeEmbedInitialization)
     return 0;
@@ -475,7 +518,7 @@ AROS_LH1(LONG, NodeAttachCurrentV8Context,
     LIBBASETYPEPTR, LIBBASE, 8, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
 
   if (!NodeEmbedInitialization || NodeEmbedEnvironment != nullptr)
     return 20;
@@ -495,7 +538,7 @@ AROS_LH0(LONG, NodePumpEmbedder,
     LIBBASETYPEPTR, LIBBASE, 9, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
   if (!NodeEmbedLoopInitialized || NodeEmbedEnvironment == nullptr ||
       NodeEmbedIsolate == nullptr || NodeEmbedContext == nullptr)
     return 20;
@@ -531,7 +574,7 @@ AROS_LH0(void, NodeDetachEmbedder,
     LIBBASETYPEPTR, LIBBASE, 10, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
 
   v8::Isolate *isolate = NodeEmbedIsolate;
   const bool owned_isolate = NodeEmbedOwnsIsolate;
@@ -591,7 +634,7 @@ AROS_LH1(LONG, NodeAttachIsolatedV8Context,
     LIBBASETYPEPTR, LIBBASE, 11, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
 
   if (!NodeEmbedInitialization || NodeEmbedEnvironment != nullptr)
     return 20;
@@ -632,7 +675,7 @@ AROS_LH3(LONG, NodeRegisterEmbedderLinkedBinding,
     LIBBASETYPEPTR, LIBBASE, 12, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
 
   if (name == nullptr || name[0] == '\0' || invoke == nullptr ||
       NodeEmbedEnvironment != nullptr)
@@ -667,7 +710,7 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
     LIBBASETYPEPTR, LIBBASE, 13, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
 
   if (!NodeEmbedInitialization || NodeEmbedEnvironment != nullptr ||
       NodeEmbedIsolate != nullptr)
@@ -811,7 +854,7 @@ AROS_LH1(LONG, NodeConfigureOwnedV8WorkerThreads,
     LIBBASETYPEPTR, LIBBASE, 14, Node)
 {
   AROS_LIBFUNC_INIT
-  (void)LIBBASE;
+  NodeBindTaskBase(LIBBASE);
 
   if (worker_threads < 2 || NodeEmbedIsolate != nullptr ||
       NodeEmbedEnvironment != nullptr)
