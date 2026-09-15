@@ -4116,3 +4116,179 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  }
  
  void RegisterExternalReferencesForInternalizedBuiltinCode(
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/inspector_agent.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/inspector_agent.cc
+--- node-v22.23.1/src/inspector_agent.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/inspector_agent.cc	2026-09-15 07:51:18.747663703 -0500
+@@ -35,6 +35,9 @@
+ 
+ #include <algorithm>
+ #include <cstring>
++#ifdef __AROS__
++#include <mutex>
++#endif
+ #include <sstream>
+ #include <unordered_map>
+ #include <vector>
+@@ -62,6 +65,17 @@
+ using v8_inspector::V8Inspector;
+ using v8_inspector::V8InspectorClient;
+ 
++#ifdef __AROS__
++// node.library is one shared image for every AROS process that embeds Node,
++// so anything static here is guest-wide rather than per process.  The
++// inspector wake-up handle therefore lives in the owning Agent
++// (Agent::start_io_thread_async_) and SIGUSR1 finds it through this pid
++// registry.  There is no watchdog thread and no semaphore: the handler runs
++// on the signalled process's own task and uv_async_send() is
++// async-signal-safe, so it posts straight to that process's loop.
++static std::mutex start_io_thread_agents_mutex;
++static std::unordered_map<uv_pid_t, Agent*> start_io_thread_agents;
++#else
+ #ifdef __POSIX__
+ static uv_sem_t start_io_thread_semaphore;
+ #endif  // __POSIX__
+@@ -71,6 +85,7 @@
+ static std::atomic_bool start_io_thread_async_initialized { false };
+ // Protects the Agent* stored in start_io_thread_async.data.
+ static Mutex start_io_thread_async_mutex;
++#endif  // __AROS__
+ 
+ // Called on the main thread.
+ void StartIoThreadAsyncCallback(uv_async_t* handle) {
+@@ -78,7 +93,23 @@
+ }
+ 
+ 
+-#ifdef __POSIX__
++#ifdef __AROS__
++static void StartIoThreadWakeup(int signo, siginfo_t* info, void* ucontext) {
++  // A TryLock keeps the handler from blocking on a registry update in
++  // progress; a SIGUSR1 that lands in that window is simply dropped.
++  if (!start_io_thread_agents_mutex.try_lock()) return;
++  auto it = start_io_thread_agents.find(uv_os_getpid());
++  Agent* agent = it != start_io_thread_agents.end() ? it->second : nullptr;
++  start_io_thread_agents_mutex.unlock();
++  if (agent != nullptr && agent->start_io_thread_async_initialized_)
++    uv_async_send(&agent->start_io_thread_async_);
++}
++
++static int StartDebugSignalHandler() {
++  RegisterSignalHandler(SIGUSR1, StartIoThreadWakeup);
++  return 0;
++}
++#elif defined(__POSIX__)
+ static void StartIoThreadWakeup(int signo, siginfo_t* info, void* ucontext) {
+   uv_sem_post(&start_io_thread_semaphore);
+ }
+@@ -824,6 +855,47 @@
+   host_port_ = host_port;
+ 
+   client_ = std::make_shared<NodeInspectorClient>(parent_env_, is_main);
++#ifdef __AROS__
++  if (parent_env_->owns_inspector()) {
++    // Per-Agent wake-up handle (see the registry note at the top of this
++    // file): a second Node process in the same guest must not trip over the
++    // first one's handle.
++    CHECK(!start_io_thread_async_initialized_);
++    CHECK_EQ(0, uv_async_init(parent_env_->event_loop(),
++                              &start_io_thread_async_,
++                              StartIoThreadAsyncCallback));
++    uv_unref(reinterpret_cast<uv_handle_t*>(&start_io_thread_async_));
++    start_io_thread_async_.data = this;
++    start_io_thread_async_initialized_ = true;
++    {
++      std::lock_guard<std::mutex> lock(start_io_thread_agents_mutex);
++      start_io_thread_agents[uv_os_getpid()] = this;
++    }
++    if (parent_env_->should_start_debug_signal_handler()) {
++      StartDebugSignalHandler();
++    }
++
++    parent_env_->AddCleanupHook([](void* data) {
++      Environment* env = static_cast<Environment*>(data);
++      Agent* agent = env->inspector_agent();
++
++      {
++        std::lock_guard<std::mutex> lock(start_io_thread_agents_mutex);
++        auto it = start_io_thread_agents.find(uv_os_getpid());
++        if (it != start_io_thread_agents.end() && it->second == agent)
++          start_io_thread_agents.erase(it);
++      }
++
++      // The handle is a member of the Agent, which the Environment destroys
++      // only after CleanupHandles() has drained this close.
++      env->CloseHandle(&agent->start_io_thread_async_, [](uv_async_t* handle) {
++        Agent* agent = static_cast<Agent*>(handle->data);
++        CHECK(agent->start_io_thread_async_initialized_);
++        agent->start_io_thread_async_initialized_ = false;
++      });
++    }, parent_env_);
++  }
++#else
+   if (parent_env_->owns_inspector()) {
+     Mutex::ScopedLock lock(start_io_thread_async_mutex);
+     CHECK_EQ(start_io_thread_async_initialized.exchange(true), false);
+@@ -852,6 +924,7 @@
+       });
+     }, parent_env_);
+   }
++#endif  // __AROS__
+ 
+   AtExit(parent_env_, [](void* env) {
+     Agent* agent = static_cast<Environment*>(env)->inspector_agent();
+@@ -1126,6 +1199,16 @@
+   if (!options().allow_attaching_debugger) {
+     return;
+   }
++#ifdef __AROS__
++  CHECK(start_io_thread_async_initialized_);
++  uv_async_send(&start_io_thread_async_);
++  parent_env_->RequestInterrupt([this](Environment*) {
++    StartIoThread();
++  });
++
++  CHECK(start_io_thread_async_initialized_);
++  uv_async_send(&start_io_thread_async_);
++#else
+   CHECK(start_io_thread_async_initialized);
+   uv_async_send(&start_io_thread_async);
+   parent_env_->RequestInterrupt([this](Environment*) {
+@@ -1134,6 +1217,7 @@
+ 
+   CHECK(start_io_thread_async_initialized);
+   uv_async_send(&start_io_thread_async);
++#endif  // __AROS__
+ }
+ 
+ void Agent::ContextCreated(Local<Context> context, const ContextInfo& info) {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/inspector_agent.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/inspector_agent.h
+--- node-v22.23.1/src/inspector_agent.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/inspector_agent.h	2026-09-15 07:49:57.194160018 -0500
+@@ -9,6 +9,9 @@
+ 
+ #include "node_options.h"
+ #include "v8.h"
++#ifdef __AROS__
++#include "uv.h"
++#endif
+ 
+ #include <cstddef>
+ #include <memory>
+@@ -157,6 +160,17 @@
+   bool pending_enable_network_tracking = false;
+   bool pending_disable_network_tracking = false;
+   std::shared_ptr<NetworkResourceManager> network_resource_manager_;
++
++#ifdef __AROS__
++ public:
++  // node.library is one shared image for every AROS process that embeds
++  // Node, so the file-level start_io_thread_async statics in
++  // inspector_agent.cc would be guest-wide: the second Node process to own
++  // an inspector tripped CHECK_EQ(start_io_thread_async_initialized
++  // .exchange(true), false).  The SIGUSR1 wake-up handle lives here instead.
++  uv_async_t start_io_thread_async_;
++  bool start_io_thread_async_initialized_ = false;
++#endif
+ };
+ 
+ }  // namespace inspector
