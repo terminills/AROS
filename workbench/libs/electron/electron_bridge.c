@@ -1,4 +1,6 @@
 /*
+ * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ *
  * Native AROS Electron convergence adapter.
  *
  * Keep Node and CEF external.  This library is the compatibility seam where
@@ -8,18 +10,33 @@
 
 #include <aros/libcall.h>
 #include <aros/debug.h>
+#include <dos/dos.h>
+#include <exec/lists.h>
 #include <exec/memory.h>
+#include <exec/semaphores.h>
 #include <exec/types.h>
 #include <intuition/intuition.h>
 #include <libraries/electron.h>
 #include <proto/cef.h>
+#include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
 #include <proto/node.h>
 #include <proto/v8.h>
 
 #include <signal.h>
+#include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "include/capi/cef_browser_capi.h"
+#include "include/capi/cef_callback_capi.h"
+#include "include/capi/cef_frame_capi.h"
+#include "include/capi/cef_request_capi.h"
+#include "include/capi/cef_resource_handler_capi.h"
+#include "include/capi/cef_response_capi.h"
+#include "include/capi/cef_scheme_capi.h"
+#include "include/capi/cef_v8_capi.h"
 
 #include "electron_libdefs.h"
 
@@ -378,24 +395,72 @@ static const char electron_module_bootstrap[] =
     "app.emit('will-quit');"
     "return binding.invoke('app.exit','0');"
     "};"
+    /* Menu/MenuItem keep Electron's object model in JS (VS Code walks
+       menu.items and MenuItem.submenu when it rebuilds the menubar). The
+       native side only receives a one-line summary of the top level: the
+       seam's request payload is small and the shell has no menu strip yet,
+       so the summary is what a future menu renderer will start from. */
     "let applicationMenu=null;"
+    "let nextMenuItemId=1;"
+    "class MenuItem{"
+    "constructor(options={}){"
+    "if(options===null||typeof options!=='object')"
+    "throw new TypeError('MenuItem requires an options object');"
+    "this.commandId=nextMenuItemId++;"
+    "this.id=options.id!==undefined?String(options.id):undefined;"
+    "this.label=options.label!==undefined?String(options.label):'';"
+    "this.sublabel=options.sublabel!==undefined?String(options.sublabel):'';"
+    "this.toolTip=options.toolTip!==undefined?String(options.toolTip):'';"
+    "this.role=options.role;"
+    "this.accelerator=options.accelerator;"
+    "this.icon=options.icon;"
+    "this.enabled=options.enabled!==false;"
+    "this.visible=options.visible!==false;"
+    "this.checked=!!options.checked;"
+    "this.registerAccelerator=options.registerAccelerator!==false;"
+    "this.click=typeof options.click==='function'?options.click:undefined;"
+    "this.menu=null;"
+    "let submenu=options.submenu;"
+    "if(Array.isArray(submenu))submenu=Menu.buildFromTemplate(submenu);"
+    "if(submenu!==undefined&&submenu!==null&&!(submenu instanceof Menu))"
+    "throw new TypeError('submenu must be a Menu or a template array');"
+    "this.submenu=submenu||undefined;"
+    "this.type=options.type||(this.submenu?'submenu':'normal');"
+    "}"
+    "}"
     "class Menu{"
     "constructor(){this.items=[];}"
-    "append(item){this.items.push(item);}"
-    "insert(position,item){this.items.splice(Number(position),0,item);}"
-    "getMenuItemById(id){"
-    "return this.items.find(item=>item&&item.id===id)||null;"
+    "append(item){this.insert(this.items.length,item);}"
+    "insert(position,item){"
+    "if(!(item instanceof MenuItem))"
+    "throw new TypeError('Menu.insert requires a MenuItem');"
+    "item.menu=this;"
+    "this.items.splice(Number(position),0,item);"
     "}"
+    "getMenuItemById(id){"
+    "for(const item of this.items){"
+    "if(item.id===id)return item;"
+    "const nested=item.submenu?item.submenu.getMenuItemById(id):null;"
+    "if(nested)return nested;"
+    "}"
+    "return null;"
+    "}"
+    "popup(){}closePopup(){}"
     "static setApplicationMenu(menu){"
     "if(menu!==null&&!(menu instanceof Menu))"
     "throw new TypeError('application menu must be a Menu or null');"
     "applicationMenu=menu;"
+    "binding.invoke('menu.set-application-menu',menu?"
+    "menu.items.map(item=>item.type==='separator'?'-':"
+    "item.label.replace(/&&/g,'&')).join('\\t'):'');"
     "}"
     "static getApplicationMenu(){return applicationMenu;}"
+    "static sendActionToFirstResponder(){}"
     "static buildFromTemplate(template){"
     "if(!Array.isArray(template))throw new TypeError('menu template must be an array');"
     "const menu=new Menu();"
-    "for(const item of template)menu.append(item);"
+    "for(const item of template)"
+    "menu.append(item instanceof MenuItem?item:new MenuItem(item));"
     "return menu;"
     "}"
     "}"
@@ -423,6 +488,8 @@ static const char electron_module_bootstrap[] =
     "privilegedSchemes.set(entry.scheme,"
     "Object.freeze({...entry.privileges}));"
     "}"
+    "binding.invoke('protocol.register-schemes-as-privileged',"
+    "[...privilegedSchemes.keys()].join(','));"
     "},"
     "isProtocolHandled:scheme=>"
     "Promise.resolve(privilegedSchemes.has(String(scheme))||"
@@ -635,6 +702,79 @@ static const char electron_module_bootstrap[] =
     "screen.getCursorScreenPoint=()=>readScreen().cursor;"
     "let nextWindowId=1;"
     "const browserWindows=[];"
+    /* IPC payloads cross the seam as JSON; binary chunks (VSBuffer wraps
+       Uint8Array/Buffer) travel as {__arosBin:base64}. JSON.stringify runs
+       Buffer.prototype.toJSON before the replacer sees the value, so the
+       replacer looks at the holder's raw slot instead of `value`: otherwise
+       a Buffer reaches the renderer as {type:'Buffer',data:[...]} and
+       VSBuffer.wrap() ends up without subarray(). */
+    "const ipcReplacer=function(key,value){"
+    "const raw=this[key];"
+    "if(raw instanceof Uint8Array)"
+    "return {__arosBin:Buffer.from(raw.buffer,raw.byteOffset,"
+    "raw.byteLength).toString('base64')};"
+    "if(raw instanceof ArrayBuffer)"
+    "return {__arosBin:Buffer.from(raw).toString('base64')};"
+    "return value;"
+    "};"
+    "const ipcReviver=(key,value)=>"
+    "(value&&typeof value==='object'&&typeof value.__arosBin==='string')?"
+    "Buffer.from(value.__arosBin,'base64'):value;"
+    "const deliverToRenderer=(contents,message)=>binding.invoke("
+    "'web-contents.send',JSON.stringify(JSON.stringify(message,ipcReplacer)));"
+    "let nextWebContentsId=1;"
+    "const webContentsById=new Map();"
+    "class WebContents extends EventEmitter{"
+    "constructor(window){"
+    "super();this.id=nextWebContentsId++;this._window=window;this._url='';"
+    "this.session=defaultSession;webContentsById.set(this.id,this);"
+    "}"
+    "isDestroyed(){return this._window._destroyed;}"
+    "loadURL(url){return this._window.loadURL(url);}"
+    "getURL(){return this._url;}"
+    "getTitle(){return this._window._title;}"
+    "send(channel,...args){"
+    "deliverToRenderer(this,{type:'message',channel:String(channel),args});"
+    "}"
+    "postMessage(channel,message){this.send(channel,message);}"
+    "executeJavaScript(code){"
+    "binding.invoke('web-contents.execute-script',String(code));"
+    "return Promise.resolve();"
+    "}"
+    "getOSProcessId(){return process.pid;}"
+    "getProcessId(){return process.pid;}"
+    "focus(){}"
+    "openDevTools(){}closeDevTools(){}toggleDevTools(){}"
+    "isDevToolsOpened(){return false;}isDevToolsFocused(){return false;}"
+    "setWindowOpenHandler(){}"
+    "setBackgroundThrottling(){}"
+    "setVisualZoomLevelLimits(){}"
+    "setIgnoreMenuShortcuts(value){this._ignoreMenuShortcuts=!!value;}"
+    "isCrashed(){return false;}"
+    "isLoading(){return false;}"
+    "isWaitingForResponse(){return false;}"
+    "getUserAgent(){return this._userAgent||'';}"
+    "setUserAgent(value){this._userAgent=String(value);}"
+    "setAudioMuted(value){this._audioMuted=!!value;}"
+    "isAudioMuted(){return !!this._audioMuted;}"
+    "insertCSS(){return Promise.resolve('');}"
+    "reload(){this.loadURL(this._url);}"
+    "reloadIgnoringCache(){this.loadURL(this._url);}"
+    "stop(){}"
+    "inspectElement(){}inspectSharedWorker(){}inspectServiceWorker(){}"
+    "copy(){}cut(){}paste(){}undo(){}redo(){}selectAll(){}delete(){}"
+    "setZoomLevel(level){"
+    "binding.invoke('browser-window.set-zoom-level',"
+    "String(this._window.id)+'\\t'+String(Number(level)||0));"
+    "}"
+    "getZoomLevel(){return 0;}"
+    "static fromId(id){return webContentsById.get(Number(id))||null;}"
+    "static getAllWebContents(){return [...webContentsById.values()];}"
+    "static getFocusedWebContents(){"
+    "const window=BrowserWindow.getFocusedWindow();"
+    "return window?window.webContents:null;"
+    "}"
+    "}"
     "class BrowserWindow extends EventEmitter{"
     "constructor(options={}){"
     "super();this.id=nextWindowId++;this.options=options;"
@@ -646,20 +786,46 @@ static const char electron_module_bootstrap[] =
     "this._visible=options.show!==false;"
     "this._minimized=false;"
     "this._maximized=false;"
-    "this.webContents=new EventEmitter();"
-    "this.webContents.loadURL=(url)=>this.loadURL(url);"
-    "this.webContents.session=defaultSession;"
-    "this.webContents.isDestroyed=()=>this._destroyed;"
+    "this._enabled=true;"
+    "this._focused=false;"
+    "this._alwaysOnTop=!!options.alwaysOnTop;"
+    "this._representedFilename='';"
+    "this._documentEdited=false;"
+    "this._backgroundColor=String(options.backgroundColor||'#FFFFFF');"
+    /* Geometry is tracked here and mirrored to the shell as requests; the
+       shell decides what its Intuition window can honour. */
+    "const size=(value,fallback)=>{"
+    "const number=Math.trunc(Number(value));"
+    "return Number.isFinite(number)&&number>0?number:fallback;"
+    "};"
+    "const coordinate=value=>{"
+    "const number=Math.trunc(Number(value));"
+    "return Number.isFinite(number)?number:0;"
+    "};"
+    "this._bounds={x:coordinate(options.x),y:coordinate(options.y),"
+    "width:size(options.width,800),height:size(options.height,600)};"
+    "this._minimumSize=[size(options.minWidth,0),size(options.minHeight,0)];"
+    "this.webContents=new WebContents(this);"
     "browserWindows.push(this);"
     "const webPreferences=options.webPreferences||{};"
     "const preload=String(webPreferences.preload||'');"
     "const additionalArguments=Array.isArray("
     "webPreferences.additionalArguments)"
     "?webPreferences.additionalArguments.map(String):[];"
+    /* The renderer's process shim is built from this snapshot; it must be
+       stored before browser-window.create reads the preload. */
+    "binding.invoke('renderer.process-snapshot',JSON.stringify({"
+    "platform:process.platform,arch:process.arch,env:{...process.env},"
+    "versions:{...process.versions},execPath:process.execPath,"
+    "pid:process.pid,cwd:process.cwd(),"
+    "argv:[process.execPath,...additionalArguments]}));"
     "binding.invoke('browser-window.create',"
     "[String(this.id),preload,...additionalArguments].join('\\t'));"
+    "app.emit('browser-window-created',{},this);"
+    "app.emit('web-contents-created',{},this.webContents);"
     "}"
     "loadURL(url){"
+    "this.webContents._url=String(url);"
     "binding.invoke('browser-window.load-url',"
     "String(this.id)+'\\t'+String(url));"
     "return Promise.resolve();"
@@ -707,7 +873,82 @@ static const char electron_module_bootstrap[] =
     "this._minimized=false;this._visible=true;"
     "binding.invoke('browser-window.restore',String(this.id));"
     "}"
-    "focus(){binding.invoke('browser-window.focus',String(this.id));}"
+    "focus(){"
+    "this._focused=true;"
+    "binding.invoke('browser-window.focus',String(this.id));"
+    "}"
+    "blur(){this._focused=false;}"
+    "isFocused(){return this._focused&&!this._destroyed;}"
+    "destroy(){if(!this._destroyed)this.close();}"
+    "setEnabled(value){this._enabled=!!value;}"
+    "isEnabled(){return this._enabled;}"
+    "setAlwaysOnTop(value){this._alwaysOnTop=!!value;}"
+    "isAlwaysOnTop(){return this._alwaysOnTop;}"
+    "setAutoHideMenuBar(value){this._menuBarVisible=!value;}"
+    "isMenuBarAutoHide(){return !this._menuBarVisible;}"
+    "get autoHideMenuBar(){return !this._menuBarVisible;}"
+    "set autoHideMenuBar(value){this._menuBarVisible=!value;}"
+    "setMenu(){}removeMenu(){}"
+    "getBounds(){return {...this._bounds};}"
+    "getNormalBounds(){return {...this._bounds};}"
+    "getContentBounds(){return {...this._bounds};}"
+    "setBounds(bounds){"
+    "if(bounds&&typeof bounds==='object'){"
+    "for(const key of ['x','y','width','height'])"
+    "if(Number.isFinite(Number(bounds[key])))"
+    "this._bounds[key]=Math.trunc(Number(bounds[key]));"
+    "}"
+    "binding.invoke('browser-window.set-bounds',"
+    "[this.id,this._bounds.x,this._bounds.y,this._bounds.width,"
+    "this._bounds.height].join('\\t'));"
+    "}"
+    "setContentBounds(bounds){this.setBounds(bounds);}"
+    "getSize(){return [this._bounds.width,this._bounds.height];}"
+    "getContentSize(){return this.getSize();}"
+    "setSize(width,height){this.setBounds({width,height});}"
+    "setContentSize(width,height){this.setSize(width,height);}"
+    "getPosition(){return [this._bounds.x,this._bounds.y];}"
+    "setPosition(x,y){this.setBounds({x,y});}"
+    "center(){}"
+    "getMinimumSize(){return this._minimumSize.slice();}"
+    "setMinimumSize(width,height){"
+    "this._minimumSize=[Math.max(0,Number(width)||0),Math.max(0,Number(height)||0)];"
+    "binding.invoke('browser-window.set-minimum-size',"
+    "[this.id,...this._minimumSize].join('\\t'));"
+    "}"
+    "getMaximumSize(){return [0,0];}"
+    "setMaximumSize(){}"
+    "setResizable(){}isResizable(){return true;}"
+    "setMovable(){}isMovable(){return true;}"
+    "setMinimizable(){}isMinimizable(){return true;}"
+    "setMaximizable(){}isMaximizable(){return true;}"
+    "setClosable(){}isClosable(){return true;}"
+    "setFullScreenable(){}isFullScreenable(){return true;}"
+    "getBackgroundColor(){return this._backgroundColor;}"
+    "setBackgroundColor(value){"
+    "this._backgroundColor=String(value);"
+    "binding.invoke('browser-window.set-background-color',"
+    "String(this.id)+'\\t'+this._backgroundColor);"
+    "}"
+    "setRepresentedFilename(value){this._representedFilename=String(value);}"
+    "getRepresentedFilename(){return this._representedFilename;}"
+    "setDocumentEdited(value){this._documentEdited=!!value;}"
+    "isDocumentEdited(){return this._documentEdited;}"
+    "setWindowButtonPosition(){}getWindowButtonPosition(){return null;}"
+    "setWindowButtonVisibility(){}"
+    "setTitleBarOverlay(){}"
+    "setSheetOffset(){}"
+    "setTouchBar(){}"
+    "setProgressBar(){}"
+    "setOverlayIcon(){}"
+    "setIcon(){}"
+    "setOpacity(){}getOpacity(){return 1;}"
+    "setSkipTaskbar(){}"
+    "setKiosk(){}isKiosk(){return false;}"
+    "flashFrame(){}"
+    "moveTop(){}"
+    "addTabbedWindow(){}"
+    "hookWindowMessage(){}unhookWindowMessage(){}unhookAllWindowMessages(){}"
     "isMaximized(){return this._maximized;}"
     "maximize(){"
     "this._maximized=true;"
@@ -728,7 +969,89 @@ static const char electron_module_bootstrap[] =
     "static getFocusedWindow(){"
     "return browserWindows.length?browserWindows[browserWindows.length-1]:null;"
     "}"
+    "static fromId(id){"
+    "return browserWindows.find(entry=>entry.id===Number(id))||null;"
     "}"
+    "static fromWebContents(contents){"
+    "const window=contents&&contents._window;"
+    "return window instanceof BrowserWindow&&!window._destroyed?window:null;"
+    "}"
+    "}"
+    /* MessageChannelMain pairs two in-process MessagePortMain endpoints;
+       ports are not yet transferable across the seam to the renderer. */
+    "class MessagePortMain extends EventEmitter{"
+    "constructor(){super();this._peer=null;this._started=false;this._queue=[];}"
+    "_receive(data,ports){"
+    "if(this._started)this.emit('message',{data,ports});"
+    "else this._queue.push({data,ports});"
+    "}"
+    "postMessage(data,transfer){"
+    "if(this._peer)this._peer._receive(data,Array.isArray(transfer)?transfer:[]);"
+    "}"
+    "start(){"
+    "this._started=true;"
+    "const queued=this._queue.splice(0);"
+    "for(const entry of queued)this.emit('message',entry);"
+    "}"
+    "close(){"
+    "const peer=this._peer;this._peer=null;"
+    "if(peer&&peer._peer===this){peer._peer=null;peer.emit('close');}"
+    "this.emit('close');"
+    "}"
+    "}"
+    "class MessageChannelMain{"
+    "constructor(){"
+    "this.port1=new MessagePortMain();this.port2=new MessagePortMain();"
+    "this.port1._peer=this.port2;this.port2._peer=this.port1;"
+    "}"
+    "}"
+    /* utilityProcess.fork asks the native side for a child; until the
+       child-process seam exists it answers 'unsupported' and the child
+       reports an immediate exit so VS Code's own recovery paths run. */
+    "let nextUtilityId=1;"
+    "class UtilityProcess extends EventEmitter{"
+    "constructor(modulePath,args,options){"
+    "super();"
+    "this.pid=undefined;this.stdout=null;this.stderr=null;"
+    "this._killed=false;this._exited=false;"
+    "const serviceName=String(options&&options.serviceName||"
+    "('utility-'+nextUtilityId++));"
+    "const answer=String(binding.invoke('utility-process.fork',JSON.stringify({"
+    "serviceName,modulePath:String(modulePath),"
+    "args:Array.isArray(args)?args.map(String):[],"
+    "execArgv:Array.isArray(options&&options.execArgv)?"
+    "options.execArgv.map(String):[],"
+    "env:options&&options.env||{}}))||'');"
+    "const pid=Number(answer);"
+    "if(Number.isInteger(pid)&&pid>0){"
+    "this.pid=pid;"
+    "setImmediate(()=>this.emit('spawn'));"
+    "}else{"
+    "console.error('[AROS-ELECTRON] utilityProcess.fork('+serviceName+"
+    "') failed: '+(answer||'no child-process seam'));"
+    "setImmediate(()=>this._exit(1));"
+    "}"
+    "}"
+    "_exit(code){"
+    "if(this._exited)return;this._exited=true;this.emit('exit',code);"
+    "}"
+    "postMessage(message,transfer){"
+    "if(this.pid===undefined||this._exited)return;"
+    "binding.invoke('utility-process.post-message',"
+    "String(this.pid)+'\\t'+JSON.stringify(message,ipcReplacer));"
+    "}"
+    "kill(){"
+    "if(this._exited)return false;"
+    "this._killed=true;"
+    "if(this.pid!==undefined)"
+    "binding.invoke('utility-process.kill',String(this.pid));"
+    "setImmediate(()=>this._exit(0));"
+    "return true;"
+    "}"
+    "}"
+    "const utilityProcess=Object.freeze({"
+    "fork:(modulePath,args,options)=>new UtilityProcess(modulePath,args,options)"
+    "});"
     "const normalizeDialogOptions=(windowOrOptions,maybeOptions)=>"
     "(windowOrOptions instanceof BrowserWindow?maybeOptions:windowOrOptions)||{};"
     "const serializeDialogOptions=options=>{"
@@ -750,9 +1073,119 @@ static const char electron_module_bootstrap[] =
     "Promise.resolve({response:dialog.showMessageBoxSync("
     "windowOrOptions,maybeOptions),checkboxChecked:false})"
     "});"
+    /* Native events: `protocol\tid\tscheme\turl` from the scheme handler
+       factory (answered with protocol.response) and `ipc\twindow\tjson`
+       from the renderer extension (dispatched to ipcMain). */
+    "const respondToProtocol=(id,response)=>{"
+    "let reply;"
+    "if(typeof response==='string')reply=[id,'ok',response,''];"
+    "else if(response&&typeof response==='object'&&"
+    "typeof response.path==='string')"
+    "reply=[id,'ok',response.path,"
+    "response.headers?JSON.stringify(response.headers):''];"
+    "else if(response&&typeof response==='object'&&"
+    "typeof response.error==='number')reply=[id,String(response.error),'',''];"
+    "else reply=[id,'-2','',''];"
+    "binding.invoke('protocol.response',reply.join('\\t'));"
+    "};"
+    "const handleProtocolRequest=(id,scheme,url)=>{"
+    "const handler=sessionFileProtocols.get(scheme)||"
+    "globalFileProtocols.get(scheme)||"
+    "sessionInterceptedFileProtocols.get(scheme)||"
+    "globalInterceptedFileProtocols.get(scheme);"
+    "if(!handler){respondToProtocol(id,{error:-2});return;}"
+    "const request={url,method:'GET',referrer:'',headers:{},uploadData:[]};"
+    "let answered=false;"
+    "const respond=response=>{"
+    "if(answered)return;answered=true;respondToProtocol(id,response);"
+    "};"
+    "try{"
+    "const result=handler(request,respond);"
+    "if(result&&typeof result.then==='function')"
+    "result.then(respond,()=>respond({error:-2}));"
+    "}catch(error){"
+    "console.error('[AROS-ELECTRON] protocol handler failed for '+url+': '+"
+    "describeError(error));"
+    "respond({error:-2});"
+    "}"
+    "};"
+    "const replyToRenderer=(contents,id,payload)=>"
+    "deliverToRenderer(contents,{type:'reply',id,...payload});"
+    "const handleRendererMessage=(windowId,message)=>{"
+    "const window=browserWindows.find(entry=>entry.id===windowId)||"
+    "browserWindows[0];"
+    "if(!window)return;"
+    "const contents=window.webContents;"
+    "const event={sender:contents,"
+    "senderFrame:{url:contents._url,parent:null,routingId:1,"
+    "processId:process.pid},"
+    "ports:[],processId:process.pid,frameId:1,returnValue:undefined,"
+    "reply:(channel,...args)=>contents.send(channel,...args)};"
+    "const args=Array.isArray(message.args)?message.args:[];"
+    "if(message.type==='invoke'){"
+    "if(message.channel==='aros:process-memory-info'){"
+    "const usage=process.memoryUsage();"
+    "replyToRenderer(contents,message.id,{result:{"
+    "workingSetSize:usage.rss/1024,peakWorkingSetSize:usage.rss/1024,"
+    "private:usage.heapUsed/1024,shared:0}});"
+    "return;"
+    "}"
+    "ipcMain._arosDispatchInvoke(message.channel,event,...args).then("
+    "result=>replyToRenderer(contents,message.id,{result}),"
+    "error=>replyToRenderer(contents,message.id,"
+    "{error:String(error&&error.message||error)}));"
+    "return;"
+    "}"
+    "if(message.type==='send'){"
+    "ipcMain._arosDispatchMessage(message.channel,event,...args);"
+    "return;"
+    "}"
+    "if(message.type==='web-frame.set-zoom-level'){"
+    "contents.setZoomLevel(message.level);"
+    "return;"
+    "}"
+    "console.error('[AROS-ELECTRON] unknown renderer message '+message.type);"
+    "};"
+    "const handleNativeEvent=text=>{"
+    "const first=text.indexOf('\\t');"
+    "const kind=first<0?text:text.slice(0,first);"
+    "const rest=first<0?'':text.slice(first+1);"
+    "if(kind==='protocol'){"
+    "const idEnd=rest.indexOf('\\t');"
+    "const schemeEnd=rest.indexOf('\\t',idEnd+1);"
+    "handleProtocolRequest(rest.slice(0,idEnd),rest.slice(idEnd+1,schemeEnd),"
+    "rest.slice(schemeEnd+1));"
+    "return;"
+    "}"
+    "if(kind==='ipc'){"
+    "const idEnd=rest.indexOf('\\t');"
+    "handleRendererMessage(Number(rest.slice(0,idEnd)),"
+    "JSON.parse(rest.slice(idEnd+1),ipcReviver));"
+    "return;"
+    "}"
+    "console.error('[AROS-ELECTRON] unknown native event '+kind);"
+    "};"
+    "const pumpNativeEvents=()=>{"
+    "for(let count=0;count<64;count++){"
+    "const text=String(binding.invoke('native.poll','')||'');"
+    "if(!text)break;"
+    "try{handleNativeEvent(text);}"
+    "catch(error){"
+    "console.error('[AROS-ELECTRON] native event failed: '+"
+    "describeError(error)+' text='+text.slice(0,200));"
+    "}"
+    "}"
+    "};"
+    "setInterval(pumpNativeEvents,4);"
+    "const webContents=Object.freeze({"
+    "fromId:WebContents.fromId,"
+    "getAllWebContents:WebContents.getAllWebContents,"
+    "getFocusedWebContents:WebContents.getFocusedWebContents"
+    "});"
     "const api=Object.freeze({"
-    "app,native,BrowserWindow,Menu,protocol,session,dialog,ipcMain,nativeTheme,"
-    "powerMonitor,crashReporter,screen"
+    "app,native,BrowserWindow,WebContents,webContents,Menu,MenuItem,protocol,session,"
+    "dialog,ipcMain,nativeTheme,powerMonitor,crashReporter,screen,"
+    "MessageChannelMain,MessagePortMain,utilityProcess"
     "});"
     "const load=require;"
     "const Module=load('node:module');"
@@ -813,6 +1246,8 @@ static LONG electron_queue_request(CONST_STRPTR method, CONST_STRPTR payload)
     return 0;
 }
 
+#include "electron_renderer_seam.inc.c"
+
 static CONST_STRPTR electron_node_invoke(CONST_STRPTR method,
     CONST_STRPTR payload, APTR private_data)
 {
@@ -853,9 +1288,53 @@ static CONST_STRPTR electron_node_invoke(CONST_STRPTR method,
         return strcmp(method, "crash-reporter.start") == 0 ?
             "diagnostics-active" : "upload-disabled";
     }
+    if (method != NULL && strncmp(method, "utility-process.", 16) == 0)
+    {
+        /* No child-process seam yet: a fork answers 'unsupported' (the JS
+           side then reports an immediate exit), later calls are no-ops. */
+        bug("[ELECTRON-UTILITY] %s '%.200s'%s\n", method,
+            payload != NULL ? (const char *)payload : "",
+            strcmp(method, "utility-process.fork") == 0 ?
+            " -> unsupported" : "");
+        return strcmp(method, "utility-process.fork") == 0 ?
+            "unsupported" : "";
+    }
+    if (method != NULL && strcmp(method, "native.poll") == 0)
+        return electron_poll_event();
+    if (method != NULL && strcmp(method, "protocol.response") == 0)
+        return electron_protocol_response(payload);
+    if (method != NULL &&
+        strcmp(method, "protocol.register-schemes-as-privileged") == 0)
+        return electron_check_privileged_schemes(payload);
+    if (method != NULL &&
+        (strcmp(method, "protocol.register-file-protocol") == 0 ||
+        strcmp(method, "protocol.intercept-file-protocol") == 0 ||
+        strcmp(method, "session.register-file-protocol") == 0 ||
+        strcmp(method, "session.intercept-file-protocol") == 0))
+        return electron_register_scheme_factory(payload, 0);
+    if (method != NULL &&
+        (strcmp(method, "protocol.unregister-protocol") == 0 ||
+        strcmp(method, "protocol.unintercept-protocol") == 0 ||
+        strcmp(method, "session.unregister-protocol") == 0 ||
+        strcmp(method, "session.unintercept-protocol") == 0))
+        return electron_register_scheme_factory(payload, 1);
+    if (method != NULL && strcmp(method, "renderer.process-snapshot") == 0)
+        return electron_store_process_snapshot(payload);
+    if (method != NULL && strcmp(method, "browser-window.create") == 0)
+        return electron_prepare_window(payload);
+    if (method != NULL && strcmp(method, "browser-window.set-zoom-level") == 0)
+        return electron_set_zoom_level(payload);
+    if (method != NULL && strcmp(method, "web-contents.send") == 0)
+        return electron_deliver_to_renderer(payload);
+    if (method != NULL && strcmp(method, "web-contents.execute-script") == 0)
+        return electron_execute_in_renderer(
+            payload != NULL ? (const char *)payload : "",
+            electron_renderer_execute_url,
+            sizeof(electron_renderer_execute_url) / sizeof(cef_char_t) - 1);
     if (method != NULL &&
         (strncmp(method, "browser-window.", 15) == 0 ||
         strcmp(method, "app.exit") == 0 ||
+        strncmp(method, "menu.", 5) == 0 ||
         strncmp(method, "session.", 8) == 0 ||
         strncmp(method, "protocol.", 9) == 0))
         return electron_queue_request(method, payload) == 0 ?
@@ -1217,5 +1696,48 @@ AROS_LH1(LONG, ElectronAttachNodeOwnedV8ContextWithModule,
         result = NodeAttachOwnedV8Context((CONST_STRPTR)combined);
     FreeVec(combined);
     return result;
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH2(LONG, ElectronDeclareCustomScheme,
+    AROS_LHA(CONST_STRPTR, name, A0),
+    AROS_LHA(ULONG, options, D0),
+    LIBBASETYPEPTR, LIBBASE, 28, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return electron_declare_scheme(name, options);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH0(LONG, ElectronRegisterRendererExtension,
+    LIBBASETYPEPTR, LIBBASE, 29, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return electron_register_renderer_extension();
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH1(void, ElectronSetActiveBrowser,
+    AROS_LHA(APTR, browser, A0),
+    LIBBASETYPEPTR, LIBBASE, 30, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    electron_set_active_browser((cef_browser_t *)browser);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH3(LONG, ElectronInjectRendererContext,
+    AROS_LHA(APTR, browser, A0),
+    AROS_LHA(APTR, frame, A1),
+    AROS_LHA(APTR, context, A2),
+    LIBBASETYPEPTR, LIBBASE, 31, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return electron_inject_renderer_context((cef_browser_t *)browser,
+        (cef_frame_t *)frame, (cef_v8context_t *)context);
     AROS_LIBFUNC_EXIT
 }

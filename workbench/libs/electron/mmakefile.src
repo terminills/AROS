@@ -1,4 +1,6 @@
 #
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
 # electron.library -- native compatibility seam above shared CEF and Node.
 #
 # The engines stay external.  This adapter exists so Electron-specific policy
@@ -24,7 +26,8 @@ ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
     modname=electron modtype=library \
     conffile=electron.conf \
     files=electron_bridge \
-    uselibs="node cef v8 intuition"
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    uselibs="node cef v8 intuition dos"
 
 #MM workbench-libs-electron-test : workbench-libs-electron
 %build_prog mmake=workbench-libs-electron-test \

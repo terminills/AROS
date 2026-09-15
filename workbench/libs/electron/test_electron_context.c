@@ -32,6 +32,7 @@
 #include "include/capi/cef_load_handler_capi.h"
 #include "include/capi/cef_render_handler_capi.h"
 #include "include/capi/cef_render_process_handler_capi.h"
+#include "include/capi/cef_scheme_capi.h"
 #include "include/capi/cef_v8_capi.h"
 
 #define VIEW_WIDTH 640
@@ -538,7 +539,144 @@ static void CEF_CALLBACK on_web_kit_initialized(
     rc = ElectronRegisterCEFExtension(&name, &code, &node_pump_handler);
     KPrintF("[ELECTRON-CONTEXT] register renderer extension rc=%ld task=%p\n",
         rc, FindTask(NULL));
+#ifdef ELECTRON_SHELL_WINDOWED
+    /*
+     * The BrowserWindow renderer talks back to the Electron main script
+     * through electron.library's own native extension (ipcRenderer.send /
+     * invoke).  Extensions can only be registered here, before any V8
+     * context exists.
+     */
+    rc = ElectronRegisterRendererExtension();
+    KPrintF("[ELECTRON-CONTEXT] register electron renderer seam rc=%ld\n",
+        rc);
+#endif
 }
+
+#ifdef ELECTRON_SHELL_WINDOWED
+/*
+ * Electron's own switch contract for custom schemes: the main script cannot
+ * run before CefInitialize, but protocol.registerSchemesAsPrivileged must be
+ * honoured at CefInitialize time.  The launcher therefore passes the scheme
+ * lists as switches (--standard-schemes=a,b --secure-schemes=... etc.), the
+ * same way Electron forwards them to its renderer processes.
+ */
+#define ELECTRON_SHELL_MAX_SCHEMES 8
+#define ELECTRON_SHELL_MAX_SCHEME_NAME 32
+
+static struct
+{
+    char name[ELECTRON_SHELL_MAX_SCHEME_NAME];
+    cef_char_t name16[ELECTRON_SHELL_MAX_SCHEME_NAME];
+    int options;
+} declared_schemes[ELECTRON_SHELL_MAX_SCHEMES];
+static int declared_scheme_count;
+
+static void declare_scheme_list(const char *list, int options)
+{
+    while (list != NULL && *list != '\0')
+    {
+        const char *end = strchr(list, ',');
+        size_t length = end != NULL ? (size_t)(end - list) : strlen(list);
+        int slot;
+
+        if (length == 0 || length >= ELECTRON_SHELL_MAX_SCHEME_NAME)
+        {
+            if (end == NULL)
+                break;
+            list = end + 1;
+            continue;
+        }
+        for (slot = 0; slot < declared_scheme_count; ++slot)
+        {
+            if (strlen(declared_schemes[slot].name) == length &&
+                strncmp(declared_schemes[slot].name, list, length) == 0)
+                break;
+        }
+        if (slot == declared_scheme_count)
+        {
+            size_t i;
+
+            if (declared_scheme_count >= ELECTRON_SHELL_MAX_SCHEMES)
+            {
+                KPrintF("[ELECTRON-CONTEXT] too many custom schemes, "
+                    "dropping '%s'\n", list);
+                break;
+            }
+            memcpy(declared_schemes[slot].name, list, length);
+            declared_schemes[slot].name[length] = '\0';
+            for (i = 0; i < length; ++i)
+                declared_schemes[slot].name16[i] =
+                    (cef_char_t)(unsigned char)list[i];
+            declared_schemes[slot].name16[length] = 0;
+            declared_schemes[slot].options = 0;
+            declared_scheme_count++;
+        }
+        declared_schemes[slot].options |= options;
+        if (end == NULL)
+            break;
+        list = end + 1;
+    }
+}
+
+static int parse_scheme_switch(const char *arg)
+{
+    static const struct
+    {
+        const char *prefix;
+        int options;
+    } scheme_switches[] = {
+        { "--standard-schemes=", CEF_SCHEME_OPTION_STANDARD },
+        { "--secure-schemes=", CEF_SCHEME_OPTION_SECURE },
+        { "--cors-schemes=", CEF_SCHEME_OPTION_CORS_ENABLED },
+        { "--fetch-schemes=", CEF_SCHEME_OPTION_FETCH_ENABLED },
+        /* Accepted for command-line compatibility; no CEF option bit. */
+        { "--code-cache-schemes=", CEF_SCHEME_OPTION_NONE },
+        { "--service-worker-schemes=", CEF_SCHEME_OPTION_NONE },
+        { "--streaming-schemes=", CEF_SCHEME_OPTION_NONE },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(scheme_switches) / sizeof(scheme_switches[0]);
+        ++i)
+    {
+        size_t prefix_length = strlen(scheme_switches[i].prefix);
+
+        if (strncmp(arg, scheme_switches[i].prefix, prefix_length) == 0)
+        {
+            declare_scheme_list(arg + prefix_length,
+                scheme_switches[i].options);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void CEF_CALLBACK on_register_custom_schemes(cef_app_t *self,
+    cef_scheme_registrar_t *registrar)
+{
+    int slot;
+
+    (void)self;
+    for (slot = 0; slot < declared_scheme_count; ++slot)
+    {
+        cef_string_t name;
+        int added = 0;
+        LONG rc;
+
+        memset(&name, 0, sizeof(name));
+        set_static_cef_string(&name, declared_schemes[slot].name16,
+            strlen(declared_schemes[slot].name));
+        if (registrar != NULL && registrar->add_custom_scheme != NULL)
+            added = registrar->add_custom_scheme(registrar, &name,
+                declared_schemes[slot].options);
+        rc = ElectronDeclareCustomScheme(declared_schemes[slot].name,
+            (ULONG)declared_schemes[slot].options);
+        KPrintF("[ELECTRON-CONTEXT] custom scheme '%s' options=0x%lx "
+            "added=%ld declared rc=%ld\n", declared_schemes[slot].name,
+            (ULONG)declared_schemes[slot].options, (LONG)added, rc);
+    }
+}
+#endif
 
 static cef_render_process_handler_t *CEF_CALLBACK
 get_render_process_handler(cef_app_t *self)
@@ -681,6 +819,7 @@ static void CEF_CALLBACK on_after_created(cef_life_span_handler_t *self,
     browser = created_browser;
     KPrintF("[ELECTRON-CONTEXT] browser created=%p\n", browser);
 #ifdef ELECTRON_SHELL_WINDOWED
+    ElectronSetActiveBrowser(created_browser);
     first_paint = 1;
     first_paint_tick = pump_tick;
     KPrintF("[ELECTRON-CONTEXT] visible browser ready tick=%lu\n",
@@ -692,6 +831,9 @@ static void CEF_CALLBACK on_before_close(cef_life_span_handler_t *self,
     cef_browser_t *closing_browser)
 {
     (void)self;
+#ifdef ELECTRON_SHELL_WINDOWED
+    ElectronSetActiveBrowser(NULL);
+#endif
     release_browser_reference(closing_browser);
     release_browser_reference(browser);
     browser = NULL;
@@ -709,9 +851,15 @@ static void CEF_CALLBACK on_context_created(
 
 #ifdef ELECTRON_SHELL_WINDOWED
     (void)self;
-    (void)cef_browser;
-    (void)frame;
-    (void)context;
+    /*
+     * Run the BrowserWindow preload (require('electron'), process shim,
+     * contextBridge) in the freshly created main-frame context, exactly
+     * where Electron's sandboxed preload would run.  Subframes are ignored
+     * inside the library.
+     */
+    rc = ElectronInjectRendererContext(cef_browser, frame, context);
+    KPrintF("[ELECTRON-CONTEXT] renderer context created browser=%p "
+        "frame=%p inject rc=%ld\n", cef_browser, frame, rc);
     return;
 #else
     (void)self;
@@ -800,6 +948,9 @@ static void initialize_handlers(void)
 
     initialize_base(&app.base, sizeof(app));
     app.get_render_process_handler = get_render_process_handler;
+#ifdef ELECTRON_SHELL_WINDOWED
+    app.on_register_custom_schemes = on_register_custom_schemes;
+#endif
 
     initialize_base(&client.base, sizeof(client));
     client.get_display_handler = get_display_handler;
@@ -856,11 +1007,49 @@ static int ensure_profile_directory(CONST_STRPTR path)
 }
 
 #ifdef ELECTRON_SHELL_WINDOWED
-static int make_node_main_script(const char *path)
+/*
+ * Append one command-line argument to the process.argv literal being built
+ * in command_node_script.  Returns the new length, or 0 if it does not fit.
+ */
+static size_t append_node_argv_entry(size_t length, const char *argument)
+{
+    size_t i;
+
+    if (length + 3 >= sizeof(command_node_script))
+        return 0;
+    command_node_script[length++] = ',';
+    command_node_script[length++] = '\'';
+    for (i = 0; argument[i] != '\0'; ++i)
+    {
+        if (length + 3 >= sizeof(command_node_script))
+            return 0;
+        if (argument[i] == '\'' || argument[i] == '\\')
+            command_node_script[length++] = '\\';
+        command_node_script[length++] = (unsigned char)argument[i];
+    }
+    command_node_script[length++] = '\'';
+    return length;
+}
+
+/*
+ * Electron hands the whole command line to the main script as process.argv
+ * (VS Code's --force-disable-user-env, --disable-extensions, a folder to
+ * open...), so forward every argument the shell did not consume itself: the
+ * main-script option and the custom-scheme switches are ours.
+ *
+ * `electron <app> ...` also exposes the app directory as the first
+ * non-option entry, and VS Code's dev-mode argv parser
+ * (parseMainProcessArgv: stripAppPath) REMOVES the first non-option entry -
+ * with no app path present it drops every argument instead.  So the main
+ * script's directory goes in first, exactly where Electron puts it.
+ */
+static int make_node_main_script(const char *path, int argc, char **argv)
 {
     static const char prefix[] =
         "process.argv=['AROS-Electron','--no-sandbox',"
-        "'--disable-gpu','--disable-gpu-compositing'];"
+        "'--disable-gpu','--disable-gpu-compositing'";
+    static const char middle[] =
+        "];"
         "process.env.VSCODE_DEV='1';"
         "process._rawDebug('[ELECTRON-MODULE] loading main entry "
         MAIN_SCRIPT_OPTION "');"
@@ -881,19 +1070,63 @@ static int make_node_main_script(const char *path)
         "console.error('[ELECTRON-MODULE] main threw: '+"
         "((e&&e.stack)||e));throw e;}";
     const size_t prefix_length = sizeof(prefix) - 1;
+    const size_t middle_length = sizeof(middle) - 1;
     const size_t suffix_length = sizeof(suffix) - 1;
     const size_t path_length = strlen(path);
+    size_t length = prefix_length;
+    int arg_index;
 
-    if (path_length == 0 ||
-        strchr(path, '\'') != NULL ||
-        prefix_length + path_length + suffix_length + 1 >
-            sizeof(command_node_script))
+    if (path_length == 0 || strchr(path, '\'') != NULL ||
+        prefix_length >= sizeof(command_node_script))
         return 0;
 
     memcpy(command_node_script, prefix, prefix_length);
-    memcpy(command_node_script + prefix_length, path, path_length);
-    memcpy(command_node_script + prefix_length + path_length,
-        suffix, suffix_length + 1);
+    {
+        /* App directory = the main script path up to its last separator. */
+        char app_path[512];
+        size_t app_length = path_length;
+
+        while (app_length > 0 && path[app_length - 1] != '/' &&
+            path[app_length - 1] != ':')
+            --app_length;
+        if (app_length == 0 || app_length >= sizeof(app_path))
+            return 0;
+        memcpy(app_path, path, app_length);
+        app_path[app_length] = '\0';
+        length = append_node_argv_entry(length, app_path);
+        if (length == 0)
+            return 0;
+        KPrintF("[ELECTRON-CONTEXT] process.argv app path '%s'\n", app_path);
+    }
+    for (arg_index = 1; arg_index < argc; ++arg_index)
+    {
+        if (argv[arg_index] == NULL || argv[arg_index][0] == '\0')
+            continue;
+        if (strncmp(argv[arg_index], MAIN_SCRIPT_OPTION,
+            sizeof(MAIN_SCRIPT_OPTION) - 1) == 0)
+            continue;
+        if (argv[arg_index][0] == '-' && argv[arg_index][1] == '-' &&
+            strstr(argv[arg_index], "-schemes=") != NULL)
+            continue;
+        length = append_node_argv_entry(length, argv[arg_index]);
+        if (length == 0)
+        {
+            KPrintF("[ELECTRON-CONTEXT] process.argv does not fit at '%s'\n",
+                argv[arg_index]);
+            return 0;
+        }
+        KPrintF("[ELECTRON-CONTEXT] forwarding process.argv entry '%s'\n",
+            argv[arg_index]);
+    }
+    if (length + middle_length + path_length + suffix_length + 1 >
+        sizeof(command_node_script))
+        return 0;
+
+    memcpy(command_node_script + length, middle, middle_length);
+    length += middle_length;
+    memcpy(command_node_script + length, path, path_length);
+    length += path_length;
+    memcpy(command_node_script + length, suffix, suffix_length + 1);
     return 1;
 }
 #endif
@@ -945,7 +1178,7 @@ int main(int argc, char **argv)
         {
             const char *main_script_path =
                 argv[arg_index] + main_script_option_length;
-            if (!make_node_main_script(main_script_path))
+            if (!make_node_main_script(main_script_path, argc, argv))
             {
                 KPrintF("[ELECTRON-CONTEXT] invalid main script path '%s'\n",
                     main_script_path);
@@ -954,6 +1187,12 @@ int main(int argc, char **argv)
             selected_node_script = command_node_script;
             KPrintF("[ELECTRON-CONTEXT] loading Node main script '%s'\n",
                 main_script_path);
+            continue;
+        }
+        if (parse_scheme_switch(argv[arg_index]))
+        {
+            KPrintF("[ELECTRON-CONTEXT] custom scheme switch '%s'\n",
+                argv[arg_index]);
             continue;
         }
         if (argv[arg_index][0] == '-' && argv[arg_index][1] == '-')
@@ -1019,7 +1258,8 @@ int main(int argc, char **argv)
         if (argv[arg_index] != NULL && argv[arg_index][0] == '-' &&
             argv[arg_index][1] == '-' &&
             strncmp(argv[arg_index], MAIN_SCRIPT_OPTION,
-                sizeof(MAIN_SCRIPT_OPTION) - 1) != 0)
+                sizeof(MAIN_SCRIPT_OPTION) - 1) != 0 &&
+            strstr(argv[arg_index], "-schemes=") == NULL)
         {
             cef_argv[cef_argc++] = argv[arg_index];
             KPrintF("[ELECTRON-CONTEXT] forwarding CEF switch '%s'\n",
