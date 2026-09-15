@@ -1989,6 +1989,48 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
    Local<Value> argv[] = {
      Number::New(env->isolate(), async_id),
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/crypto/crypto_context.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/crypto/crypto_context.cc
+--- node-v22.23.1/src/crypto/crypto_context.cc	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/crypto/crypto_context.cc	2026-09-15 13:22:58.733440187 -0500
+@@ -997,6 +997,30 @@
+ }
+ 
+ void CleanupCachedRootCertificates() {
++#ifdef __AROS__
++  /* The three caches below are function-local statics, i.e. they live in
++     node.library and are shared by EVERY opener - upstream can free them here
++     because one process owns the whole node runtime and exits right after.
++
++     On AROS each C:Node is a Process of its own while node.library stays
++     loaded: the vectors hold one reference per certificate on behalf of the
++     LIBRARY, and every live opener's X509_STORE holds references into the very
++     same X509 objects (NewRootCertStore -> X509_STORE_add_cert).  Freeing the
++     library's references when one Process exits therefore pulls the roots out
++     from under the others, and a second exiting Process frees them again -
++     the vector is never cleared and has_cached_* never resets.  Desktop VS
++     Code run 27: clicking "Sign in" forked a short-lived C:Node for the OAuth
++     hand-off, and its teardown faulted in ossl_asn1_string_embed_free with a
++     poisoned ASN1_STRING pointer (0xD0 over the high byte) while the Electron
++     main process was still running with the same roots.
++
++     So the library keeps them for its whole life, exactly as the V8 process
++     state above is kept (see the __AROS__ note in node.cc's
++     TearDownOncePerProcess): they are immutable data derived from a compiled-in
++     table, one instance per library load, reclaimed when node.library expunges
++     and its memory goes with it.  The thread join below still runs, because
++     that thread belongs to this invocation. */
++#else
+   if (has_cached_bundled_root_certs.load()) {
+     for (X509* cert : GetBundledRootCertificates()) {
+       X509_free(cert);
+@@ -1013,6 +1037,7 @@
+       X509_free(cert);
+     }
+   }
++#endif  // __AROS__ : the library owns these references for its whole life
+ 
+   // Serialize with starter to avoid the race window.
+   Mutex::ScopedLock lock(start_cert_loading_thread_mutex);
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/debug_utils.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/debug_utils.cc
 --- node-v22.23.1/src/debug_utils.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/debug_utils.cc	2026-07-25 20:05:15.111399183 -0500
