@@ -1054,7 +1054,11 @@ static const char electron_module_bootstrap[] =
        requires the module.  The child's stdout/stderr are exposed as streams
        (Electron stdio 'pipe') and echoed to the debug log while the seam is
        young.  VSCODE_PARENT_PID liveness polls process.kill(<our pid>,0): the
-       parent is this very process, so that answers true. */
+       parent is this very process, so that answers true.  AROS getpid() is
+       per task (ETask et_UniqueID), so a Worker's process.pid differs from
+       the main pid VS Code was given - compare against workerData.parentPid
+       too, or bootstrap-fork's terminateWhenParentTerminates exits the
+       service on its first 5 s poll. */
     "const utilityPreamble="
     "\"const {parentPort,workerData}=require('node:worker_threads');\"+"
     "\"const {EventEmitter}=require('node:events');\"+"
@@ -1078,7 +1082,7 @@ static const char electron_module_bootstrap[] =
     "\"process.argv=[process.execPath,workerData.modulePath,...workerData.args];\"+"
     "\"const nativeKill=process.kill.bind(process);\"+"
     "\"process.kill=(pid,signal)=>{\"+"
-    "\"if(Number(pid)===process.pid&&(signal===0||signal==='0'))return true;\"+"
+    "\"if((Number(pid)===process.pid||Number(pid)===workerData.parentPid)&&(signal===0||signal==='0'))return true;\"+"
     "\"return nativeKill(pid,signal);\"+"
     "\"};\"+"
     /* Electron's ParentPort starts its port only when the first 'message'
@@ -1153,7 +1157,7 @@ static const char electron_module_bootstrap[] =
     "const argv=Array.isArray(args)?args.map(String):[];"
     "const execArgv=Array.isArray(options.execArgv)?options.execArgv.map(String):[];"
     "const workerOptions={eval:true,argv,env,execArgv,stdout:true,stderr:true,"
-    "workerData:{modulePath:String(modulePath),args:argv,serviceName,"
+    "workerData:{modulePath:String(modulePath),args:argv,serviceName,parentPid:process.pid,"
     "electronVersion:process.versions.electron}};"
     "let worker=null;"
     "try{worker=new workerThreads.Worker(utilityPreamble,workerOptions);}"
