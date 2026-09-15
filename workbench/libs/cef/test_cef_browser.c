@@ -4,6 +4,7 @@
     Desc: Focused CEF windowless browser and native 2D presentation probe
 */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include <cybergraphx/cybergraphics.h>
@@ -11,6 +12,7 @@
 #include <exec/memory.h>
 #include <intuition/intuition.h>
 #include <proto/cef.h>
+#include <proto/v8.h>
 #include <proto/cybergraphics.h>
 #include <proto/debug.h>
 #include <proto/dos.h>
@@ -21,12 +23,20 @@
 #include "include/capi/cef_browser_capi.h"
 #include "include/capi/cef_client_capi.h"
 #include "include/capi/cef_life_span_handler_capi.h"
+#include "include/capi/cef_display_handler_capi.h"
+#include "include/capi/cef_load_handler_capi.h"
 #include "include/capi/cef_render_handler_capi.h"
 
 #define VIEW_WIDTH 960
 #define VIEW_HEIGHT 540
 #define CLOSE_AFTER_PAINT_TICKS 100
 #define CREATE_TIMEOUT_TICKS 1500
+/* Room for the settle window plus the close handshake, since a settle run is
+   deliberately longer than the probe's own 30-second document timeout. */
+#define SETTLE_TAIL_TICKS 200
+/* Ask for a frame periodically: an application that is busy loading may not
+   invalidate anything for minutes, and the probe wants progress, not silence. */
+#define INVALIDATE_EVERY_TICKS 100
 #define CLOSE_TIMEOUT_TICKS 500
 
 struct Library *CEFBase = NULL;
@@ -38,11 +48,33 @@ static int close_requested;
 static int first_paint;
 static int initial_frame_logged;
 static ULONG first_paint_tick;
+/*
+ * A real web application (the VS Code workbench, say) paints a usable frame
+ * long after the first frame that carries any content at all: it boots its
+ * own JavaScript, then repaints as each part of the UI arrives.  settle_ticks
+ * keeps the browser pumping for that long after the first content paint and
+ * snapshots the LAST frame instead of the first, so the evidence shows the
+ * application rather than its splash.  Zero keeps the original behaviour.
+ */
+static ULONG settle_ticks;
+static int settle_snapshot_written;
+/*
+ * A loading application can go minutes without changing a pixel, and on_paint
+ * only fires when something does change.  Keep the last frame so the snapshot
+ * can be written from the pump loop on a schedule instead of depending on the
+ * page to repaint at the right moment.
+ */
+static void *last_frame;
+static int last_frame_width;
+static int last_frame_height;
+static size_t last_frame_size;
 static ULONG pump_tick;
 static const char *snapshot_path;
 
 static cef_client_t client;
 static cef_render_handler_t render_handler;
+static cef_load_handler_t load_handler;
+static cef_display_handler_t display_handler;
 static cef_life_span_handler_t life_span_handler;
 
 /*
@@ -176,7 +208,8 @@ static int frame_has_test_content(const void *buffer, int width, int height)
 
 /*
  * Optional argv[2] overrides the built-in document, so a real http:// page can
- * be loaded without rebuilding. cef_string_t is UTF-16 and a URL is ASCII once
+ * be loaded without rebuilding, and optional argv[3] is the settle window in
+ * pump ticks (see settle_ticks). cef_string_t is UTF-16 and a URL is ASCII once
  * percent-encoded, so widening byte-by-byte is sufficient and avoids dragging
  * a converter in here.
  */
@@ -260,6 +293,104 @@ static cef_render_handler_t *CEF_CALLBACK get_render_handler(
     return &render_handler;
 }
 
+static cef_load_handler_t *CEF_CALLBACK get_load_handler(cef_client_t *self)
+{
+    (void)self;
+    return &load_handler;
+}
+
+static cef_display_handler_t *CEF_CALLBACK get_display_handler(
+    cef_client_t *self)
+{
+    (void)self;
+    return &display_handler;
+}
+
+/*
+ * A web application that fails to start says so on its console and nowhere
+ * else: without this, "the page loaded and stayed blank" is the whole
+ * diagnosis.  cef_string_t is UTF-16; the messages worth reading here are
+ * ASCII, so narrow them by hand rather than linking a converter.
+ */
+static void log_cef_string(const char *label, const cef_string_t *value)
+{
+    char narrow[240];
+    size_t i;
+
+    if (value == NULL || value->str == NULL || value->length == 0)
+        return;
+    for (i = 0; i < value->length && i < sizeof(narrow) - 1; ++i)
+    {
+        cef_char_t ch = value->str[i];
+
+        narrow[i] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+    }
+    narrow[i] = '\0';
+    KPrintF("[CEF-BROWSER] %s %s\n", (IPTR)label, (IPTR)narrow);
+}
+
+static int CEF_CALLBACK on_console_message(cef_display_handler_t *self,
+    cef_browser_t *cef_browser, cef_log_severity_t level,
+    const cef_string_t *message, const cef_string_t *source, int line)
+{
+    (void)self;
+    (void)level;
+
+    log_cef_string("console", message);
+    /* The message alone rarely identifies the culprit in a bundled
+       application: everything is one file until the source and line say
+       otherwise. */
+    log_cef_string("console-source", source);
+    KPrintF("[CEF-BROWSER] console-line %ld\n", (LONG)line);
+    release_browser_reference(cef_browser);
+    return 0;
+}
+
+/*
+ * Without these, a navigation that never happens and a page that is merely
+ * slow look exactly alike: both are just an absence of on_paint.  A real
+ * application takes long enough to load that the difference matters.
+ */
+static void CEF_CALLBACK on_loading_state_change(cef_load_handler_t *self,
+    cef_browser_t *cef_browser, int is_loading, int can_go_back,
+    int can_go_forward)
+{
+    (void)self;
+    (void)can_go_back;
+    (void)can_go_forward;
+
+    KPrintF("[CEF-BROWSER] loading=%ld tick=%lu\n", (LONG)is_loading,
+        (ULONG)pump_tick);
+    release_browser_reference(cef_browser);
+}
+
+static void CEF_CALLBACK on_load_end(cef_load_handler_t *self,
+    cef_browser_t *cef_browser, cef_frame_t *frame, int http_status_code)
+{
+    (void)self;
+
+    KPrintF("[CEF-BROWSER] load end status=%ld tick=%lu\n",
+        (LONG)http_status_code, (ULONG)pump_tick);
+    if (frame != NULL && frame->base.release != NULL)
+        frame->base.release(&frame->base);
+    release_browser_reference(cef_browser);
+}
+
+static void CEF_CALLBACK on_load_error(cef_load_handler_t *self,
+    cef_browser_t *cef_browser, cef_frame_t *frame, cef_errorcode_t error_code,
+    const cef_string_t *error_text, const cef_string_t *failed_url)
+{
+    (void)self;
+    (void)error_text;
+    (void)failed_url;
+
+    KPrintF("[CEF-BROWSER] load error %ld tick=%lu\n", (LONG)error_code,
+        (ULONG)pump_tick);
+    if (frame != NULL && frame->base.release != NULL)
+        frame->base.release(&frame->base);
+    release_browser_reference(cef_browser);
+}
+
 static void CEF_CALLBACK get_view_rect(cef_render_handler_t *self,
     cef_browser_t *cef_browser, cef_rect_t *rect)
 {
@@ -306,9 +437,37 @@ static void CEF_CALLBACK on_paint(cef_render_handler_t *self,
     WritePixelArray((APTR)buffer, 0, 0, width * 4,
         browser_window->RPort, 0, 0, draw_width, draw_height, RECTFMT_BGRA32);
 
-    if (!first_paint && frame_has_test_content(buffer, width, height))
     {
-        if (snapshot_path != NULL)
+        size_t frame_size = (size_t)width * (size_t)height * 4;
+
+        if (last_frame != NULL && last_frame_size != frame_size)
+        {
+            FreeVec(last_frame);
+            last_frame = NULL;
+        }
+        if (last_frame == NULL)
+        {
+            last_frame = AllocVec(frame_size, MEMF_ANY);
+            last_frame_size = frame_size;
+        }
+        if (last_frame != NULL)
+        {
+            CopyMem((APTR)buffer, last_frame, frame_size);
+            last_frame_width = width;
+            last_frame_height = height;
+        }
+    }
+
+    /*
+     * In settle mode the page under test is a real application, not this
+     * probe's own document, so its first frame need not be bright: take the
+     * first frame that arrives as the start of the settle window and judge the
+     * result from the settled snapshot instead.
+     */
+    if (!first_paint && (settle_ticks != 0 ||
+        frame_has_test_content(buffer, width, height)))
+    {
+        if (snapshot_path != NULL && settle_ticks == 0)
         {
             if (write_snapshot_ppm(buffer, width, height))
                 KPrintF("[CEF-BROWSER] snapshot wrote %s\n", snapshot_path);
@@ -320,6 +479,22 @@ static void CEF_CALLBACK on_paint(cef_render_handler_t *self,
         first_paint = 1;
         KPrintF("[CEF-BROWSER] first paint %ldx%ld dirty=%lu\n",
             (LONG)width, (LONG)height, (ULONG)dirty_rect_count);
+    }
+    else if (first_paint && settle_ticks != 0 && !settle_snapshot_written &&
+        pump_tick >= first_paint_tick + settle_ticks)
+    {
+        settle_snapshot_written = 1;
+        if (snapshot_path != NULL)
+        {
+            if (write_snapshot_ppm(buffer, width, height))
+                KPrintF("[CEF-BROWSER] settled snapshot wrote %s\n",
+                    snapshot_path);
+            else
+                KPrintF("[CEF-BROWSER] settled snapshot write failed %s\n",
+                    snapshot_path);
+        }
+        KPrintF("[CEF-BROWSER] settled after %lu ticks %ldx%ld\n",
+            (ULONG)settle_ticks, (LONG)width, (LONG)height);
     }
     else if (!first_paint && !initial_frame_logged)
     {
@@ -421,15 +596,39 @@ static void handle_window_messages(void)
     }
 }
 
+static void invalidate_view(void)
+{
+    cef_browser_host_t *host = get_browser_host();
+
+    if (host == NULL)
+        return;
+    if (host->invalidate != NULL)
+        host->invalidate(host, PET_VIEW);
+    if (host->base.release != NULL)
+        host->base.release(&host->base);
+}
+
 static void initialize_handlers(void)
 {
     memset(&client, 0, sizeof(client));
     memset(&render_handler, 0, sizeof(render_handler));
     memset(&life_span_handler, 0, sizeof(life_span_handler));
+    memset(&load_handler, 0, sizeof(load_handler));
+    memset(&display_handler, 0, sizeof(display_handler));
 
     initialize_base(&client.base, sizeof(client));
     client.get_life_span_handler = get_life_span_handler;
     client.get_render_handler = get_render_handler;
+    client.get_load_handler = get_load_handler;
+    client.get_display_handler = get_display_handler;
+
+    initialize_base(&load_handler.base, sizeof(load_handler));
+    load_handler.on_loading_state_change = on_loading_state_change;
+    load_handler.on_load_end = on_load_end;
+    load_handler.on_load_error = on_load_error;
+
+    initialize_base(&display_handler.base, sizeof(display_handler));
+    display_handler.on_console_message = on_console_message;
 
     initialize_base(&render_handler.base, sizeof(render_handler));
     render_handler.get_view_rect = get_view_rect;
@@ -452,6 +651,7 @@ int main(int argc, char **argv)
     LONG initialize_result;
     LONG create_result;
     ULONG ticks;
+    ULONG run_ticks;
     ULONG close_ticks;
     int result = RETURN_FAIL;
 
@@ -459,11 +659,38 @@ int main(int argc, char **argv)
         snapshot_path = argv[1];
     if (argc > 2)
         set_url_override(argv[2]);
+    if (argc > 3)
+        settle_ticks = (ULONG)atol(argv[3]);
     CEFBase = OpenLibrary(CEFNAME, CEFVERSION);
     if (CEFBase == NULL)
     {
         KPrintF("[CEF-BROWSER] cef.library open failed\n");
         return RETURN_FAIL;
+    }
+
+    /*
+     * Blink and V8 must be on ONE heap before anything allocates.  A
+     * script-heavy page is where the split bites: Blink's background script
+     * streamer allocates the chunk vector with cef-blink's PartitionAlloc and
+     * V8 destroys it through v8.library's operator delete[], which lands in
+     * stdc's free and then FreePooled on memory that never came from that
+     * pool ("free-list corruption at FREE outside TLSF area").  electron
+     * .library does this install on its own path; the browser probe has to do
+     * it itself, and says so either way so a silent no-op cannot pass.
+     */
+    {
+        APTR allocFn = NULL;
+        APTR freeFn = NULL;
+
+        KPrintF("[CEF-BROWSER] shared heap before install: %ld\n",
+            (LONG)V8AllocatorIsInstalled());
+        CEFGetAllocator(&allocFn, &freeFn);
+        if (allocFn == NULL || freeFn == NULL)
+            KPrintF("[CEF-BROWSER] cef allocator unavailable\n");
+        else
+            (void)V8AllocatorInstall(allocFn, freeFn);
+        KPrintF("[CEF-BROWSER] shared heap after install: %ld\n",
+            (LONG)V8AllocatorIsInstalled());
     }
 
     browser_window = OpenWindowTags(NULL,
@@ -542,13 +769,46 @@ int main(int argc, char **argv)
     if (create_result == 0)
         goto shutdown;
 
-    for (ticks = 0; ticks < CREATE_TIMEOUT_TICKS && !browser_closed; ++ticks)
+    run_ticks = CREATE_TIMEOUT_TICKS;
+    if (settle_ticks != 0 &&
+        settle_ticks + CLOSE_AFTER_PAINT_TICKS + SETTLE_TAIL_TICKS > run_ticks)
+        run_ticks = settle_ticks + CLOSE_AFTER_PAINT_TICKS + SETTLE_TAIL_TICKS;
+
+    for (ticks = 0; ticks < run_ticks && !browser_closed; ++ticks)
     {
         pump_tick = ticks;
         handle_window_messages();
         CEFDoMessageLoopWork();
 
-        if (first_paint &&
+        if (settle_ticks != 0 && (ticks % INVALIDATE_EVERY_TICKS) ==
+            INVALIDATE_EVERY_TICKS - 1)
+            invalidate_view();
+
+        if (first_paint && settle_ticks != 0 && !settle_snapshot_written &&
+            ticks >= first_paint_tick + settle_ticks)
+        {
+            settle_snapshot_written = 1;
+            if (last_frame != NULL && snapshot_path != NULL &&
+                write_snapshot_ppm(last_frame, last_frame_width,
+                    last_frame_height))
+                KPrintF("[CEF-BROWSER] settled snapshot wrote %s %ldx%ld\n",
+                    snapshot_path, (LONG)last_frame_width,
+                    (LONG)last_frame_height);
+            else
+                KPrintF("[CEF-BROWSER] settled snapshot unavailable\n");
+        }
+
+        if (first_paint && settle_ticks != 0)
+        {
+            /*
+             * Hold the browser open for the whole settle window even if the
+             * page stops painting, so a snapshot is still taken from the last
+             * frame that did arrive.
+             */
+            if (ticks > first_paint_tick + settle_ticks + CLOSE_AFTER_PAINT_TICKS)
+                request_browser_close();
+        }
+        else if (first_paint &&
             ticks > first_paint_tick + CLOSE_AFTER_PAINT_TICKS)
             request_browser_close();
         Delay(1);

@@ -52,6 +52,6 @@ CEF_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
     files=test_cef_browser \
     cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
     ldflags="$(TARGET_LDFLAGS)" \
-    uselibs="cef cybergraphics graphics intuition dos exec debug"
+    uselibs="cef v8 cybergraphics graphics intuition dos exec debug"
 
 %common
