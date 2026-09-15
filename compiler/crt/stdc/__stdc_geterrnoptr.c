@@ -23,12 +23,10 @@ int *__stdc_geterrnoptr(void)
 #else
     struct StdCIntBase *StdCBase = (struct StdCIntBase *)__aros_getbase_StdCBase();
 
-    /* The base's errno belongs to the Task that opened the base.  Another
-       Task calling through it (a pthread worker of an absolutely linked
-       program, see __stdc_errno.c) must not share it. */
-    if (StdCBase->errno_task == FindTask(NULL))
-        return &StdCBase->StdCBase._errno;
-
+    /* errno belongs to the calling Task, not to the base it jumped through:
+       a Task may borrow another Task's base (a pthread worker of an
+       absolutely linked program) or own several (one per pertaskbase module
+       with rellib stdc), see __stdc_errno.c. */
     return __stdc_taskerrnoptr(StdCBase);
 #endif
 }

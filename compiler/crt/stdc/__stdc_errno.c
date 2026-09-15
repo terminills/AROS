@@ -1,24 +1,35 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    Desc: Per-Task errno for Tasks that call through another Task's StdCBase.
+    Desc: One errno per Task, whichever StdCBase the Task calls through.
 
-    errno lives in StdCBase->_errno, and stdc.library hands out one base per
-    opener.  That is per-Task only as long as every Task calls through a base
-    it opened itself, which a pthread worker in an absolutely linked program
-    does not: its linklib stubs jump through the program's single, global
-    StdCBase (see compiler/crt/posixc/__threadhook.c for the full story), so
-    every thread would share the main Task's errno.  A worker then sees the
-    EEXIST/EAGAIN of whatever another thread just did, and its own error is
-    clobbered before it gets to read it.
+    stdc.library hands out one base per opener, and the public StdCBase
+    carries an _errno field.  Neither is a usable errno home:
 
-    So __stdc_geterrnoptr() hands the base's _errno only to the Task that
-    opened the base (StdCIntBase->errno_task) and gives every other Task a
-    small cell of its own, kept in a stdc-private task-storage slot and
-    allocated on first use.  The cell is released by the CRT thread-hook
-    registry's leave hook when a pthread worker exits.  A Task that is not a
-    pthread worker but still calls the CRT through a foreign base keeps its
-    cell until it dies (a few bytes, once per such Task).
+    - A pthread worker in an absolutely linked program never opens a base;
+      its linklib stubs jump through the program's single, global StdCBase
+      (see compiler/crt/posixc/__threadhook.c for the full story).  Every
+      thread would share the main Task's errno: a thread reading errno after
+      readdir() returned NULL could see the EEXIST of another thread's
+      mkdir(), and its own error could be clobbered before it got to read
+      it.
+
+    - One Task can also hold SEVERAL bases.  A pertaskbase module with
+      "rellib stdc" (posixc, uv1, z1, node) opens stdc on the task that opens
+      the module, so a C:Node process owns one stdc base per such module.
+      Giving each base its own _errno then splits errno by call path: posixc's
+      fopen() sets ENOENT through posixc's base, and the caller reading errno
+      through node's base sees 0 (OpenSSL's config loader took that "No
+      error" for a fatal error, JOB-0033 spawn-env-control7, 2026-09-15).
+
+    So errno is a small cell of the calling Task, kept in a stdc-private
+    task-storage slot, allocated on first use and handed to every base the
+    Task opens.  The cell counts the bases that use it: it is released when
+    the last of them closes on its opener, or - for a Task that only ever
+    borrowed foreign bases - by the CRT thread-hook registry's leave hook
+    when a pthread worker exits.  A plain Task that never opened stdc itself
+    keeps its cell until it dies (a few bytes, once per such Task).  The
+    public _errno field only backs a Task whose cell could not be allocated.
 */
 
 #include <aros/symbolsets.h>
@@ -28,43 +39,53 @@
 #include "__stdc_intbase.h"
 #include "__crt_threadhooks.h"
 
+struct StdCErrnoCell
+{
+    int     value;
+    ULONG   bases;      /* stdc bases of the owning Task using this cell */
+};
+
 static LONG __stdc_errnoslot;
 static struct CRTThreadHook __stdc_threadhook;
 
-/* Called by __stdc_geterrnoptr() when the calling Task is not the base's
-   opener.  Falls back to the base's errno (shared, as before) if a cell can
-   not be provided, so errno never becomes a NULL pointer. */
-int *__stdc_taskerrnoptr(struct StdCIntBase *StdCBase)
+/* The calling Task's cell, made on first use. */
+static struct StdCErrnoCell *__stdc_errno_taskcell(BOOL create)
 {
-    int *cell = NULL;
+    struct StdCErrnoCell *cell;
 
-    if (__stdc_errnoslot)
+    if (!__stdc_errnoslot)
+        return NULL;
+
+    cell = (struct StdCErrnoCell *)GetTaskStorageSlot(__stdc_errnoslot);
+    if (!cell && create)
     {
-        cell = (int *)GetTaskStorageSlot(__stdc_errnoslot);
-        if (!cell)
+        cell = AllocMem(sizeof(*cell), MEMF_PUBLIC | MEMF_CLEAR);
+        if (cell && !SetTaskStorageSlot(__stdc_errnoslot, (IPTR)cell))
         {
-            cell = AllocMem(sizeof(*cell), MEMF_PUBLIC | MEMF_CLEAR);
-            if (cell && !SetTaskStorageSlot(__stdc_errnoslot, (IPTR)cell))
-            {
-                FreeMem(cell, sizeof(*cell));
-                cell = NULL;
-            }
+            FreeMem(cell, sizeof(*cell));
+            cell = NULL;
         }
     }
 
-    return cell ? cell : &StdCBase->StdCBase._errno;
+    return cell;
+}
+
+/* Called by __stdc_geterrnoptr().  Falls back to the base's _errno if a
+   cell can not be provided, so errno never becomes a NULL pointer. */
+int *__stdc_taskerrnoptr(struct StdCIntBase *StdCBase)
+{
+    struct StdCErrnoCell *cell = __stdc_errno_taskcell(TRUE);
+
+    return cell ? &cell->value : &StdCBase->StdCBase._errno;
 }
 
 static void stdc_thread_leave(void)
 {
-    /* Runs in a pthread worker at thread exit: drop its errno cell. */
-    int *cell;
+    /* Runs in a pthread worker at thread exit: drop its errno cell unless a
+       base the worker opened still uses it - that base's close drops it. */
+    struct StdCErrnoCell *cell = __stdc_errno_taskcell(FALSE);
 
-    if (!__stdc_errnoslot)
-        return;
-
-    cell = (int *)GetTaskStorageSlot(__stdc_errnoslot);
-    if (cell)
+    if (cell && cell->bases == 0)
     {
         SetTaskStorageSlot(__stdc_errnoslot, (IPTR)NULL);
         FreeMem(cell, sizeof(*cell));
@@ -96,16 +117,48 @@ static void __stdc_errno_expunge(struct StdCIntBase *StdCBase)
     }
 }
 
-/* Every opener gets its own base; remember who that was so that
-   __stdc_geterrnoptr() can tell the opener from a Task borrowing the base. */
+/* Every opener gets its own base; bind it to the opener's cell so that all
+   of one Task's bases, and every foreign base it borrows, share one errno. */
 static int __stdc_errno_open(struct StdCIntBase *StdCBase)
 {
+    struct StdCErrnoCell *cell = __stdc_errno_taskcell(TRUE);
+
     StdCBase->errno_task = FindTask(NULL);
+    StdCBase->errno_cell = cell;
+    if (cell)
+        cell->bases++;
+
+    return TRUE;
+}
+
+static int __stdc_errno_close(struct StdCIntBase *StdCBase)
+{
+    struct StdCErrnoCell *cell = StdCBase->errno_cell;
+
+    if (!cell)
+        return TRUE;
+
+    StdCBase->errno_cell = NULL;
+    if (--cell->bases == 0)
+    {
+        /* Only the opener can clear its own slot.  A base closed by some
+           other Task (an expunge sweep) leaves the cell to its owner, which
+           reuses it on its next open or takes it to the grave: a stale
+           slot pointer must never be freed under the owner. */
+        if (StdCBase->errno_task == FindTask(NULL)
+            && __stdc_errno_taskcell(FALSE) == cell)
+        {
+            SetTaskStorageSlot(__stdc_errnoslot, (IPTR)NULL);
+            FreeMem(cell, sizeof(*cell));
+        }
+    }
 
     return TRUE;
 }
 
 ADD2INITLIB(__stdc_errno_init, 0);
 ADD2EXPUNGELIB(__stdc_errno_expunge, 0);
-/* Before every other OpenLib hook, some of which may already set errno. */
+/* Before every other OpenLib hook, some of which may already set errno; the
+   CloseLib set runs in reverse, so the same priority puts the close last. */
 ADD2OPENLIB(__stdc_errno_open, -100);
+ADD2CLOSELIB(__stdc_errno_close, -100);

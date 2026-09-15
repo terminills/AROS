@@ -24,6 +24,7 @@
 
 /* Some structs that are defined privately */
 struct signal_func_data;
+struct StdCErrnoCell;
 
 struct StdCIntBase
 {
@@ -41,9 +42,10 @@ struct StdCIntBase
     /* common */
     int                         flags;
 
-    /* __stdc_errno.c: the Task that opened this base owns _errno; any other
-       Task calling through it gets a per-Task errno cell instead. */
+    /* __stdc_errno.c: the Task that opened this base, and its errno cell -
+       shared with every other base that Task opens or borrows. */
     struct Task                 *errno_task;
+    struct StdCErrnoCell        *errno_cell;
 
     /* stdlib.h */
     APTR                        mempool;
