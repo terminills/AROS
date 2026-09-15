@@ -1,4 +1,6 @@
 /*
+ * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ *
  * Stable native AROS vectors forwarding into cef-blink.library.
  *
  * The adapter owns the exact-build CEF/Blink C++ closure.  Keeping this facade
@@ -177,5 +179,28 @@ AROS_LH2(void, CEFGetAllocator,
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
     CEFBlinkGetAllocator(allocFn, freeFn);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH3(LONG, CEFRegisterSchemeHandlerFactory,
+    AROS_LHA(APTR, scheme_name, A0),
+    AROS_LHA(APTR, domain_name, A1),
+    AROS_LHA(APTR, factory, A2),
+    LIBBASETYPEPTR, LIBBASE, 19, CEF)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return CEFBlinkRegisterSchemeHandlerFactory(scheme_name, domain_name,
+        factory);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH1(void, CEFStringUserfreeFree,
+    AROS_LHA(APTR, str, A0),
+    LIBBASETYPEPTR, LIBBASE, 20, CEF)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    CEFBlinkStringUserfreeFree(str);
     AROS_LIBFUNC_EXIT
 }

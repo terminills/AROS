@@ -1,4 +1,6 @@
 /*
+ * Copyright (C) 2026, The AROS Development Team. All rights reserved.
+ *
  * Exact-build CEF/Blink implementation bridge.
  *
  * All Chromium C++ implementation and data remain in this module.  The public
@@ -33,6 +35,11 @@ extern int cef_engine_post_delayed_task(int thread_id, void *task,
 extern int cef_engine_register_extension(const void *name,
     const void *javascript_code, void *handler)
     __asm__("cef_register_extension");
+extern int cef_engine_register_scheme_handler_factory(const void *scheme_name,
+    const void *domain_name, void *factory)
+    __asm__("cef_register_scheme_handler_factory");
+extern void cef_engine_string_userfree_utf16_free(void *str)
+    __asm__("cef_string_userfree_utf16_free");
 extern void *cef_engine_v8_platform(void)
     __asm__("_ZN3gin10V8Platform3GetEv");
 extern int cef_engine_v8_worker_threads(void *platform)
@@ -237,5 +244,28 @@ AROS_LH2(void, CEFBlinkGetAllocator,
     if (freeFn != NULL)
         *freeFn = (APTR)CEFBlinkHeapFree;
 
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH3(LONG, CEFBlinkRegisterSchemeHandlerFactory,
+    AROS_LHA(APTR, scheme_name, A0),
+    AROS_LHA(APTR, domain_name, A1),
+    AROS_LHA(APTR, factory, A2),
+    LIBBASETYPEPTR, LIBBASE, 19, CEFBlink)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return cef_engine_register_scheme_handler_factory(scheme_name, domain_name,
+        factory);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH1(void, CEFBlinkStringUserfreeFree,
+    AROS_LHA(APTR, str, A0),
+    LIBBASETYPEPTR, LIBBASE, 20, CEFBlink)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    cef_engine_string_userfree_utf16_free(str);
     AROS_LIBFUNC_EXIT
 }
