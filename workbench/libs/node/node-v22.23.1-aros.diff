@@ -2661,7 +2661,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (result->exit_code_enum() != ExitCode::kNoFailure) {
        result->early_return_ = true;
        return result;
-@@ -1282,14 +1363,45 @@
+@@ -1282,14 +1363,63 @@
  #endif  // HAVE_OPENSSL
    }
  
@@ -2680,13 +2680,31 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +     not dispose them and must not clear that flag on AROS.
 +
 +     result->platform_ is still assigned on every invocation - the caller
-+     needs the pointer whether or not we created it this time round. */
++     needs the pointer whether or not we created it this time round.
++
++     The platform is guarded by ITS OWN one-way state, not by
++     per_process::v8_initialized: an embedder (node.library's
++     NodePrepareEmbedder for Electron) initializes with
++     kNoInitializeNodeV8Platform, owns V8 through its own MultiIsolatePlatform
++     and still leaves v8_initialized set below.  A C:Node started while (or
++     after) that Electron process holds the library - the VS Code extension
++     host spawning the Claude Code CLI - then found per_process::v8_platform
++     never initialized, Platform() == NULL, and NewIsolate() faulted on the
++     NULL platform (2026-09-15).
++
++     v8.library's platform pointer is task-local (parent-slot inherited), so
++     a kept platform must still be installed on each new invocation's task:
++     on AROS V8::InitializePlatform() only records the slot once V8 is up.
++     Without this a task with no slot falls back to the engine's first-ever
++     platform, which belongs to whichever process installed it. */
    if (!(flags & ProcessInitializationFlags::kNoInitializeNodeV8Platform)) {
 +    NODE_AROS_PHASE("v8-platform enter");
 +#ifdef __AROS__
-+    if (!per_process::v8_initialized) {
++    if (!per_process::v8_platform.initialized_) {
 +      per_process::v8_platform.Initialize(
 +          static_cast<int>(per_process::cli_options->v8_thread_pool_size));
++    } else {
++      V8::InitializePlatform(per_process::v8_platform.Platform());
 +    }
 +#else
      per_process::v8_platform.Initialize(
@@ -2708,7 +2726,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
-@@ -1297,12 +1409,18 @@
+@@ -1297,12 +1427,18 @@
      absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
    }
  
@@ -2728,7 +2746,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
  #if NODE_USE_V8_WASM_TRAP_HANDLER
-@@ -1355,6 +1473,27 @@
+@@ -1355,6 +1491,27 @@
      ResetSignalHandlers();
    }
  
@@ -2756,7 +2774,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
      cppgc::ShutdownProcess();
    }
-@@ -1380,6 +1519,7 @@
+@@ -1380,6 +1537,7 @@
      // will never be fully cleaned up.
      per_process::v8_platform.Dispose();
    }
@@ -2764,7 +2782,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    crypto::CleanupCachedRootCertificates();
-@@ -1568,14 +1708,19 @@
+@@ -1568,14 +1726,19 @@
  }
  
  static ExitCode StartInternal(int argc, char** argv) {
