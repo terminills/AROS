@@ -113,12 +113,11 @@ diff -ruN libuv-v1.48.0.orig/include/uv.h libuv-v1.48.0/include/uv.h
 diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
 --- libuv-v1.48.0.orig/src/threadpool.c	2024-02-07 14:20:07.000000000 -0600
 +++ libuv-v1.48.0/src/threadpool.c	2026-07-26 21:16:23.923812630 -0500
-@@ -25,6 +25,13 @@
+@@ -25,6 +25,12 @@
  # include "unix/internal.h"
  #endif
 
 +#ifdef __AROS__
-+# include <proto/dos.h>
 +# include <proto/exec.h>
 +# include <stdatomic.h>
 +static _Atomic unsigned int uv_aros_work_pending;
@@ -127,7 +126,7 @@ diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
  #include <stdlib.h>
 
  #define MAX_THREADPOOL_SIZE 1024
-@@ -59,6 +66,15 @@
+@@ -59,6 +65,15 @@
    struct uv__queue* q;
    int is_slow_work;
 
@@ -143,7 +142,7 @@ diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
    uv_sem_post((uv_sem_t*) arg);
    arg = NULL;
 
-@@ -141,6 +157,9 @@
+@@ -141,6 +156,9 @@
 
  static void post(struct uv__queue* q, enum uv__work_kind kind) {
    uv_mutex_lock(&mutex);
@@ -153,17 +152,7 @@ diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
    if (kind == UV__WORK_SLOW_IO) {
      /* Insert into a separate queue. */
      uv__queue_insert_tail(&slow_io_pending_wq, q);
-@@ -157,6 +176,9 @@
-   if (idle_threads > 0)
-     uv_cond_signal(&cond);
-   uv_mutex_unlock(&mutex);
-+#ifdef __AROS__
-+  Delay(1);
-+#endif
- }
-
-
-@@ -326,6 +348,9 @@
+@@ -326,6 +344,9 @@
 
      w = container_of(q, struct uv__work, wq);
      err = (w->work == uv__cancelled) ? UV_ECANCELED : 0;
@@ -173,7 +162,7 @@ diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
      w->done(w, err);
      nevents++;
    }
-@@ -345,6 +370,13 @@
+@@ -345,6 +366,13 @@
  }
 
 
