@@ -2538,21 +2538,20 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    return scope.Escape(fun);
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node.cc
 --- node-v22.23.1/src/node.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node.cc	2026-09-14 00:19:28.282562330 -0500
-@@ -134,13 +134,22 @@
++++ node-v22.23.1/src/node.cc	2026-09-15 17:00:00.000000000 -0500
+@@ -134,6 +134,22 @@
  #include <tuple>
  #include <vector>
  
--#ifdef __AROS__
 +#if defined(__AROS__) && defined(NODE_AROS_TRACE)
 +/* bug() reaches kprintf(), which needs the kernel-only _arosdebuglock; see the
 + * note at the kprintf declarations. Opt-in so node.library can link on pc. */
- #include <aros/debug.h>
- #define NODE_AROS_PHASE(name) bug("[Node] phase %s\n", name)
- #else
- #define NODE_AROS_PHASE(name) ((void) 0)
- #endif
- 
++#include <aros/debug.h>
++#define NODE_AROS_PHASE(name) bug("[Node] phase %s\n", name)
++#else
++#define NODE_AROS_PHASE(name) ((void) 0)
++#endif
++
 +#ifdef __AROS__
 +/* node.library's bridge (workbench/libs/node/node_bridge.cc): lend this
 + * library's per-task base to a thread that never opened it, for the global
@@ -2563,9 +2562,11 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  namespace node {
  
  using v8::Array;
-@@ -892,7 +901,32 @@
+@@ -883,19 +899,50 @@
+     std::vector<std::string>* exec_argv,
+     std::vector<std::string>* errors,
      ProcessInitializationFlags::Flags flags) {
-   NODE_AROS_PHASE("initialize-args check-once");
++  NODE_AROS_PHASE("initialize-args check-once");
    // Make sure InitializeNodeWithArgs() is called only once.
 +#ifdef __AROS__
 +  /* node.library is a shared AROS library and outlives the process that
@@ -2595,9 +2596,28 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +#endif
  
    // Initialize node_start_time to get relative uptime.
-   NODE_AROS_PHASE("initialize-args hrtime");
-@@ -921,6 +955,34 @@
-   NODE_AROS_PHASE("initialize-args v8-flags enter");
++  NODE_AROS_PHASE("initialize-args hrtime");
+   per_process::node_start_time = uv_hrtime();
+ 
+   // Register built-in bindings
++  NODE_AROS_PHASE("initialize-args register-bindings enter");
+   binding::RegisterBuiltinBindings();
++  NODE_AROS_PHASE("initialize-args register-bindings leave");
+ 
+   // Make inherited handles noninheritable.
+   if (!(flags & ProcessInitializationFlags::kEnableStdioInheritance) &&
+       !(flags & ProcessInitializationFlags::kNoStdioInitialization)) {
++    NODE_AROS_PHASE("initialize-args disable-stdio-inheritance enter");
+     uv_disable_stdio_inheritance();
++    NODE_AROS_PHASE("initialize-args disable-stdio-inheritance leave");
+   }
+ 
+   // Cache the original command line to be
+@@ -905,8 +952,37 @@
+   // Node provides a "v8.setFlagsFromString" method to dynamically change flags.
+   // Hence do not freeze flags when initializing V8. In a browser setting, this
+   // is security relevant, for Node it's less important.
++  NODE_AROS_PHASE("initialize-args v8-flags enter");
    V8::SetFlagsFromString("--no-freeze-flags-after-init");
  
 +#ifdef __AROS__
@@ -2631,7 +2651,66 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  #if defined(NODE_V8_OPTIONS)
    // Should come before the call to V8::SetFlagsFromCommandLine()
    // so the user can disable a flag --foo at run-time by passing
-@@ -1292,6 +1354,17 @@
+@@ -923,6 +999,7 @@
+   // Specify this explicitly to avoid being affected by V8 changes to the
+   // default value.
+   V8::SetFlagsFromString("--rehash-snapshot");
++  NODE_AROS_PHASE("initialize-args v8-flags leave");
+ 
+ #if HAVE_OPENSSL
+   // TODO(joyeecheung): make this a per-env option and move the normalization
+@@ -933,10 +1010,14 @@
+     per_process::cli_options->use_system_ca = true;
+   }
+ #endif  // HAVE_OPENSSL
++  NODE_AROS_PHASE("initialize-args env-options enter");
+   HandleEnvOptions(per_process::cli_options->per_isolate->per_env);
++  NODE_AROS_PHASE("initialize-args env-options leave");
+ 
+   std::string node_options;
++  NODE_AROS_PHASE("initialize-args dotenv-args enter");
+   auto env_files = node::Dotenv::GetDataFromArgs(*argv);
++  NODE_AROS_PHASE("initialize-args dotenv-args leave");
+ 
+   if (!env_files.empty()) {
+     CHECK(!per_process::v8_initialized);
+@@ -1035,8 +1116,10 @@
+ #endif
+ 
+   if (!(flags & ProcessInitializationFlags::kDisableCLIOptions)) {
++    NODE_AROS_PHASE("initialize-args global-args enter");
+     const ExitCode exit_code =
+         ProcessGlobalArgsInternal(argv, exec_argv, errors, kDisallowedInEnvvar);
++    NODE_AROS_PHASE("initialize-args global-args leave");
+     if (exit_code != ExitCode::kNoFailure) return exit_code;
+   }
+ 
+@@ -1112,6 +1195,7 @@
+ InitializeOncePerProcessInternal(const std::vector<std::string>& args,
+                                  ProcessInitializationFlags::Flags flags =
+                                      ProcessInitializationFlags::kNoFlags) {
++  NODE_AROS_PHASE("initialize-once enter");
+   auto result = std::make_shared<InitializationResultImpl>();
+   result->args_ = args;
+ 
+@@ -1121,12 +1205,16 @@
+     per_process::enabled_debug_list.Parse(nullptr);
+   }
+ 
++  NODE_AROS_PHASE("platform-init enter");
+   PlatformInit(flags);
++  NODE_AROS_PHASE("platform-init leave");
+ 
+   // This needs to run *before* V8::Initialize().
+   {
++    NODE_AROS_PHASE("initialize-args enter");
+     result->exit_code_ = InitializeNodeWithArgsInternal(
+         &result->args_, &result->exec_args_, &result->errors_, flags);
++    NODE_AROS_PHASE("initialize-args leave");
+     if (result->exit_code_enum() != ExitCode::kNoFailure) {
+       result->early_return_ = true;
+       return result;
+@@ -1266,6 +1354,17 @@
      CHECK(ncrypto::CSPRNG(nullptr, 0));
  
      V8::SetEntropySource([](unsigned char* buffer, size_t length) {
@@ -2649,7 +2728,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
        // V8 falls back to very weak entropy when this function fails
        // and /dev/urandom isn't available. That wouldn't be so bad if
        // the entropy was only used for Math.random() but it's also used for
-@@ -1308,15 +1381,60 @@
+@@ -1282,14 +1381,63 @@
  #endif  // HAVE_OPENSSL
    }
  
@@ -2686,7 +2765,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +     Without this a task with no slot falls back to the engine's first-ever
 +     platform, which belongs to whichever process installed it. */
    if (!(flags & ProcessInitializationFlags::kNoInitializeNodeV8Platform)) {
-     NODE_AROS_PHASE("v8-platform enter");
++    NODE_AROS_PHASE("v8-platform enter");
 +#ifdef __AROS__
 +    if (!per_process::v8_platform.initialized_) {
 +      per_process::v8_platform.Initialize(
@@ -2699,7 +2778,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
          static_cast<int>(per_process::cli_options->v8_thread_pool_size));
 +#endif
      result->platform_ = per_process::v8_platform.Platform();
-     NODE_AROS_PHASE("v8-platform leave");
++    NODE_AROS_PHASE("v8-platform leave");
    }
  
 -  if (!(flags & ProcessInitializationFlags::kNoInitializeV8)) {
@@ -2708,10 +2787,13 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +      && !per_process::v8_initialized
 +#endif
 +  ) {
-     NODE_AROS_PHASE("v8-initialize enter");
++    NODE_AROS_PHASE("v8-initialize enter");
      V8::Initialize();
-     NODE_AROS_PHASE("v8-initialize leave");
-@@ -1327,7 +1445,11 @@
++    NODE_AROS_PHASE("v8-initialize leave");
+ 
+     // Disable absl deadlock detection in V8 as it reports false-positive cases.
+     // TODO(legendecas): Replace this global disablement with case suppressions.
+@@ -1297,12 +1445,18 @@
      absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
    }
  
@@ -2721,10 +2803,17 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +      && !per_process::v8_initialized
 +#endif
 +  ) {
-     NODE_AROS_PHASE("cppgc-initialize enter");
++    NODE_AROS_PHASE("cppgc-initialize enter");
      v8::PageAllocator* allocator = nullptr;
      if (result->platform_ != nullptr) {
-@@ -1387,6 +1509,27 @@
+       allocator = result->platform_->GetPageAllocator();
+     }
+     cppgc::InitializeProcess(allocator);
++    NODE_AROS_PHASE("cppgc-initialize leave");
+   }
+ 
+ #if NODE_USE_V8_WASM_TRAP_HANDLER
+@@ -1355,6 +1509,27 @@
      ResetSignalHandlers();
    }
  
@@ -2752,7 +2841,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
      cppgc::ShutdownProcess();
    }
-@@ -1412,6 +1555,7 @@
+@@ -1380,6 +1555,7 @@
      // will never be fully cleaned up.
      per_process::v8_platform.Dispose();
    }
@@ -2760,6 +2849,26 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    crypto::CleanupCachedRootCertificates();
+@@ -1568,14 +1744,19 @@
+ }
+ 
+ static ExitCode StartInternal(int argc, char** argv) {
++  NODE_AROS_PHASE("start-internal enter");
+   CHECK_GT(argc, 0);
+ 
+   // Hack around with the argv pointer. Used for process.title = "blah".
++  NODE_AROS_PHASE("uv-setup-args enter");
+   argv = uv_setup_args(argc, argv);
++  NODE_AROS_PHASE("uv-setup-args leave");
+ 
++  NODE_AROS_PHASE("initialize-once call");
+   std::shared_ptr<InitializationResultImpl> result =
+       InitializeOncePerProcessInternal(
+           std::vector<std::string>(argv, argv + argc));
++  NODE_AROS_PHASE("initialize-once returned");
+   for (const std::string& error : result->errors()) {
+     FPrintF(stderr, "%s: %s\n", result->args().at(0), error);
+   }
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_config.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/node_config.cc
 --- node-v22.23.1/src/node_config.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/node_config.cc	2026-07-25 20:42:26.554181304 -0500
