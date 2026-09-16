@@ -876,7 +876,19 @@ AROS_LH0(LONG, NodePumpEmbedder,
    */
   isolate->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
   const LONG result = uv_run(NodeEmbedLoop, UV_RUN_NOWAIT);
-  if (NodeEmbedPlatform != nullptr)
+  /*
+   * Only for an isolate this platform actually manages.
+   *
+   * A runtime attached to someone else's isolate - a nodeIntegration renderer
+   * attaches to Blink's - was never registered with our platform (nothing
+   * calls RegisterIsolate; owned isolates get the platform passed at creation,
+   * and the scope above and the teardown below already make that distinction).
+   * Draining a foreground queue that does not exist does not return: pumping a
+   * renderer's Node loop this way wedged the whole shell, and the browser
+   * side's own pump stopped after a single iteration. Blink drives foreground
+   * tasks for its own isolate.
+   */
+  if (NodeEmbedOwnsIsolate && NodeEmbedPlatform != nullptr)
     NodeEmbedPlatform->DrainTasks(isolate);
   context->GetMicrotaskQueue()->PerformCheckpoint(isolate);
   isolate->SetMicrotasksPolicy(NodeEmbedOwnsIsolate

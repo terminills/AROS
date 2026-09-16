@@ -89,6 +89,31 @@ static const cef_char_t electron_renderer_extension_code[] =
     u"native function AROSElectronSend(text);"
     u"return AROSElectronSend(text);"
     u"};"
+    /* The renderer's own debug channel.  A page's console is Blink's and lands
+       in CEF's console, not in aros-debug.log, so an app that goes quiet
+       mid-start says nothing an operator can read.  This puts the page's text
+       in the same log as the engine's. */
+    u"AROSElectronRenderer.log=function(text){"
+    u"native function AROSElectronLog(text);"
+    u"return AROSElectronLog(text);"
+    u"};"
+    /* Reports the renderer node pump's iteration count into the debug log.
+       The page can call this from a requestAnimationFrame loop, which is
+       Blink's and keeps running even when node's timers do not. */
+    u"AROSElectronRenderer.pumpStats=function(){"
+    u"native function AROSElectronPumpStats();"
+    u"return AROSElectronPumpStats();"
+    u"};"
+    /* Runs the renderer's own Node loop, from the renderer's own thread. */
+    u"AROSElectronRenderer.pumpNode=function(){"
+    u"native function AROSElectronPumpNode();"
+    u"return AROSElectronPumpNode();"
+    u"};"
+    /* Attaches a Node runtime to the context this call is running in. */
+    u"AROSElectronRenderer.attachNode=function(){"
+    u"native function AROSElectronAttachNode();"
+    u"return AROSElectronAttachNode();"
+    u"};"
     u"})();";
 static const cef_char_t electron_renderer_script_url[] =
     u"aros://electron/preload";
@@ -166,6 +191,58 @@ static const char electron_renderer_node_globals[] =
     "globalThis.__dirname=__dirname;"
     /* Anything the page loads with its own createRequire still goes through
        node, which is correct: only 'electron' is ours to answer. */
+    "";
+
+/*
+ * Tee the page's console and its unhandled failures into the AROS debug log.
+ *
+ * A renderer's console is Blink's, so everything an app says about its own
+ * startup lands in CEF's console and never in aros-debug.log - which is how
+ * GitHub Desktop could go quiet mid-start with no error an operator can read.
+ * AROSElectronRenderer.log is the engine's own channel out of the page, so the
+ * app's text joins the engine's in one log, and the page's own console keeps
+ * behaving exactly as it did.
+ *
+ * Every renderer gets this: the runtime script injects it for a preload
+ * window, and the nodeIntegration attach carries it into the page context.
+ */
+static const char electron_renderer_console_tee[] =
+    "try{"
+    "const rawDebug=(globalThis.AROSElectronRenderer&&"
+    "globalThis.AROSElectronRenderer.log)?"
+    "globalThis.AROSElectronRenderer.log:null;"
+    "const pageConsole=globalThis.console;"
+    "if(rawDebug&&pageConsole&&!pageConsole.__arosTeed){"
+    "const describe=value=>{"
+    "try{"
+    "if(typeof value==='string')return value;"
+    "if(value&&value.stack)return String(value.stack);"
+    "return JSON.stringify(value);"
+    "}catch(error){return String(value);}"
+    "};"
+    "const say=(tag,values)=>{"
+    "try{"
+    "rawDebug(tag+': '+"
+    "values.map(describe).join(' ').slice(0,2000));"
+    "}catch(error){}"
+    "};"
+    "['log','info','warn','error','debug'].forEach(level=>{"
+    "const original=pageConsole[level]&&"
+    "pageConsole[level].bind(pageConsole);"
+    "pageConsole[level]=function(...values){"
+    "say(level,values);"
+    "if(original)original(...values);"
+    "};"
+    "});"
+    "pageConsole.__arosTeed=true;"
+    "if(globalThis.addEventListener){"
+    "globalThis.addEventListener('error',event=>"
+    "say('uncaught',[(event&&event.error)||(event&&event.message)]));"
+    "globalThis.addEventListener('unhandledrejection',event=>"
+    "say('rejected',[event&&event.reason]));"
+    "}"
+    "}"
+    "}catch(error){}"
     "";
 
 /* Injected as the "preload" for a nodeIntegration window that has none of its
@@ -1248,16 +1325,230 @@ static CONST_STRPTR electron_check_privileged_schemes(CONST_STRPTR payload)
 
 /* ---- renderer extension + main<->renderer execution ------------------- */
 
+/*
+ * Drive the renderer's own Node loop.
+ *
+ * A nodeIntegration page gets a Node runtime of its own, and node's bootstrap
+ * replaces the page's setTimeout/setInterval with node's - which run on node's
+ * uv loop, not Blink's. Nothing pumped that loop in the windowed shell, so in a
+ * renderer every node timer and every async node call (fs/promises, net, child
+ * processes) simply never completed: no error, no rejection, just silence.
+ * GitHub Desktop stopped on the first `await access(...)` of its startup editor
+ * scan, and its window stayed blank because React renders null until that
+ * promise resolves.
+ *
+ * The pump has to run ON the renderer thread - only the thread that owns an
+ * isolate may run it - and it has to be driven by something that ticks there.
+ * Three candidates were measured before this one:
+ *
+ *   - A CEF task that reposts itself DELAYED: runs exactly once (pumps=1) and
+ *     never again.
+ *   - The same task reposted IMMEDIATELY: livelocks the thread; the page never
+ *     runs at all.
+ *   - One task posted per shell iteration from the browser side: also exactly
+ *     one pump, because CefPostTask(TID_RENDERER) from another thread reports
+ *     success and delivers nothing.
+ *
+ * What does tick reliably is Blink's own timers, verified in a plain renderer:
+ * 0 ms, 1 s and 5 s timeouts and a repeating interval all fire. So the pump is
+ * a Blink interval - the catch being that node's bootstrap REPLACES the page's
+ * setTimeout/setInterval with its own, which is exactly what is broken. Hence
+ * the capture script below: it saves Blink's timers before the Node attach, and
+ * the driver uses the saved ones.
+ */
+static int electron_renderer_pump_running;
+
+/*
+ * Drives the renderer's Node loop from a Blink interval.
+ *
+ * The hard part is reaching Blink's setInterval at all - node's bootstrap has
+ * already replaced setTimeout/setInterval on the page's global by the time
+ * anything can be injected, and node's versions are precisely what cannot run
+ * until the loop is pumped. Four routes were measured before this one:
+ *
+ *   - Save the timers before the attach: does not work, because
+ *     execute_java_script QUEUES a script, so "save them first" still runs
+ *     after node's bootstrap.
+ *   - Do the attach from a native call mid-script to force the order: wedges
+ *     the shell; node's bootstrap is not safe to run while V8 is executing the
+ *     page's JS.
+ *   - Reach the original through Window.prototype: there is nothing there.
+ *     Blink installs setInterval as an OWN property of the global, which is
+ *     exactly what node overwrote (measured: own property on the global is
+ *     node's, Window/WindowProperties/EventTarget/Object all have none).
+ *   - CEF tasks posted to the renderer thread: delayed ones run exactly once,
+ *     immediate ones livelock the thread, cross-thread ones report success and
+ *     deliver nothing.
+ *
+ * A fresh iframe, though, gets its own untouched Blink globals: its
+ * setInterval is native code and it fires (verified in the page). So the pump
+ * borrows the child document's timer to run the parent's Node loop.
+ *
+ * The iframe hangs off documentElement rather than body, so an app that
+ * replaces the body - React does - does not take the pump with it. It is
+ * created on DOMContentLoaded because at context-creation time there is no
+ * document to attach it to yet.
+ *
+ * 16 ms, not 1 ms: at 1 ms the interval saturated the renderer thread and the
+ * shell's own loop stopped getting turns. ~60 Hz is far more than a startup's
+ * worth of timers and fs callbacks.
+ */
+static const cef_char_t electron_renderer_pump_driver[] =
+    u"(function(){"
+    u"var start=function(){"
+    u"if(globalThis.__arosNodePumpTimer)return;"
+    u"var root=document.documentElement||document.body;"
+    u"if(!root)return;"
+    u"var frame=document.createElement('iframe');"
+    u"frame.style.display='none';"
+    u"frame.setAttribute('aria-hidden','true');"
+    u"root.appendChild(frame);"
+    u"var view=frame.contentWindow;"
+    u"if(!view||typeof view.setInterval!=='function'){"
+    u"AROSElectronRenderer.log('node pump: no Blink timer available');"
+    u"return;"
+    u"}"
+    u"globalThis.__arosNodePumpFrame=frame;"
+    u"globalThis.__arosNodePumpTimer=view.setInterval(function(){"
+    u"AROSElectronRenderer.pumpNode();"
+    u"},16);"
+    u"AROSElectronRenderer.log('node pump driver running');"
+    u"};"
+    u"if(document.readyState==='loading')"
+    u"document.addEventListener('DOMContentLoaded',start);"
+    u"else start();"
+    u"document.addEventListener('readystatechange',start);"
+    u"})();";
+
+static ULONG electron_renderer_pumps;
+static ULONG electron_renderer_pump_refused;
+
+/* Runs one turn of the renderer's Node loop; called by the driver interval. */
+static void electron_pump_renderer_node(void)
+{
+    static int pumping;
+
+    /* Node callbacks run during a pump and can reach JS that pumps again;
+       one turn at a time. */
+    if (!electron_renderer_pump_running || pumping)
+        return;
+    pumping = 1;
+    ++electron_renderer_pumps;
+    NodePumpEmbedder();
+    pumping = 0;
+}
+
+/*
+ * Gives the page a Node runtime, called from the page's own script.
+ *
+ * A runtime of its OWN: without a slot the renderer thread falls back to its
+ * creator's record - the main process's runtime, whose environment already
+ * exists - so the attach refuses with rc=20. The slot stays selected for this
+ * thread, so the renderer's later calls keep finding its own runtime rather
+ * than the app's. This is only possible since node.library started keeping one
+ * runtime per owner rather than one per library (2c77ef2b).
+ */
+static void electron_attach_renderer_node(void)
+{
+    LONG slot;
+    LONG node_rc;
+
+    if (electron_renderer_pump_running)
+        return;
+    slot = NodeCreateRuntimeSlot();
+    if (slot > 0 && NodeSelectRuntimeSlot(slot) != 0)
+    {
+        NodeReleaseRuntimeSlot(slot);
+        slot = 0;
+    }
+    /* No context->enter() here: the page's script is what is running, so the
+       page's context is already the current one. */
+    node_rc = NodeAttachCurrentV8Context(
+        (CONST_STRPTR)electron_renderer_node_globals);
+    if (node_rc != 0 && slot > 0)
+    {
+        NodeSelectRuntimeSlot(0);
+        NodeReleaseRuntimeSlot(slot);
+    }
+    else if (node_rc == 0)
+    {
+        electron_renderer_pump_running = 1;
+    }
+    bug("[ELECTRON-RENDERER] nodeIntegration attach rc=%ld slot=%ld\n",
+        (long)node_rc, (long)slot);
+}
+
+/* Injects one of the static scripts above into the page's frame. */
+static void electron_run_renderer_script(cef_frame_t *frame,
+    const cef_char_t *source, size_t length)
+{
+    cef_string_t code;
+    cef_string_t url;
+
+    if (frame == NULL || frame->execute_java_script == NULL)
+        return;
+    memset(&code, 0, sizeof(code));
+    memset(&url, 0, sizeof(url));
+    electron_set_cef_string(&code, source, length);
+    electron_set_cef_string(&url, electron_renderer_script_url,
+        sizeof(electron_renderer_script_url) / sizeof(cef_char_t) - 1);
+    frame->execute_java_script(frame, &code, &url, 1);
+}
+
+/* One handler serves every native function in the extension, so the one being
+   called has to be told apart by name. */
+static int electron_native_name_is(const cef_string_t *name,
+    const cef_char_t *wanted, size_t wanted_length)
+{
+    size_t i;
+
+    if (name == NULL || name->str == NULL || name->length != wanted_length)
+        return 0;
+    for (i = 0; i < wanted_length; ++i)
+    {
+        if (name->str[i] != wanted[i])
+            return 0;
+    }
+    return 1;
+}
+
 static int CEF_CALLBACK electron_renderer_execute(cef_v8handler_t *self,
     const cef_string_t *name, cef_v8value_t *object, size_t argument_count,
     cef_v8value_t *const *arguments, cef_v8value_t **retval,
     cef_string_t *exception)
 {
+    static const cef_char_t log_function[] = u"AROSElectronLog";
+    static const cef_char_t pump_stats_function[] = u"AROSElectronPumpStats";
+    static const cef_char_t pump_function[] = u"AROSElectronPumpNode";
+    static const cef_char_t attach_function[] = u"AROSElectronAttachNode";
+
     (void)self;
-    (void)name;
     (void)object;
     (void)retval;
     (void)exception;
+    /* These take no arguments, so they are answered before the
+       string-argument natives below. */
+    if (electron_native_name_is(name, pump_function,
+        sizeof(pump_function) / sizeof(cef_char_t) - 1))
+    {
+        electron_pump_renderer_node();
+        return 1;
+    }
+    if (electron_native_name_is(name, attach_function,
+        sizeof(attach_function) / sizeof(cef_char_t) - 1))
+    {
+        electron_attach_renderer_node();
+        return 1;
+    }
+    if (electron_native_name_is(name, pump_stats_function,
+        sizeof(pump_stats_function) / sizeof(cef_char_t) - 1))
+    {
+        bug("[ELECTRON-RENDERER] pump stats pumps=%lu refused=%lu running=%ld\n",
+            (unsigned long)electron_renderer_pumps,
+            (unsigned long)electron_renderer_pump_refused,
+            (long)electron_renderer_pump_running);
+        return 1;
+    }
     if (argument_count >= 1 && arguments[0]->is_string(arguments[0]))
     {
         char *text = electron_userfree_to_utf8(
@@ -1267,6 +1558,13 @@ static int CEF_CALLBACK electron_renderer_execute(cef_v8handler_t *self,
 
         if (text != NULL)
         {
+            if (electron_native_name_is(name, log_function,
+                sizeof(log_function) / sizeof(cef_char_t) - 1))
+            {
+                bug("[ELECTRON-PAGE] %s\n", text);
+                FreeVec(text);
+                return 1;
+            }
             *electron_append_long(id_text, (LONG)electron_window_id) = '\0';
             parts[0] = "ipc\t";
             parts[1] = id_text;
@@ -1525,47 +1823,49 @@ static LONG electron_inject_renderer_context(cef_browser_t *browser,
      */
     if (electron_window_node_integration)
     {
-        LONG node_rc;
-
         /*
-         * Two things this needs that are easy to miss.
-         *
          * Inside the page's context, not merely on its thread:
          * NodeAttachCurrentV8Context() reads Isolate::GetCurrent() and
          * GetCurrentContext(), and both are empty until the context is
          * entered.
-         *
-         * And a runtime of its OWN: without a slot the renderer thread falls
-         * back to its creator's record - the main process's runtime, whose
-         * environment already exists - so the attach refused with rc=20. The
-         * slot stays selected for this thread, so the renderer's later calls
-         * keep finding its own runtime rather than the app's.
          */
-        LONG slot = NodeCreateRuntimeSlot();
-
-        if (slot > 0 && NodeSelectRuntimeSlot(slot) != 0)
-        {
-            NodeReleaseRuntimeSlot(slot);
-            slot = 0;
-        }
         context->enter(context);
-        node_rc = NodeAttachCurrentV8Context(
-            (CONST_STRPTR)electron_renderer_node_globals);
+        electron_attach_renderer_node();
         context->exit(context);
-        if (node_rc != 0 && slot > 0)
-        {
-            NodeSelectRuntimeSlot(0);
-            NodeReleaseRuntimeSlot(slot);
-        }
-        bug("[ELECTRON-RENDERER] nodeIntegration attach rc=%ld\n",
-            (long)node_rc);
+        /* And now something has to run the loop the page just acquired. */
+        if (electron_renderer_pump_running)
+            electron_run_renderer_script(frame,
+                electron_renderer_pump_driver,
+                sizeof(electron_renderer_pump_driver) /
+                    sizeof(cef_char_t) - 1);
     }
 
     if (electron_window_preload_source == NULL &&
         !electron_window_node_integration)
     {
+        /* No preload and no Node, but the page still deserves to be heard:
+           inject the console tee on its own so a plain window's logging and
+           unhandled failures reach the AROS debug log like everything else. */
+        cef_string_t tee_code;
+        cef_string_t tee_url;
+        cef_char_t *tee_text;
+        size_t tee_length = 0;
+
+        tee_text = electron_utf8_to_utf16(electron_renderer_console_tee,
+            &tee_length);
+        if (tee_text != NULL)
+        {
+            memset(&tee_code, 0, sizeof(tee_code));
+            memset(&tee_url, 0, sizeof(tee_url));
+            electron_set_cef_string(&tee_code, tee_text, tee_length);
+            electron_set_cef_string(&tee_url, electron_renderer_script_url,
+                sizeof(electron_renderer_script_url) /
+                    sizeof(cef_char_t) - 1);
+            frame->execute_java_script(frame, &tee_code, &tee_url, 1);
+            FreeVec(tee_text);
+        }
         bug("[ELECTRON-RENDERER] main frame context created, no preload to "
-            "inject\n");
+            "inject (console tee only)\n");
         return 0;
     }
     quoted_path = electron_json_quote(electron_window_preload_path != NULL ?
@@ -1578,12 +1878,15 @@ static LONG electron_inject_renderer_context(cef_browser_t *browser,
     parts[2] = electron_renderer_runtime_middle;
     parts[3] = quoted_path;
     parts[4] = electron_renderer_runtime_body;
+    /* Before the app's preload, so whatever the preload logs is already being
+       teed. */
+    parts[5] = electron_renderer_console_tee;
     /* A nodeIntegration window with no preload of its own still gets the
        runtime, so require('electron') has something to return. */
-    parts[5] = electron_window_preload_source != NULL ?
+    parts[6] = electron_window_preload_source != NULL ?
         electron_window_preload_source : electron_renderer_publish_only;
-    parts[6] = electron_renderer_runtime_tail;
-    script = electron_concat(parts, 7);
+    parts[7] = electron_renderer_runtime_tail;
+    script = electron_concat(parts, 8);
     FreeVec(quoted_path);
     if (script == NULL)
         return 20;

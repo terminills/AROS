@@ -36,6 +36,7 @@
 #include "include/capi/cef_resource_handler_capi.h"
 #include "include/capi/cef_response_capi.h"
 #include "include/capi/cef_scheme_capi.h"
+#include "include/capi/cef_task_capi.h"
 #include "include/capi/cef_v8_capi.h"
 
 #include "electron_libdefs.h"
