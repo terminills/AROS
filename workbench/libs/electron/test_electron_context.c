@@ -13,6 +13,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include <dos/dosextens.h>
 #include <exec/ports.h>
@@ -666,6 +667,36 @@ static int parse_geometry_fields(const char *payload, LONG *values,
     return i;
 }
 
+/*
+ * Does this string already name a URL scheme?
+ *
+ * "SYS:Developer/App/index.html" and "data:text/html,..." are both a name, a
+ * colon and a tail, so the colon alone cannot tell an AROS volume from a URL
+ * scheme - testing for one used to turn every schemed URL without an authority
+ * ("data:", "about:") into "file:///data:..." and CEF rejected it as
+ * ERR_INVALID_URL.  Schemes are a closed set here, volume names are not, so
+ * match the schemes.
+ */
+static int url_has_known_scheme(const char *url)
+{
+    static const char *const schemes[] =
+    {
+        "http:", "https:", "file:", "data:", "about:", "blob:", "chrome:",
+        "chrome-extension:", "devtools:", "javascript:", "ws:", "wss:",
+        "vscode-file:", "vscode-webview:"
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(schemes) / sizeof(schemes[0]); ++i)
+    {
+        size_t length = strlen(schemes[i]);
+
+        if (strncasecmp(url, schemes[i], length) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 static int handle_window_geometry_request(const char *method,
     const char *payload)
 {
@@ -775,7 +806,7 @@ static void service_native_window_requests(cef_window_info_t *window_info,
                  * volume syntax looks like a URL scheme to CEF, so convert it
                  * to a file URL before crossing the Electron/CEF seam.
                  */
-                if (strstr(requested_url, "://") == NULL &&
+                if (!url_has_known_scheme(requested_url) &&
                     strchr(requested_url, ':') != NULL)
                 {
                     static const char file_prefix[] = "file:///";
@@ -1801,7 +1832,13 @@ int main(int argc, char **argv)
      * also tells the seam which app its native events belong to, so a
      * did-finish-load meant for one app's window is not swallowed by another
      * app's pump. Slot 0 puts the primary app back.
+     *
+     * An app needs a main script to be an app, and the main-script machinery
+     * belongs to the windowed shell, so this is windowed-only - the headless
+     * regression variant builds without it rather than against symbols that
+     * are not there.
      */
+#ifdef ELECTRON_SHELL_WINDOWED
     for (extra_index = 0; extra_index < extra_app_count; ++extra_index)
     {
         struct ExtraApp *extra = &extra_apps[extra_index];
@@ -1837,6 +1874,11 @@ int main(int argc, char **argv)
         extra->attached = (rc == 0);
         ElectronSelectAppRuntime(0);
     }
+#else
+    if (extra_app_count > 0)
+        KPrintF("[ELECTRON-CONTEXT] --app-script needs the windowed shell; "
+            "%ld extra app(s) ignored\n", (LONG)extra_app_count);
+#endif
 
     for (ticks = 0;
         !exit_requested &&
