@@ -302,17 +302,115 @@ extern "C" int aros_node_pthread_create(pthread_t *thread,
   return r;
 }
 
+/*
+ * One Node runtime PER APP, not per library.
+ *
+ * node.library is a single library shared by every AROS process, so these
+ * used to be plain file statics: one loop, one isolate, one Environment for
+ * the whole machine. That is invisible while one Electron app runs and fatal
+ * the moment a second one starts - it finds an Environment already there and
+ * every attach path refuses (the second app died at "prepare Node rc=20" with
+ * no window; JOB-0098, 2026-09-16).
+ *
+ * What is genuinely process-global stays global: node's InitializeOncePerProcess
+ * result and the V8 platform, because V8 cannot be initialised twice in one
+ * address space (see the __AROS__ note in node.cc's TearDownOncePerProcess).
+ * Everything that belongs to ONE runtime - its loop, isolate, isolate data,
+ * Environment, context and allocator - moves into a per-owner record below.
+ *
+ * The owner is the exec unique ID of the task that prepared the embedder, not
+ * the task pointer: task pointers are recycled, and an ID that has gone away
+ * must not match a later task that happens to reuse the address. Entries are
+ * looked up by the CALLING task with the same one-level parent fallback the
+ * per-task base uses, so the threads a runtime creates find their own runtime
+ * rather than a neighbour's.
+ */
 static std::shared_ptr<node::InitializationResult> NodeEmbedInitialization;
-static node::IsolateData *NodeEmbedIsolateData;
-static node::Environment *NodeEmbedEnvironment;
-static uv_loop_t *NodeEmbedLoop;
-static bool NodeEmbedLoopInitialized;
-static v8::Isolate *NodeEmbedIsolate;
-static v8::Global<v8::Context> *NodeEmbedContext;
-static node::ArrayBufferAllocator *NodeEmbedArrayBufferAllocator;
-static std::unique_ptr<node::MultiIsolatePlatform> NodeEmbedPlatform;
 static LONG NodeEmbedConfiguredWorkerThreads;
-static bool NodeEmbedOwnsIsolate;
+/* ONE platform for the library, deliberately: node::MultiIsolatePlatform
+   exists to host several isolates, V8::InitializePlatform and
+   cppgc::InitializeProcess are process-wide one-time calls, and a second app
+   creating its own freed the first app's platform under its running isolate
+   (instruction fetch from NULL, ERR=0x14). Each app still gets its own
+   isolate, environment and loop; they share the scheduler underneath. */
+static std::unique_ptr<node::MultiIsolatePlatform> NodeEmbedPlatform;
+static bool NodeEmbedPlatformInitialized;
+
+struct NodeEmbedderState {
+  ULONG owner;
+  node::IsolateData *isolate_data;
+  node::Environment *environment;
+  uv_loop_t *loop;
+  bool loop_initialized;
+  v8::Isolate *isolate;
+  v8::Global<v8::Context> *context;
+  node::ArrayBufferAllocator *allocator;
+  bool owns_isolate;
+};
+
+/* Electron apps are whole AROS processes; a handful covers every app a
+   machine can usefully run at once, and a fixed array keeps the lookup free
+   of allocation on paths that must not allocate. */
+static constexpr size_t NodeEmbedderCapacity = 8;
+static NodeEmbedderState NodeEmbedders[NodeEmbedderCapacity];
+static NodeEmbedderState NodeEmbedderFallback;
+
+static NodeEmbedderState *NodeFindEmbedder(ULONG owner)
+{
+  if (owner == 0)
+    return nullptr;
+  for (size_t index = 0; index < NodeEmbedderCapacity; ++index) {
+    if (NodeEmbedders[index].owner == owner)
+      return &NodeEmbedders[index];
+  }
+  return nullptr;
+}
+
+/* The record for the calling task: its own, else its creator's (a thread the
+   runtime started), else a free slot claimed for it, else a shared fallback
+   so a ninth app degrades instead of scribbling on someone else's runtime. */
+static NodeEmbedderState *NodeCurrentEmbedder(void)
+{
+  struct Task *self = FindTask(NULL);
+  ULONG owner = GetETaskID(self);
+  NodeEmbedderState *state = NodeFindEmbedder(owner);
+
+  if (state != nullptr)
+    return state;
+
+  {
+    struct ETask *etask = GetETask(self);
+    struct Task *parent = etask != nullptr ?
+        (struct Task *)etask->et_Parent : nullptr;
+
+    if (parent != nullptr) {
+      state = NodeFindEmbedder(GetETaskID(parent));
+      if (state != nullptr)
+        return state;
+    }
+  }
+
+  for (size_t index = 0; index < NodeEmbedderCapacity; ++index) {
+    if (NodeEmbedders[index].owner == 0) {
+      NodeEmbedders[index].owner = owner;
+      return &NodeEmbedders[index];
+    }
+  }
+
+  NodeBridgeLog("[NodeEmbed] no free embedder slot for task %p\n", self);
+  return &NodeEmbedderFallback;
+}
+
+/* The rest of the bridge keeps its original names; each one now reads the
+   calling task's record instead of a library-wide static. */
+#define NodeEmbedIsolateData (NodeCurrentEmbedder()->isolate_data)
+#define NodeEmbedEnvironment (NodeCurrentEmbedder()->environment)
+#define NodeEmbedLoop (NodeCurrentEmbedder()->loop)
+#define NodeEmbedLoopInitialized (NodeCurrentEmbedder()->loop_initialized)
+#define NodeEmbedIsolate (NodeCurrentEmbedder()->isolate)
+#define NodeEmbedContext (NodeCurrentEmbedder()->context)
+#define NodeEmbedArrayBufferAllocator (NodeCurrentEmbedder()->allocator)
+#define NodeEmbedOwnsIsolate (NodeCurrentEmbedder()->owns_isolate)
 /* Node 22's highest reserved ContextEmbedderIndex (NODE_CONTEXT_TAG). */
 static constexpr int NodeContextTagEmbedderIndex = 39;
 static constexpr size_t NodeLinkedBindingCapacity = 8;
@@ -771,11 +869,11 @@ AROS_LH0(void, NodeDetachEmbedder,
       node::FreeArrayBufferAllocator(NodeEmbedArrayBufferAllocator);
     }
   }
-  NodeEmbedPlatform.reset();
-  if (NodeEmbedInitialization) {
-    node::TearDownOncePerProcess();
-    NodeEmbedInitialization.reset();
-  }
+  /* The platform and node's process-wide state are shared with every other
+     app in this library now, so one app detaching must not tear them down -
+     that is the same "first app's engine freed under it" failure seen when
+     each app created its own platform. They go with the library. */
+  NodeEmbedArrayBufferAllocator = nullptr;
   NodeEmbedArrayBufferAllocator = nullptr;
   NodeEmbedOwnsIsolate = false;
   NodeEmbedIsolate = nullptr;
@@ -832,9 +930,31 @@ AROS_LH3(LONG, NodeRegisterEmbedderLinkedBinding,
   AROS_LIBFUNC_INIT
   NodeBindTaskBase(LIBBASE);
 
-  if (name == nullptr || name[0] == '\0' || invoke == nullptr ||
-      NodeEmbedEnvironment != nullptr)
+  if (name == nullptr || name[0] == '\0' || invoke == nullptr)
     return 20;
+  /*
+   * A binding has to be registered before CreateEnvironment, so an existing
+   * environment normally means "too late". But node.library is one library
+   * serving every AROS process, and a SECOND Electron app registers the very
+   * same binding electron.library always registers ("aros_electron", the same
+   * invoke function) before preparing its own embedder. Refusing that made the
+   * second app die at its first call with rc=20 and no window - the whole
+   * reason two Electron apps could not run at once (JOB-0098, 2026-09-16).
+   *
+   * So: an identical re-registration is accepted as the no-op it is, and only
+   * a DIFFERENT binding arriving after the environment exists is refused,
+   * because that one genuinely cannot be honoured.
+   */
+  if (NodeEmbedEnvironment != nullptr) {
+    for (size_t index = 0; index < NodePendingLinkedBindingCount; ++index) {
+      const NodePendingLinkedBinding& binding = NodePendingLinkedBindings[index];
+      if (std::strcmp(binding.name, reinterpret_cast<const char *>(name)) == 0 &&
+          binding.invoke ==
+              reinterpret_cast<NodeEmbedderLinkedBindingInvoke>(invoke))
+        return 0;
+    }
+    return 20;
+  }
 
   for (size_t index = 0; index < NodePendingLinkedBindingCount; ++index) {
     NodePendingLinkedBinding& binding = NodePendingLinkedBindings[index];
@@ -918,9 +1038,11 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
     if (browser_workers > 1)
       node_pool_size = browser_workers - 1;
   }
-  NodeEmbedPlatform = node::MultiIsolatePlatform::Create(node_pool_size);
-  if (!NodeEmbedPlatform)
-    return 20;
+  if (!NodeEmbedPlatform) {
+    NodeEmbedPlatform = node::MultiIsolatePlatform::Create(node_pool_size);
+    if (!NodeEmbedPlatform)
+      return 20;
+  }
   NodeBridgeLog("[NodeEmbed] platform workers configured=%ld browser=%d node=%d\n",
           NodeEmbedConfiguredWorkerThreads,
           browser_platform != nullptr
@@ -930,10 +1052,16 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
       NodeV8ResolveEngineSymbol(
           "_ZN2v82V818InitializePlatformEPNS_8PlatformE"));
   if (initialize_platform == nullptr) {
-    NodeEmbedPlatform.reset();
+    if (!NodeEmbedPlatformInitialized)
+      if (!NodeEmbedPlatformInitialized)
+        if (!NodeEmbedPlatformInitialized)
+      NodeEmbedPlatform.reset();
     return 20;
   }
-  initialize_platform(NodeEmbedPlatform.get());
+  /* Once per library: a second InitializePlatform with a live isolate on the
+     first one is what took app 1 down when a second app started. */
+  if (!NodeEmbedPlatformInitialized)
+    initialize_platform(NodeEmbedPlatform.get());
 
   /*
    * Node's IsolateData creates a CppHeap for an owned main isolate. The
@@ -945,22 +1073,26 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
       NodeV8ResolveEngineSymbol(
           "_ZN5cppgc17InitializeProcessEPN2v813PageAllocatorEm"));
   if (initialize_cppgc == nullptr) {
-    NodeEmbedPlatform.reset();
+    if (!NodeEmbedPlatformInitialized)
+      if (!NodeEmbedPlatformInitialized)
+        if (!NodeEmbedPlatformInitialized)
+      NodeEmbedPlatform.reset();
     return 20;
   }
-  initialize_cppgc(nullptr, 0);
+  if (!NodeEmbedPlatformInitialized)
+    initialize_cppgc(nullptr, 0);
+  NodeEmbedPlatformInitialized = true;
 
   node::ArrayBufferAllocator *allocator =
       node::CreateArrayBufferAllocator();
-  if (allocator == nullptr) {
-    NodeEmbedPlatform.reset();
+  if (allocator == nullptr)
     return 20;
-  }
 
   LONG loop_rc = NodeEnsureEmbedLoop();
   if (loop_rc != 0) {
     node::FreeArrayBufferAllocator(allocator);
-    NodeEmbedPlatform.reset();
+    if (!NodeEmbedPlatformInitialized)
+      NodeEmbedPlatform.reset();
     return loop_rc;
   }
 
@@ -968,7 +1100,8 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
       node::NewIsolate(allocator, NodeEmbedLoop, NodeEmbedPlatform.get());
   if (isolate == nullptr) {
     node::FreeArrayBufferAllocator(allocator);
-    NodeEmbedPlatform.reset();
+    if (!NodeEmbedPlatformInitialized)
+      NodeEmbedPlatform.reset();
     return 20;
   }
   NodeEmbedArrayBufferAllocator = allocator;
@@ -995,7 +1128,8 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
     isolate->Dispose();
     node::FreeArrayBufferAllocator(allocator);
     NodeEmbedArrayBufferAllocator = nullptr;
-    NodeEmbedPlatform.reset();
+    if (!NodeEmbedPlatformInitialized)
+      NodeEmbedPlatform.reset();
     return result;
   }
   NodeEmbedOwnsIsolate = true;
