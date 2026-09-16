@@ -34,6 +34,10 @@ struct ElectronEvent
 {
     struct MinNode node;
     char *text;
+    /* Which app this event belongs to when one process hosts several of them
+       (JOB-0098 option C). 0 means "any app may take it", which is what a
+       single-app process produces and consumes. */
+    LONG slot;
 };
 
 struct ElectronResource
@@ -503,8 +507,20 @@ static char *electron_userfree_to_utf8(cef_string_userfree_t text)
     return result;
 }
 
+/*
+ * Which app is being serviced right now.
+ *
+ * With several apps in one process each has its own Node runtime, and each of
+ * those runtimes polls this queue from its own pump. Without a tag the first
+ * poller swallows every event, including the did-finish-load another app's
+ * window is waiting on to become visible - so events carry the slot that was
+ * current when they were posted, and a poll only takes its own (or untagged
+ * ones, which is every event a single-app process makes).
+ */
+static LONG electron_current_slot;
+
 /* Takes ownership of text. */
-static LONG electron_post_event(char *text)
+static LONG electron_post_event_for(char *text, LONG slot)
 {
     struct ElectronEvent *event;
 
@@ -517,11 +533,17 @@ static LONG electron_post_event(char *text)
         return 20;
     }
     event->text = text;
+    event->slot = slot;
     electron_ensure_state();
     ObtainSemaphore(&electron_event_lock);
     AddTail((struct List *)&electron_events, (struct Node *)&event->node);
     ReleaseSemaphore(&electron_event_lock);
     return 0;
+}
+
+static LONG electron_post_event(char *text)
+{
+    return electron_post_event_for(text, electron_current_slot);
 }
 
 /*
@@ -565,7 +587,23 @@ static CONST_STRPTR electron_poll_event(void)
         electron_event_current = NULL;
     }
     ObtainSemaphore(&electron_event_lock);
-    event = (struct ElectronEvent *)RemHead((struct List *)&electron_events);
+    {
+        struct ElectronEvent *scan;
+        struct ElectronEvent *next;
+
+        event = NULL;
+        for (scan = (struct ElectronEvent *)electron_events.mlh_Head;
+             (next = (struct ElectronEvent *)scan->node.mln_Succ) != NULL;
+             scan = next)
+        {
+            if (scan->slot == 0 || scan->slot == electron_current_slot)
+            {
+                Remove((struct Node *)&scan->node);
+                event = scan;
+                break;
+            }
+        }
+    }
     ReleaseSemaphore(&electron_event_lock);
     if (event == NULL)
         return "";

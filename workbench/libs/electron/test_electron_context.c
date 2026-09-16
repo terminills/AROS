@@ -51,6 +51,28 @@
 #define APP_CLOSE_GRACE_TICKS 3000
 #define SHUTDOWN_DRAIN_TICKS 200
 #define MAIN_SCRIPT_OPTION "--main-script="
+/*
+ * A second (third, ...) Electron app hosted by this same process.
+ *
+ * CEF keeps one browser context and one UI thread per process, so two apps
+ * started as two AROS processes cannot share the engine - the second one
+ * page-faults inside cef-blink.library while the first keeps its window
+ * (JOB-0098, 2026-09-16). Hosting them together is CEF's own model: one
+ * CefInitialize, one UI thread, a window and a Node runtime each. Each extra
+ * app gets a runtime slot from node.library and its turn in the pump.
+ */
+#define APP_SCRIPT_OPTION "--app-script="
+#define MAX_EXTRA_APPS 4
+
+struct ExtraApp
+{
+    const char *path;
+    LONG slot;
+    int attached;
+};
+
+static struct ExtraApp extra_apps[MAX_EXTRA_APPS];
+static int extra_app_count;
 static cef_app_t app;
 static cef_client_t client;
 static cef_display_handler_t display_handler;
@@ -1524,6 +1546,7 @@ int main(int argc, char **argv)
     int arg_index;
     LONG rc;
     ULONG ticks;
+    int extra_index;
     ULONG close_ticks;
     int result = 20;
     struct Process *process = (struct Process *)FindTask(NULL);
@@ -1557,6 +1580,23 @@ int main(int argc, char **argv)
             app_mode = 1;
             KPrintF("[ELECTRON-CONTEXT] loading Node main script '%s'\n",
                 main_script_path);
+            continue;
+        }
+        if (strncmp(argv[arg_index], APP_SCRIPT_OPTION,
+            sizeof(APP_SCRIPT_OPTION) - 1) == 0)
+        {
+            if (extra_app_count < MAX_EXTRA_APPS)
+            {
+                extra_apps[extra_app_count].path =
+                    argv[arg_index] + sizeof(APP_SCRIPT_OPTION) - 1;
+                KPrintF("[ELECTRON-CONTEXT] extra app %ld script '%s'\n",
+                    (LONG)extra_app_count,
+                    extra_apps[extra_app_count].path);
+                ++extra_app_count;
+            }
+            else
+                KPrintF("[ELECTRON-CONTEXT] too many " APP_SCRIPT_OPTION
+                    " options, ignoring '%s'\n", argv[arg_index]);
             continue;
         }
         if (parse_scheme_switch(argv[arg_index]))
@@ -1755,6 +1795,49 @@ int main(int argc, char **argv)
         goto shutdown_cef;
 #endif
 
+    /*
+     * Extra apps join the engine the primary app just started: a runtime slot
+     * each, their own Node environment, their own window. Selecting a slot
+     * also tells the seam which app its native events belong to, so a
+     * did-finish-load meant for one app's window is not swallowed by another
+     * app's pump. Slot 0 puts the primary app back.
+     */
+    for (extra_index = 0; extra_index < extra_app_count; ++extra_index)
+    {
+        struct ExtraApp *extra = &extra_apps[extra_index];
+
+        extra->slot = ElectronCreateAppRuntime();
+        if (extra->slot <= 0)
+        {
+            KPrintF("[ELECTRON-CONTEXT] extra app %ld: no runtime slot\n",
+                (LONG)extra_index);
+            continue;
+        }
+        if (ElectronSelectAppRuntime(extra->slot) != 0)
+        {
+            KPrintF("[ELECTRON-CONTEXT] extra app %ld: slot %ld select failed\n",
+                (LONG)extra_index, extra->slot);
+            continue;
+        }
+        if (!make_node_main_script(extra->path, argc, argv))
+        {
+            KPrintF("[ELECTRON-CONTEXT] extra app %ld: bad script '%s'\n",
+                (LONG)extra_index, extra->path);
+            ElectronSelectAppRuntime(0);
+            continue;
+        }
+        rc = ElectronPrepareNodeEmbedder();
+        if (rc == 0)
+            rc = ElectronAttachNodeOwnedV8ContextWithModule(
+                command_node_script);
+        KPrintF("[ELECTRON-CONTEXT] extra app %ld slot %ld attach rc=%ld\n",
+            (LONG)extra_index, extra->slot, rc);
+        /* This bridge reports success as rc == 0, the way the primary app's
+           attach above does. */
+        extra->attached = (rc == 0);
+        ElectronSelectAppRuntime(0);
+    }
+
     for (ticks = 0;
         !exit_requested &&
             (app_mode ?
@@ -1770,6 +1853,18 @@ int main(int argc, char **argv)
         if (ticks == 0)
             KPrintF("[ELECTRON-CONTEXT] completed first CEF message-loop pump\n");
         service_renderer_pump_port();
+        for (extra_index = 0; extra_index < extra_app_count; ++extra_index)
+        {
+            struct ExtraApp *extra = &extra_apps[extra_index];
+
+            if (!extra->attached)
+                continue;
+            if (ElectronSelectAppRuntime(extra->slot) == 0)
+            {
+                ElectronPumpNodeEmbedder();
+                ElectronSelectAppRuntime(0);
+            }
+        }
 #ifdef ELECTRON_SHELL_WINDOWED
         service_native_window_requests(&window_info, &browser_settings,
             selected_url, selected_url_length);

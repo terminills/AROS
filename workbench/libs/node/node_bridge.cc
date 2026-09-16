@@ -355,6 +355,18 @@ static constexpr size_t NodeEmbedderCapacity = 8;
 static NodeEmbedderState NodeEmbedders[NodeEmbedderCapacity];
 static NodeEmbedderState NodeEmbedderFallback;
 
+/* A host-selected slot, per calling task: 0 means "use my own runtime". It is
+   a plain static because the host that selects slots is one task by
+   construction - the process that owns CEF's UI thread. */
+static LONG NodeSelectedSlot;
+
+/* Slot records are not owned by a task, so they are tagged with a value no
+   GetETaskID can produce (IDs are small and never have the top bit set). */
+static ULONG NodeSlotOwnerTag(size_t index)
+{
+  return 0x80000000u | (ULONG)(index + 1);
+}
+
 static NodeEmbedderState *NodeFindEmbedder(ULONG owner)
 {
   if (owner == 0)
@@ -371,6 +383,10 @@ static NodeEmbedderState *NodeFindEmbedder(ULONG owner)
    so a ninth app degrades instead of scribbling on someone else's runtime. */
 static NodeEmbedderState *NodeCurrentEmbedder(void)
 {
+  if (NodeSelectedSlot >= 1 &&
+      (size_t)NodeSelectedSlot <= NodeEmbedderCapacity)
+    return &NodeEmbedders[NodeSelectedSlot - 1];
+
   struct Task *self = FindTask(NULL);
   ULONG owner = GetETaskID(self);
   NodeEmbedderState *state = NodeFindEmbedder(owner);
@@ -1149,6 +1165,78 @@ AROS_LH1(LONG, NodeConfigureOwnedV8WorkerThreads,
       NodeEmbedEnvironment != nullptr)
     return 20;
   NodeEmbedConfiguredWorkerThreads = worker_threads;
+  return 0;
+  AROS_LIBFUNC_EXIT
+}
+
+/*
+ * Several apps inside ONE process.
+ *
+ * The per-app records above are found by the owning task, which is the right
+ * key when an app is an AROS process. CEF is not built that way: it keeps one
+ * browser context and one UI thread per process, so the way to run several
+ * Electron apps on one engine is to host them in a single process - one
+ * CefInitialize, one UI thread, a window and a Node runtime each. Then every
+ * app shares a task, and "which runtime is this" can no longer be answered by
+ * asking which task is calling.
+ *
+ * So a host can take slots explicitly: create one per app, select it around
+ * the calls that belong to that app (attach, pump, detach), and release it
+ * when the app closes. A task with no slot selected keeps the old behaviour
+ * exactly - its own record, found by task - so C:Node and a single-app
+ * ElectronShell are unaffected.
+ */
+AROS_LH0(LONG, NodeCreateRuntimeSlot,
+    LIBBASETYPEPTR, LIBBASE, 15, Node)
+{
+  AROS_LIBFUNC_INIT
+  NodeBindTaskBase(LIBBASE);
+
+  for (size_t index = 0; index < NodeEmbedderCapacity; ++index) {
+    if (NodeEmbedders[index].owner == 0) {
+      NodeEmbedders[index].owner = NodeSlotOwnerTag(index);
+      return (LONG)(index + 1);
+    }
+  }
+  return 0;
+  AROS_LIBFUNC_EXIT
+}
+
+AROS_LH1(LONG, NodeSelectRuntimeSlot,
+    AROS_LHA(LONG, slot, D0),
+    LIBBASETYPEPTR, LIBBASE, 16, Node)
+{
+  AROS_LIBFUNC_INIT
+  NodeBindTaskBase(LIBBASE);
+
+  /* Slot 0 means "back to this task's own runtime". */
+  if (slot == 0) {
+    NodeSelectedSlot = 0;
+    return 0;
+  }
+  if (slot < 1 || (size_t)slot > NodeEmbedderCapacity ||
+      NodeEmbedders[slot - 1].owner != NodeSlotOwnerTag((size_t)slot - 1))
+    return 20;
+  NodeSelectedSlot = slot;
+  return 0;
+  AROS_LIBFUNC_EXIT
+}
+
+AROS_LH1(LONG, NodeReleaseRuntimeSlot,
+    AROS_LHA(LONG, slot, D0),
+    LIBBASETYPEPTR, LIBBASE, 17, Node)
+{
+  AROS_LIBFUNC_INIT
+  NodeBindTaskBase(LIBBASE);
+
+  if (slot < 1 || (size_t)slot > NodeEmbedderCapacity ||
+      NodeEmbedders[slot - 1].owner != NodeSlotOwnerTag((size_t)slot - 1))
+    return 20;
+  /* The caller is expected to have detached the runtime already; this only
+     gives the slot back, and never while it is the selected one. */
+  if (NodeSelectedSlot == slot)
+    NodeSelectedSlot = 0;
+  NodeEmbedders[slot - 1].owner = 0;
   return 0;
   AROS_LIBFUNC_EXIT
 }

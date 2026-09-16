@@ -2122,6 +2122,52 @@ AROS_LH1(void, ElectronSetActiveBrowser,
     AROS_LIBFUNC_EXIT
 }
 
+/*
+ * App slots: several Electron apps in one process (JOB-0098 option C).
+ *
+ * CEF keeps one browser context and one UI thread per process, so hosting
+ * several apps means hosting them together rather than as separate AROS
+ * processes - the second process page-faults inside cef-blink.library while
+ * the first keeps running. Each app still needs its own Node runtime;
+ * node.library hands those out as slots, and the seam needs to know which app
+ * it is serving so native events reach the right one.
+ */
+AROS_LH0(LONG, ElectronCreateAppRuntime,
+    LIBBASETYPEPTR, LIBBASE, 33, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return NodeCreateRuntimeSlot();
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH1(LONG, ElectronSelectAppRuntime,
+    AROS_LHA(LONG, slot, D0),
+    LIBBASETYPEPTR, LIBBASE, 34, Electron)
+{
+    LONG rc;
+
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    rc = NodeSelectRuntimeSlot(slot);
+    if (rc == 0)
+        electron_current_slot = slot;
+    return rc;
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH1(LONG, ElectronReleaseAppRuntime,
+    AROS_LHA(LONG, slot, D0),
+    LIBBASETYPEPTR, LIBBASE, 35, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    if (electron_current_slot == slot)
+        electron_current_slot = 0;
+    return NodeReleaseRuntimeSlot(slot);
+    AROS_LIBFUNC_EXIT
+}
+
 AROS_LH2(LONG, ElectronPostWindowEvent,
     AROS_LHA(CONST_STRPTR, name, A0),
     AROS_LHA(CONST_STRPTR, payload, A1),
