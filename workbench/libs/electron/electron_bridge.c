@@ -877,6 +877,11 @@ static const char electron_module_bootstrap[] =
     "versions:{...process.versions},execPath:process.execPath,"
     "pid:process.pid,cwd:process.cwd(),"
     "argv:[process.execPath,...additionalArguments]}));"
+    /* nodeIntegration rides along with the window: GitHub Desktop's renderer
+       requires fs, path, child_process and electron at page scope, which only
+       works if a Node runtime is installed in the renderer's own context. */
+    "binding.invoke('browser-window.node-integration',"
+    "String(this.id)+'\\t'+(webPreferences.nodeIntegration?'1':'0'));"
     "binding.invoke('browser-window.create',"
     "[String(this.id),preload,...additionalArguments].join('\\t'));"
     /* The constructor options are the window's initial geometry. */
@@ -1713,6 +1718,9 @@ static CONST_STRPTR electron_node_invoke(CONST_STRPTR method,
         return electron_register_scheme_factory(payload, 1);
     if (method != NULL && strcmp(method, "renderer.process-snapshot") == 0)
         return electron_store_process_snapshot(payload);
+    if (method != NULL &&
+        strcmp(method, "browser-window.node-integration") == 0)
+        return electron_set_node_integration(payload);
     if (method != NULL && strcmp(method, "browser-window.create") == 0)
         return electron_prepare_window(payload);
     if (method != NULL && strcmp(method, "browser-window.set-zoom-level") == 0)

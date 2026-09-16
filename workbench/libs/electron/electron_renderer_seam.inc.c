@@ -70,6 +70,11 @@ static char *electron_declared_schemes[ELECTRON_MAX_SCHEMES];
 static ULONG electron_declared_scheme_count;
 static cef_browser_t *electron_active_browser;
 static ULONG electron_window_id;
+/* webPreferences.nodeIntegration for the window being created: the renderer
+   context gets its own Node runtime when this is set, which is how an app
+   whose page code requires fs/path/child_process at scope can run at all
+   (GitHub Desktop builds its renderer that way). */
+static int electron_window_node_integration;
 static char *electron_window_preload_path;
 static char *electron_window_preload_source;
 static char *electron_window_process_snapshot;
@@ -99,6 +104,76 @@ static const cef_char_t electron_renderer_execute_url[] =
  * The preload source is spliced in between the two halves and runs with the
  * CommonJS wrapper signature so its `require`/`module`/`process` resolve here.
  */
+/*
+ * What a nodeIntegration page needs that node does not give it.
+ *
+ * node hands require, module and process to the main script as WRAPPER
+ * ARGUMENTS, so a page that calls require() at top level still sees nothing -
+ * which is why the renderer kept reporting "require is not defined" even
+ * after a Node runtime attached successfully. Publish them as globals.
+ *
+ * require('electron') is the other half: node's resolver knows nothing about
+ * it, and the object lives in the renderer runtime injected below. The hook
+ * hands that over once it exists, so load order between the two does not
+ * matter.
+ */
+static const char electron_renderer_node_globals[] =
+    /* Wrap require rather than patching Module._load: the page's call has to
+       be answered before node's resolver sees it at all, or 'electron' comes
+       back as "No such built-in module". */
+    /* Resolve the page's requires from the PAGE's directory.
+       The require node hands the attach script resolves against a synthetic
+       module, so an app's own node_modules is invisible to it and every
+       dependency comes back as "No such built-in module: <name>". The page
+       knows where it lives, so build a require rooted there - for GitHub
+       Desktop that is SYS:Developer/GitHubDesktop/out/, whose parent carries
+       the app's node_modules. */
+    "let __arosNodeRequire=require;"
+    "try{"
+    "const href=String((globalThis.location&&globalThis.location.href)||'');"
+    "if(href.startsWith('file:')){"
+    "let base=decodeURIComponent(href.slice(5).replace(/^\\/+/,''));"
+    "base=base.replace(/[^/]*$/,'');"
+    "if(base)"
+    "__arosNodeRequire=require('module').createRequire(base+'index.js');"
+    "}"
+    "}catch(error){"
+    "console.error('[AROS-ELECTRON] page require root failed: '+error);"
+    "}"
+    "globalThis.require=function(request){"
+    "if(request==='electron'||request==='node:electron'){"
+    "if(globalThis.__arosElectronRenderer)"
+    "return globalThis.__arosElectronRenderer;"
+    "throw new Error('electron is not available in this renderer yet');"
+    "}"
+    "return __arosNodeRequire(request);"
+    "};"
+    "globalThis.require.resolve=__arosNodeRequire.resolve;"
+    "globalThis.require.cache=__arosNodeRequire.cache;"
+    "globalThis.require.main=__arosNodeRequire.main;"
+    "globalThis.module=module;"
+    "globalThis.exports=module.exports;"
+    "globalThis.process=process;"
+    "globalThis.global=globalThis;"
+    "globalThis.Buffer=require('buffer').Buffer;"
+    "globalThis.setImmediate=setImmediate;"
+    "globalThis.clearImmediate=clearImmediate;"
+    /* A bundle built for a nodeIntegration renderer expects the CommonJS
+       wrapper's file globals too - GitHub Desktop's renderer resolves paths
+       against __dirname while it is still starting. The page is the app's own
+       out/ directory, which is where its main script lives. */
+    "globalThis.__filename=__filename;"
+    "globalThis.__dirname=__dirname;"
+    /* Anything the page loads with its own createRequire still goes through
+       node, which is correct: only 'electron' is ours to answer. */
+    "";
+
+/* Injected as the "preload" for a nodeIntegration window that has none of its
+   own: it only publishes the renderer API the hook above hands to
+   require('electron'). */
+static const char electron_renderer_publish_only[] =
+    "globalThis.__arosElectronRenderer=require('electron');";
+
 static const char electron_renderer_runtime_head[] =
     "(function(){"
     "const snapshot=";
@@ -232,7 +307,45 @@ static const char electron_renderer_runtime_body[] =
     "const webUtils={"
     "getPathForFile:file=>(file&&typeof file.path==='string')?file.path:''"
     "};"
-    "const electron={ipcRenderer,webFrame,contextBridge,webUtils};"
+    /* A nodeIntegration page gets the same electron object a preload does,
+       and apps built that way reach for the desktop-integration modules from
+       the page: GitHub Desktop calls shell.beep() and clipboard.writeText()
+       in its renderer, so their absence threw on a read of 'beep' from
+       undefined before the UI rendered a single pixel.
+       openExternal really opens a browser - the renderer has node here, so it
+       spawns C:OpenURL the same way the main process does. The rest report
+       failure rather than pretending, and the clipboard says plainly that it
+       does not reach the system clipboard yet. */
+    "const shell={"
+    "beep(){try{globalThis.require('electron');}catch(error){}},"
+    "openExternal(url){"
+    "return new Promise((resolve,reject)=>{"
+    "try{"
+    "const cp=globalThis.require('node:child_process');"
+    "const child=cp.spawn('C:OpenURL',[String(url)],{stdio:'ignore'});"
+    "child.on('error',reject);"
+    "child.on('close',code=>code===0?resolve():"
+    "reject(new Error('C:OpenURL exited with '+code)));"
+    "}catch(error){reject(error);}"
+    "});"
+    "},"
+    "openPath(){return Promise.resolve("
+    "'shell.openPath is not implemented on AROS');},"
+    "showItemInFolder(){},"
+    "trashItem(){return Promise.reject(new Error("
+    "'shell.trashItem is not implemented on AROS'));},"
+    "moveItemToTrash(){return false;}"
+    "};"
+    "let clipboardText='';"
+    "const clipboard={"
+    "writeText(text){clipboardText=String(text);},"
+    "readText(){return clipboardText;},"
+    "writeHTML(){},readHTML(){return '';},"
+    "clear(){clipboardText='';},"
+    "availableFormats(){return clipboardText?['text/plain']:[];}"
+    "};"
+    "const electron={ipcRenderer,webFrame,contextBridge,webUtils,shell,"
+    "clipboard};"
     "const processListeners=new Map();"
     "const process={"
     "type:'renderer',"
@@ -1265,6 +1378,21 @@ static CONST_STRPTR electron_set_zoom_level(CONST_STRPTR payload)
 }
 
 /* `browser-window.create` payload: id \t preload \t additional args... */
+/* `browser-window.node-integration` payload: id \t 0|1 */
+static CONST_STRPTR electron_set_node_integration(CONST_STRPTR payload)
+{
+    const char *cursor = payload != NULL ? (const char *)payload : "";
+
+    while (*cursor != '\0' && *cursor != '\t')
+        ++cursor;
+    if (*cursor == '\t')
+        ++cursor;
+    electron_window_node_integration = (*cursor == '1');
+    bug("[ELECTRON-RENDERER] window nodeIntegration=%ld\n",
+        (LONG)electron_window_node_integration);
+    return "stored";
+}
+
 static CONST_STRPTR electron_prepare_window(CONST_STRPTR payload)
 {
     const char *cursor = payload != NULL ? (const char *)payload : "";
@@ -1377,7 +1505,64 @@ static LONG electron_inject_renderer_context(cef_browser_t *browser,
     (void)browser;
     if (frame == NULL || context == NULL || !frame->is_main(frame))
         return 0;
-    if (electron_window_preload_source == NULL)
+
+    /*
+     * nodeIntegration: give the page its own Node runtime.
+     *
+     * An app built the old Electron way - webPreferences {nodeIntegration:
+     * true, contextIsolation: false} - has renderer code that calls require()
+     * at page scope. GitHub Desktop's renderer bundle requires fs, path,
+     * child_process, net, os and electron that way, so without this it dies
+     * on its first line with "require is not defined" and paints nothing,
+     * however well the main process is doing.
+     *
+     * This runs ON the renderer thread inside the page's own context, so
+     * NodeAttachCurrentV8Context() attaches to exactly the right isolate.
+     * That is only possible since node.library started keeping one runtime
+     * per owner rather than one per library (2c77ef2b): the renderer thread
+     * is its own task, so it gets its own record and does not collide with
+     * the main process's runtime.
+     */
+    if (electron_window_node_integration)
+    {
+        LONG node_rc;
+
+        /*
+         * Two things this needs that are easy to miss.
+         *
+         * Inside the page's context, not merely on its thread:
+         * NodeAttachCurrentV8Context() reads Isolate::GetCurrent() and
+         * GetCurrentContext(), and both are empty until the context is
+         * entered.
+         *
+         * And a runtime of its OWN: without a slot the renderer thread falls
+         * back to its creator's record - the main process's runtime, whose
+         * environment already exists - so the attach refused with rc=20. The
+         * slot stays selected for this thread, so the renderer's later calls
+         * keep finding its own runtime rather than the app's.
+         */
+        LONG slot = NodeCreateRuntimeSlot();
+
+        if (slot > 0 && NodeSelectRuntimeSlot(slot) != 0)
+        {
+            NodeReleaseRuntimeSlot(slot);
+            slot = 0;
+        }
+        context->enter(context);
+        node_rc = NodeAttachCurrentV8Context(
+            (CONST_STRPTR)electron_renderer_node_globals);
+        context->exit(context);
+        if (node_rc != 0 && slot > 0)
+        {
+            NodeSelectRuntimeSlot(0);
+            NodeReleaseRuntimeSlot(slot);
+        }
+        bug("[ELECTRON-RENDERER] nodeIntegration attach rc=%ld\n",
+            (long)node_rc);
+    }
+
+    if (electron_window_preload_source == NULL &&
+        !electron_window_node_integration)
     {
         bug("[ELECTRON-RENDERER] main frame context created, no preload to "
             "inject\n");
@@ -1393,7 +1578,10 @@ static LONG electron_inject_renderer_context(cef_browser_t *browser,
     parts[2] = electron_renderer_runtime_middle;
     parts[3] = quoted_path;
     parts[4] = electron_renderer_runtime_body;
-    parts[5] = electron_window_preload_source;
+    /* A nodeIntegration window with no preload of its own still gets the
+       runtime, so require('electron') has something to return. */
+    parts[5] = electron_window_preload_source != NULL ?
+        electron_window_preload_source : electron_renderer_publish_only;
     parts[6] = electron_renderer_runtime_tail;
     script = electron_concat(parts, 7);
     FreeVec(quoted_path);

@@ -355,10 +355,54 @@ static constexpr size_t NodeEmbedderCapacity = 8;
 static NodeEmbedderState NodeEmbedders[NodeEmbedderCapacity];
 static NodeEmbedderState NodeEmbedderFallback;
 
-/* A host-selected slot, per calling task: 0 means "use my own runtime". It is
-   a plain static because the host that selects slots is one task by
-   construction - the process that owns CEF's UI thread. */
-static LONG NodeSelectedSlot;
+/*
+ * A host-selected slot, per calling task: 0 means "use my own runtime".
+ *
+ * Per TASK, not one static: the renderer thread selects its own runtime for
+ * nodeIntegration while the main task is running the app's, and a single
+ * static would have each stealing the other's. Small fixed table, looked up
+ * by exec unique ID, same as the runtime records.
+ */
+struct NodeSlotSelection {
+  ULONG task;
+  LONG slot;
+};
+
+static constexpr size_t NodeSlotSelectionCapacity = 16;
+static NodeSlotSelection NodeSlotSelections[NodeSlotSelectionCapacity];
+
+static LONG NodeGetSelectedSlot(void)
+{
+  ULONG task = GetETaskID(FindTask(NULL));
+
+  for (size_t index = 0; index < NodeSlotSelectionCapacity; ++index) {
+    if (NodeSlotSelections[index].task == task)
+      return NodeSlotSelections[index].slot;
+  }
+  return 0;
+}
+
+static void NodeSetSelectedSlot(LONG slot)
+{
+  ULONG task = GetETaskID(FindTask(NULL));
+  size_t free_index = NodeSlotSelectionCapacity;
+
+  for (size_t index = 0; index < NodeSlotSelectionCapacity; ++index) {
+    if (NodeSlotSelections[index].task == task) {
+      NodeSlotSelections[index].slot = slot;
+      if (slot == 0)
+        NodeSlotSelections[index].task = 0;
+      return;
+    }
+    if (NodeSlotSelections[index].task == 0 &&
+        free_index == NodeSlotSelectionCapacity)
+      free_index = index;
+  }
+  if (slot != 0 && free_index < NodeSlotSelectionCapacity) {
+    NodeSlotSelections[free_index].task = task;
+    NodeSlotSelections[free_index].slot = slot;
+  }
+}
 
 /* Slot records are not owned by a task, so they are tagged with a value no
    GetETaskID can produce (IDs are small and never have the top bit set). */
@@ -383,9 +427,12 @@ static NodeEmbedderState *NodeFindEmbedder(ULONG owner)
    so a ninth app degrades instead of scribbling on someone else's runtime. */
 static NodeEmbedderState *NodeCurrentEmbedder(void)
 {
-  if (NodeSelectedSlot >= 1 &&
-      (size_t)NodeSelectedSlot <= NodeEmbedderCapacity)
-    return &NodeEmbedders[NodeSelectedSlot - 1];
+  {
+    LONG selected = NodeGetSelectedSlot();
+
+    if (selected >= 1 && (size_t)selected <= NodeEmbedderCapacity)
+      return &NodeEmbedders[selected - 1];
+  }
 
   struct Task *self = FindTask(NULL);
   ULONG owner = GetETaskID(self);
@@ -1211,13 +1258,13 @@ AROS_LH1(LONG, NodeSelectRuntimeSlot,
 
   /* Slot 0 means "back to this task's own runtime". */
   if (slot == 0) {
-    NodeSelectedSlot = 0;
+    NodeSetSelectedSlot(0);
     return 0;
   }
   if (slot < 1 || (size_t)slot > NodeEmbedderCapacity ||
       NodeEmbedders[slot - 1].owner != NodeSlotOwnerTag((size_t)slot - 1))
     return 20;
-  NodeSelectedSlot = slot;
+  NodeSetSelectedSlot(slot);
   return 0;
   AROS_LIBFUNC_EXIT
 }
@@ -1234,8 +1281,8 @@ AROS_LH1(LONG, NodeReleaseRuntimeSlot,
     return 20;
   /* The caller is expected to have detached the runtime already; this only
      gives the slot back, and never while it is the selected one. */
-  if (NodeSelectedSlot == slot)
-    NodeSelectedSlot = 0;
+  if (NodeGetSelectedSlot() == slot)
+    NodeSetSelectedSlot(0);
   NodeEmbedders[slot - 1].owner = 0;
   return 0;
   AROS_LIBFUNC_EXIT

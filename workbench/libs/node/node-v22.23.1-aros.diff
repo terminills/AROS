@@ -4110,6 +4110,37 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    HeapCodeStatistics s;
    args.GetIsolate()->GetHeapCodeAndMetadataStatistics(&s);
    AliasedFloat64Array& buffer = data->heap_code_statistics_buffer;
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/threadpoolwork-inl.h /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/threadpoolwork-inl.h
+--- node-v22.23.1/src/threadpoolwork-inl.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/threadpoolwork-inl.h	2026-09-16 12:31:00.000000000 -0500
+@@ -30,6 +30,17 @@
+ 
+ namespace node {
+ 
++#ifdef __AROS__
++/* node.library's bridge: lend this library's per-task base to a thread that
++   never opened it. libuv creates the threadpool workers itself, so node's own
++   thread wrappers never see them - the first thing a work callback touches in
++   node's C runtime then reads a NULL base. GitHub Desktop's renderer hit it
++   through crypto: DeriveBitsJob::DoThreadPoolWork -> ERR_clear_error ->
++   __stdc_geterrnoptr_StdCBase_relwrapper, faulting on a uv worker
++   (2026-09-16). */
++extern "C" void __node_aros_bind_callback_task_base(void);
++#endif
++
+ void ThreadPoolWork::ScheduleWork() {
+   env_->IncreaseWaitingRequestCounter();
+   TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
+@@ -39,6 +50,9 @@
+       &work_req_,
+       [](uv_work_t* req) {
+         ThreadPoolWork* self = ContainerOf(&ThreadPoolWork::work_req_, req);
++#ifdef __AROS__
++        __node_aros_bind_callback_task_base();
++#endif
+         TRACE_EVENT_BEGIN0(TRACING_CATEGORY_NODE2(threadpoolwork, sync),
+                            self->type_);
+         self->DoThreadPoolWork();
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/util.cc /home/terminills/Documents/GitHub/aros-adt-hosted-clean/bin/linux-x86_64/Ports/node/node/node-v22.23.1/src/util.cc
 --- node-v22.23.1/src/util.cc	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/util.cc	2026-07-25 20:57:02.845662270 -0500
