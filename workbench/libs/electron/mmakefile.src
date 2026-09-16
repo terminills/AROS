@@ -10,7 +10,14 @@
 include $(SRCDIR)/config/aros.cfg
 
 CEF_SOURCE ?= $(SRCDIR)/../chromium-aros/src
-CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap
+# The CEF build to link against is chosen by the SYSROOT it was compiled for,
+# not by the target: both out dirs are target_os="aros" target_cpu="x64" with
+# the same crosstools, and -adt is the one built against the clean ADT ABIv1
+# sysroot this tree uses - the very sysroot the shipping native Chromium was
+# built with.  cef-blink already defaulted here; these three still pointed at
+# the OPAL-sysroot build, which is why nothing in this stack had ever been
+# built for pc-x86_64.  Override CEF_OUTPUT to build against an OPAL tree.
+CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
 CEF_HEADERS := $(CEF_SOURCE)/cef
 CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/includes
 
