@@ -11,9 +11,12 @@
  * archive is linked into this client or electron.library.
  */
 
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+#include <exec/rawfmt.h>
 
 #include <dos/dosextens.h>
 #include <exec/ports.h>
@@ -40,6 +43,38 @@
 #include "include/capi/cef_render_process_handler_capi.h"
 #include "include/capi/cef_scheme_capi.h"
 #include "include/capi/cef_v8_capi.h"
+
+/*
+ * Log a line, from a disk-loaded program, on a native target.
+ *
+ * The obvious KPrintF() cannot be used here. The debug linklib's copy compiles
+ * to a call through a library base that the ELF loader never relocates for a
+ * program loaded from disk on pc-x86_64:
+ *
+ *     movabs 0x0,%rax          ; the base, read from absolute address 0
+ *     callq  *-0x448(%rax)     ; ...and called through anyway
+ *
+ * so the shell's first line of output is a privilege violation in
+ * ElectronShell!.text+0x24da, with CrBrowserMain as the task and nothing
+ * printed to say why. Hosted hides this: there the same symbol resolves.
+ *
+ * exec's own formatter has no such problem - SysBase is set up correctly for
+ * any program - and RAWFMTFUNC_SERIAL is the same debug stream KPrintF was
+ * aiming at, so the output is unchanged.
+ */
+static void shell_log(const char *format, ...)
+{
+    va_list args;
+
+    va_start(args, format);
+    VNewRawDoFmt(format, RAWFMTFUNC_SERIAL, NULL, args);
+    va_end(args);
+}
+
+/* Everything below logs through the safe path. */
+#undef KPrintF
+#define KPrintF shell_log
+
 
 #define VIEW_WIDTH 640
 #define VIEW_HEIGHT 360
