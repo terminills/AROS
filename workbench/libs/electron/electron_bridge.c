@@ -394,6 +394,22 @@ static const char electron_module_bootstrap[] =
     /* Electron's quit is cancellable at both steps: VS Code's lifecycle
        service preventDefault()s 'will-quit' once, runs its shutdown
        promise, then calls app.quit() again with the listener removed. */
+    /* Single-instance lock: GitHub Desktop calls this before it does
+       anything else and quits when the answer is false, which on AROS made
+       it exit with no window and no message.  One Workbench, one instance of
+       a program launched from it - there is no second process to hand the
+       command line to - so the lock is always ours.  releaseSingleInstanceLock
+       exists so a caller that releases it does not throw. */
+    "let singleInstanceLock=true;"
+    "app.requestSingleInstanceLock=()=>singleInstanceLock;"
+    "app.hasSingleInstanceLock=()=>singleInstanceLock;"
+    "app.releaseSingleInstanceLock=()=>{singleInstanceLock=false;};"
+    /* Protocol registration is a desktop-integration nicety (x-github-client://
+       handed to Desktop by the browser). AROS has no URL-scheme registry yet,
+       so report that we are not the handler rather than claiming to be one. */
+    "app.setAsDefaultProtocolClient=()=>false;"
+    "app.isDefaultProtocolClient=()=>false;"
+    "app.removeAsDefaultProtocolClient=()=>false;"
     "app.quit=()=>{"
     "const quitEvent=()=>({defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}});"
     "const beforeQuit=quitEvent();"
@@ -533,8 +549,20 @@ static const char electron_module_bootstrap[] =
     "let permissionRequestHandler=null;"
     "let permissionCheckHandler=null;"
     "let codeCachePath='';"
+    /* The full webRequest surface, not only the three VS Code uses: GitHub
+       Desktop binds every one of Electron's eight observers as it starts
+       (new Ze(...) wrapping session.defaultSession.webRequest), so a missing
+       member threw "Cannot read properties of undefined (reading 'bind')"
+       before its first window.
+       The three above are consulted by the CEF seam; the five observers are
+       registered and kept but never fired, because nothing reports redirects,
+       completions or errors back from the network stack yet. A caller gets
+       its registration accepted and no events - not a crash, and not a
+       pretence that interception happened. */
     "const requestHandlers={"
-    "beforeRequest:[],headersReceived:[],beforeSendHeaders:[]"
+    "beforeRequest:[],headersReceived:[],beforeSendHeaders:[],"
+    "beforeRedirect:[],completed:[],errorOccurred:[],"
+    "responseStarted:[],sendHeaders:[]"
     "};"
     "const registerRequestHandler=(kind,filterOrListener,listener)=>{"
     "const handler=typeof listener==='function'?listener:filterOrListener;"
@@ -548,7 +576,17 @@ static const char electron_module_bootstrap[] =
     "onHeadersReceived:(filterOrListener,listener)=>"
     "registerRequestHandler('headersReceived',filterOrListener,listener),"
     "onBeforeSendHeaders:(filterOrListener,listener)=>"
-    "registerRequestHandler('beforeSendHeaders',filterOrListener,listener)"
+    "registerRequestHandler('beforeSendHeaders',filterOrListener,listener),"
+    "onBeforeRedirect:(filterOrListener,listener)=>"
+    "registerRequestHandler('beforeRedirect',filterOrListener,listener),"
+    "onCompleted:(filterOrListener,listener)=>"
+    "registerRequestHandler('completed',filterOrListener,listener),"
+    "onErrorOccurred:(filterOrListener,listener)=>"
+    "registerRequestHandler('errorOccurred',filterOrListener,listener),"
+    "onResponseStarted:(filterOrListener,listener)=>"
+    "registerRequestHandler('responseStarted',filterOrListener,listener),"
+    "onSendHeaders:(filterOrListener,listener)=>"
+    "registerRequestHandler('sendHeaders',filterOrListener,listener)"
     "});"
     "const sessionFileProtocols=new Map();"
     "const sessionInterceptedFileProtocols=new Map();"
@@ -1035,6 +1073,16 @@ static const char electron_module_bootstrap[] =
     "}"
     "if(name==='maximize'){this._maximized=true;this.emit('maximize');return;}"
     "if(name==='unmaximize'){this._maximized=false;this.emit('unmaximize');return;}"
+    /* Page load milestones from CEF's load handler. These belong to
+       webContents, not to the window: an app that opens its window with
+       show:false and shows it on did-finish-load (GitHub Desktop does
+       exactly that) otherwise keeps a working window invisible forever. */
+    "if(name==='did-finish-load'||name==='did-stop-loading'||"
+    "name==='dom-ready'){"
+    "this.webContents.emit(name);"
+    "if(name==='did-finish-load')this.emit('ready-to-show');"
+    "return;"
+    "}"
     "console.error('[AROS-ELECTRON] unknown window event '+name);"
     "}"
     "static getAllWindows(){return browserWindows.slice();}"
@@ -1464,9 +1512,59 @@ static const char electron_module_bootstrap[] =
     "getAllWebContents:WebContents.getAllWebContents,"
     "getFocusedWebContents:WebContents.getFocusedWebContents"
     "});"
+    /* shell: the desktop-integration module. GitHub Desktop calls shell.beep()
+       while its main bundle is still loading, so its absence threw
+       "Cannot read properties of undefined (reading 'beep')" before a window
+       ever existed.
+       openExternal goes through C:OpenURL, the same path the Workbench and
+       Chromium's command port use, so a sign-in link really opens the browser.
+       The rest report failure rather than pretending: AROS has no
+       "reveal in file manager" hook wired here yet, and silently doing
+       nothing when an app asks to show a file - or to move one to the trash -
+       is worse than an error the caller can surface. */
+    "const shellSpawn=(cmd,args)=>new Promise((resolve,reject)=>{"
+    "let cp;try{cp=require('node:child_process');}catch(e){reject(e);return;}"
+    "const child=cp.spawn(cmd,args,{stdio:'ignore'});"
+    "child.on('error',reject);"
+    "child.on('close',code=>code===0?resolve():"
+    "reject(new Error(cmd+' exited with '+code)));"
+    "});"
+    "const shell=Object.freeze({"
+    "beep(){binding.invoke('shell.beep','');},"
+    "openExternal(url){return shellSpawn('C:OpenURL',[String(url)]);},"
+    "openPath(path){return shellSpawn('C:OpenURL',[String(path)])"
+    ".then(()=>'',err=>String(err&&err.message||err));},"
+    "showItemInFolder(){return undefined;},"
+    "trashItem(){return Promise.reject("
+    "new Error('shell.trashItem is not implemented on AROS'));},"
+    "moveItemToTrash(){return false;},"
+    "readShortcutLink(){throw new Error("
+    "'shell.readShortcutLink is Windows only');},"
+    "writeShortcutLink(){throw new Error("
+    "'shell.writeShortcutLink is Windows only');}"
+    "});"
+    /* autoUpdater: Electron's Squirrel client. GitHub Desktop wires its
+       handlers the moment the app is ready, so its absence threw
+       "Cannot read properties of undefined (reading 'on')" inside
+       setupAutoUpdater before any window existed.
+       AROS updates do not come from Squirrel - they come from the package
+       manager and its repository (JOB-0090) - so this reports "no update
+       available" rather than reaching for a feed that is not there. An app
+       that asks gets a truthful answer and carries on. */
+    "const autoUpdater=new EventEmitter();"
+    "let updateFeedURL=null;"
+    "autoUpdater.setFeedURL=options=>{"
+    "updateFeedURL=typeof options==='string'?options:(options&&options.url)||null;"
+    "};"
+    "autoUpdater.getFeedURL=()=>updateFeedURL||'';"
+    "autoUpdater.checkForUpdates=()=>{"
+    "autoUpdater.emit('checking-for-update');"
+    "setTimeout(()=>autoUpdater.emit('update-not-available'),0);"
+    "};"
+    "autoUpdater.quitAndInstall=()=>app.quit();"
     "const api=Object.freeze({"
     "app,native,BrowserWindow,WebContents,webContents,Menu,MenuItem,protocol,session,"
-    "dialog,ipcMain,nativeTheme,powerMonitor,crashReporter,screen,"
+    "dialog,ipcMain,nativeTheme,powerMonitor,crashReporter,screen,shell,autoUpdater,"
     "MessageChannelMain,MessagePortMain,utilityProcess"
     "});"
     "const load=require;"
@@ -1545,6 +1643,21 @@ static CONST_STRPTR electron_node_invoke(CONST_STRPTR method,
         bug("[ELECTRON-JS] %s: %s\n", method,
             payload != NULL ? (const char *)payload : "");
         return "logged";
+    }
+    if (method != NULL && strcmp(method, "shell.beep") == 0)
+    {
+        /* Intuition's own alert sound, which is what a user has configured
+           for "something wants your attention" - the same bell the Shell
+           rings. DisplayBeep(NULL) flashes every screen when no audible
+           beep is set, which is the documented behaviour, not a fallback. */
+        struct IntuitionBase *ib = (struct IntuitionBase *)
+            OpenLibrary("intuition.library", 39);
+        if (ib != NULL)
+        {
+            DisplayBeep(NULL);
+            CloseLibrary((struct Library *)ib);
+        }
+        return "beeped";
     }
     if (method != NULL && strcmp(method, "screen.snapshot") == 0)
         return electron_screen_snapshot();

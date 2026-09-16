@@ -1107,6 +1107,21 @@ static void CEF_CALLBACK on_load_end(cef_load_handler_t *self,
     (void)cef_browser;
     KPrintF("[ELECTRON-CONTEXT] load end main=%ld HTTP=%ld\n",
         (LONG)is_main, (LONG)http_status_code);
+
+    /* Tell the Electron object model the page finished loading.
+     *
+     * Electron apps routinely open their window with show:false and only
+     * show() it once the content is up, so a did-finish-load that never
+     * arrives leaves a fully working window permanently invisible: GitHub
+     * Desktop creates its BrowserWindow, loads its bundle, waits for this
+     * event plus a renderer-ready IPC, and shows nothing (probe: windows=1,
+     * no visible window, 2026-09-16). Only the main frame counts - a
+     * sub-frame finishing does not mean the document is ready. */
+    if (is_main)
+    {
+        ElectronPostWindowEvent("did-finish-load", "");
+        ElectronPostWindowEvent("did-stop-loading", "");
+    }
 }
 
 static void CEF_CALLBACK on_load_error(cef_load_handler_t *self,
