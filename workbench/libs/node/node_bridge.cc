@@ -491,8 +491,12 @@ static NodeV8SetCurrentPlatformFn NodeV8SetCurrentPlatform;
 
 class NodeV8PlatformScope {
  public:
-  explicit NodeV8PlatformScope(v8::Platform *platform)
-      : previous_(nullptr), active_(false) {
+  /* keep_installed: when the task had no platform on entry, leave whatever
+     the scope body installed instead of clearing the slot again (see
+     NodeAttachOwnedV8Context). */
+  explicit NodeV8PlatformScope(v8::Platform *platform,
+                               bool keep_installed = false)
+      : previous_(nullptr), active_(false), keep_installed_(keep_installed) {
     if (NodeV8GetCurrentPlatform == nullptr ||
         NodeV8SetCurrentPlatform == nullptr)
       return;
@@ -503,7 +507,7 @@ class NodeV8PlatformScope {
   }
 
   ~NodeV8PlatformScope() {
-    if (active_)
+    if (active_ && !(keep_installed_ && previous_ == nullptr))
       NodeV8SetCurrentPlatform(previous_);
   }
 
@@ -513,6 +517,7 @@ class NodeV8PlatformScope {
  private:
   v8::Platform *previous_;
   bool active_;
+  bool keep_installed_;
 };
 
 struct NodePendingLinkedBinding {
@@ -1146,7 +1151,18 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
    * Processes inherit the platform whose worker count configured their heap.
    */
   v8::Platform *browser_platform = NodeV8GetCurrentPlatform();
-  NodeV8PlatformScope browser_platform_restore(nullptr);
+  /*
+   * A Process with no platform of its own (the Electron main Process) must
+   * NOT get its slot cleared again on the way out: an empty slot makes
+   * V8::GetCurrentPlatform() fall back to the engine's first-ever platform,
+   * which is NodeEmbedPlatform only on a fresh boot. After an earlier C:Node
+   * run it is that Process's NodePlatform, which never registered this
+   * isolate and CHECKs in NodePlatform::ForIsolate (the "Node, then
+   * ElectronShell" abort). Restore a browser platform if there was one;
+   * otherwise the successful path below leaves NodeEmbedPlatform installed.
+   */
+  NodeV8PlatformScope browser_platform_restore(
+      nullptr, browser_platform == nullptr);
 
   /*
    * The resident engine keeps V8 process initialization global while its AROS
@@ -1272,7 +1288,14 @@ AROS_LH1(LONG, NodeAttachOwnedV8Context,
     return result;
   }
   NodeEmbedOwnsIsolate = true;
-  NodeBridgeLog("[NodeEmbed] owns dedicated embedder isolate=%p\n", isolate);
+  /* This Process's V8 work outside the bridge's entry points (module
+     loading, GC tasks, Chromium threads inheriting the parent slot) must
+     reach the platform the isolate is registered with. Explicit, because a
+     second app in the Process skipped initialize_platform() above. */
+  if (browser_platform == nullptr)
+    NodeV8SetCurrentPlatform(NodeEmbedPlatform.get());
+  NodeBridgeLog("[NodeEmbed] owns dedicated embedder isolate=%p platform=%p\n",
+                isolate, NodeEmbedPlatform.get());
   return 0;
   AROS_LIBFUNC_EXIT
 }
