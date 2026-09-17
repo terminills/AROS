@@ -112,13 +112,112 @@ pthread_t GetThreadId(struct Task *task)
         {
 #if defined(__AROS__)
             if (task != NULL && task->tc_UserData != &threads[i])
-                continue;
+            {
+                // A task adopted by pthread_self() was created elsewhere and
+                // carries no such mark; its exec unique id is the identity.
+                if (!threads[i].adopted || threads[i].taskid != GetETaskID(task))
+                    continue;
+            }
 #endif
             break;
         }
     }
 
     return i;
+}
+
+/*
+ * Give a task this library did not create its own thread slot.
+ *
+ * Every static copy of this library only knows the tasks it created (and the
+ * task that ran its INIT set, slot 0).  A task created by another copy - a
+ * Chromium thread running a nodeIntegration Node runtime inside
+ * node.library, a CEF thread calling back into uv1.library - used to be
+ * answered with thread id 0 by pthread_self(), so every such task shared the
+ * main task's tlsvalues[]: OpenSSL's per-thread error state, V8's
+ * thread-local isolate slots, everything keyed with pthread_key_create().
+ * Two Node runtimes on two tasks then corrupted each other's state (double
+ * free in ERR_pop_to_mark, ElectronShell user-28, 2026-09-16).
+ *
+ * An adopted slot has parent == NULL like slot 0, so pthread_join/detach
+ * report ESRCH and the EXIT-set reaper leaves it alone; nothing in this
+ * library sees the task die, so its TLS destructors never run and the slot
+ * is reclaimed lazily, when a later adoption finds no free slot and the
+ * task id no longer resolves.  Returns 0 (the shared main slot, the old
+ * behaviour) only when no slot can be had.
+ */
+pthread_t AdoptForeignThread(struct Task *task)
+{
+#ifdef __AROS__
+    pthread_t i, slot = PTHREAD_THREADS_MAX;
+    ULONG taskid = GetETaskID(task);
+    ThreadInfo *inf;
+
+    if (taskid == 0)
+        return 0;
+
+    ObtainSemaphore(&thread_sem);
+
+    // adopted between the lookup miss and the lock?
+    for (i = 1; i < PTHREAD_THREADS_MAX; i++)
+    {
+        inf = &threads[i];
+        if (inf->adopted && inf->task == task && inf->taskid == taskid)
+        {
+            ReleaseSemaphore(&thread_sem);
+            return i;
+        }
+    }
+
+    for (i = 1; i < PTHREAD_THREADS_MAX; i++)
+    {
+        if (threads[i].task == NULL && !threads[i].finished)
+        {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot == PTHREAD_THREADS_MAX)
+    {
+        // no free slot: reclaim one whose adopted task has exited
+        for (i = 1; i < PTHREAD_THREADS_MAX; i++)
+        {
+            inf = &threads[i];
+            if (inf->adopted && FindTaskByPID(inf->taskid) == NULL)
+            {
+                slot = i;
+                break;
+            }
+        }
+    }
+
+    if (slot == PTHREAD_THREADS_MAX)
+    {
+        ReleaseSemaphore(&thread_sem);
+        return 0;
+    }
+
+    inf = &threads[slot];
+    memset(inf, 0, sizeof(ThreadInfo));
+    inf->task = task;
+    inf->taskid = taskid;
+    inf->adopted = TRUE;
+    pthread_attr_init(&inf->attr);
+    NEWLIST((struct List *)&inf->cleanup);
+    inf->cancelstate = PTHREAD_CANCEL_ENABLE;
+    inf->canceltype = PTHREAD_CANCEL_DEFERRED;
+
+    ReleaseSemaphore(&thread_sem);
+
+    D(bug("%s: task %p (%s) adopted as thread %u\n", __FUNCTION__, task,
+        task->tc_Node.ln_Name, slot));
+
+    return slot;
+#else
+    (void)task;
+    return 0;
+#endif
 }
 
 /*

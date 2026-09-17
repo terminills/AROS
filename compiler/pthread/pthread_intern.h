@@ -122,6 +122,7 @@ typedef struct
     int canceltype;
     int canceled;
     int detached;
+    int adopted;    /* created by another pthread copy, see AdoptForeignThread */
 } ThreadInfo;
 
 extern ThreadInfo threads[PTHREAD_THREADS_MAX];
@@ -134,6 +135,7 @@ extern int SemaphoreIsInvalid(struct SignalSemaphore *sem);
 extern int SemaphoreIsMine(struct SignalSemaphore *sem);
 extern ThreadInfo *GetThreadInfo(pthread_t thread);
 extern pthread_t GetThreadId(struct Task *task);
+extern pthread_t AdoptForeignThread(struct Task *task);
 extern BOOL ReapAbnormalThread(ThreadInfo *inf);
 extern struct Task *GetLiveThreadTask(ThreadInfo *inf);
 
