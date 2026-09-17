@@ -68,16 +68,52 @@ static int electron_scheme_factory_ready;
 static cef_v8handler_t electron_renderer_handler;
 static char *electron_declared_schemes[ELECTRON_MAX_SCHEMES];
 static ULONG electron_declared_scheme_count;
+/* The browser bound most recently, and the id of the window prepared most
+   recently: what the single-window vectors (ElectronSetActiveBrowser,
+   ElectronPostWindowEvent) operate on, and the fallback when a lookup by
+   window finds nothing. */
 static cef_browser_t *electron_active_browser;
 static ULONG electron_window_id;
-/* webPreferences.nodeIntegration for the window being created: the renderer
-   context gets its own Node runtime when this is set, which is how an app
-   whose page code requires fs/path/child_process at scope can run at all
-   (GitHub Desktop builds its renderer that way). */
-static int electron_window_node_integration;
-static char *electron_window_preload_path;
-static char *electron_window_preload_source;
-static char *electron_window_process_snapshot;
+
+/*
+ * Windows, addressed by (app slot, window id) - JOB-0099.
+ *
+ * One engine serves several apps and each app several BrowserWindows, and
+ * BrowserWindow ids are per app (every app's first window is id 1), so a
+ * window is named by both. The record collects what the bootstrap says about
+ * the window before it exists (nodeIntegration, preload, process snapshot),
+ * then the CEF browser the host created for it.
+ *
+ * The browser side and the renderer side of CEF each have their own
+ * cef_browser_t for the same browser, so the join key is the browser
+ * identifier, which both sides agree on, not the pointer.
+ */
+#define ELECTRON_MAX_WINDOWS 16
+
+struct ElectronWindow
+{
+    int in_use;
+    LONG slot;
+    ULONG id;
+    cef_browser_t *browser;
+    int browser_identifier;
+    /* webPreferences.nodeIntegration: the renderer context gets its own Node
+       runtime when this is set, which is how an app whose page code requires
+       fs/path/child_process at scope can run at all (GitHub Desktop builds
+       its renderer that way). */
+    int node_integration;
+    char *preload_path;
+    char *preload_source;
+    char *process_snapshot;
+};
+
+static struct ElectronWindow electron_windows[ELECTRON_MAX_WINDOWS];
+static struct SignalSemaphore electron_window_lock;
+/* The record prepared most recently: what a renderer context is matched to
+   when its browser is not bound to any record (yet). */
+static struct ElectronWindow *electron_window_last;
+
+static void electron_set_active_browser(cef_browser_t *browser);
 
 static const cef_char_t electron_renderer_extension_name[] =
     u"aros/electron_renderer";
@@ -85,9 +121,13 @@ static const cef_char_t electron_renderer_extension_code[] =
     u"var AROSElectronRenderer;"
     u"if(!AROSElectronRenderer)AROSElectronRenderer={};"
     u"(function(){"
+    /* __w is the window's address, "<slot>\t<id>", set by the injected
+       context code; it goes ahead of every message so the engine can route
+       the IPC to the app that owns this window (JOB-0099). */
     u"AROSElectronRenderer.send=function(text){"
     u"native function AROSElectronSend(text);"
-    u"return AROSElectronSend(text);"
+    u"return AROSElectronSend(AROSElectronRenderer.__w?"
+    u"AROSElectronRenderer.__w+'\\t'+text:text);"
     u"};"
     /* The renderer's own debug channel.  A page's console is Blink's and lands
        in CEF's console, not in aros-debug.log, so an app that goes quiet
@@ -480,6 +520,7 @@ static void electron_ensure_state(void)
         NEWLIST((struct List *)&electron_pending_resources);
         InitSemaphore(&electron_event_lock);
         InitSemaphore(&electron_resource_lock);
+        InitSemaphore(&electron_window_lock);
         electron_state_ready = 1;
     }
     Permit();
@@ -698,16 +739,16 @@ static char *electron_userfree_to_utf8(cef_string_userfree_t text)
 }
 
 /*
- * Which app is being serviced right now.
- *
- * With several apps in one process each has its own Node runtime, and each of
- * those runtimes polls this queue from its own pump. Without a tag the first
- * poller swallows every event, including the did-finish-load another app's
- * window is waiting on to become visible - so events carry the slot that was
- * current when they were posted, and a poll only takes its own (or untagged
- * ones, which is every event a single-app process makes).
+ * Events carry the slot of the app they belong to (electron_current_slot in
+ * electron_bridge.c): with several apps in one process each app's runtime
+ * polls this queue from its own pump, and without the tag the first poller
+ * would swallow every event, including the did-finish-load another app's
+ * window is waiting on to become visible. A poll only takes its own events.
+ * Slot 0 is the primary app, not "anyone": treating it as a broadcast tag
+ * let the second app's poll swallow the primary's did-finish-load (hosted
+ * user-21, 2026-09-16, hello-A never showed). A single-app process tags
+ * every event 0 and polls as 0, so strict matching costs it nothing.
  */
-static LONG electron_current_slot;
 
 /* Takes ownership of text. */
 static LONG electron_post_event_for(char *text, LONG slot)
@@ -742,28 +783,162 @@ static LONG electron_post_event(char *text)
  * `window\t<id>\t<name>\t<payload>` reaches the bootstrap's poll loop,
  * which turns it into the BrowserWindow event of the same name.
  */
-static LONG electron_post_window_event(CONST_STRPTR name, CONST_STRPTR payload)
+static LONG electron_post_app_window_event(LONG slot, ULONG id,
+    CONST_STRPTR name, CONST_STRPTR payload)
 {
-    char id[16];
+    char id_text[16];
     const char *parts[6];
-    ULONG value = electron_window_id;
-    int index = sizeof(id) - 1;
 
     if (name == NULL || name[0] == '\0')
         return 20;
-    id[index] = '\0';
-    do
-    {
-        id[--index] = (char)('0' + value % 10);
-        value /= 10;
-    } while (value != 0 && index > 0);
+    *electron_append_long(id_text, (LONG)id) = '\0';
     parts[0] = "window\t";
-    parts[1] = id + index;
+    parts[1] = id_text;
     parts[2] = "\t";
     parts[3] = (const char *)name;
     parts[4] = "\t";
     parts[5] = payload != NULL ? (const char *)payload : "";
-    return electron_post_event(electron_concat(parts, 6));
+    return electron_post_event_for(electron_concat(parts, 6), slot);
+}
+
+/* The single-window form: the window prepared most recently, the app being
+   serviced right now. */
+static LONG electron_post_window_event(CONST_STRPTR name, CONST_STRPTR payload)
+{
+    return electron_post_app_window_event(electron_current_slot,
+        electron_window_id, name, payload);
+}
+
+/*
+ * The window registry (see struct ElectronWindow).
+ */
+static struct ElectronWindow *electron_find_window(LONG slot, ULONG id)
+{
+    int index;
+
+    for (index = 0; index < ELECTRON_MAX_WINDOWS; ++index)
+    {
+        struct ElectronWindow *window = &electron_windows[index];
+
+        if (window->in_use && window->slot == slot && window->id == id)
+            return window;
+    }
+    return NULL;
+}
+
+static struct ElectronWindow *electron_find_window_by_browser(
+    cef_browser_t *browser)
+{
+    int identifier;
+    int index;
+
+    if (browser == NULL)
+        return NULL;
+    identifier = browser->get_identifier(browser);
+    for (index = 0; index < ELECTRON_MAX_WINDOWS; ++index)
+    {
+        struct ElectronWindow *window = &electron_windows[index];
+
+        if (window->in_use && window->browser != NULL &&
+            window->browser_identifier == identifier)
+            return window;
+    }
+    return NULL;
+}
+
+static struct ElectronWindow *electron_find_or_create_window(LONG slot,
+    ULONG id)
+{
+    struct ElectronWindow *window;
+    int index;
+
+    electron_ensure_state();
+    ObtainSemaphore(&electron_window_lock);
+    window = electron_find_window(slot, id);
+    if (window == NULL)
+    {
+        for (index = 0; index < ELECTRON_MAX_WINDOWS; ++index)
+        {
+            if (!electron_windows[index].in_use)
+            {
+                window = &electron_windows[index];
+                memset(window, 0, sizeof(*window));
+                window->in_use = 1;
+                window->slot = slot;
+                window->id = id;
+                break;
+            }
+        }
+    }
+    ReleaseSemaphore(&electron_window_lock);
+    return window;
+}
+
+static void electron_release_window(struct ElectronWindow *window)
+{
+    if (window == NULL)
+        return;
+    electron_ensure_state();
+    ObtainSemaphore(&electron_window_lock);
+    if (window->browser != NULL)
+        window->browser->base.release(&window->browser->base);
+    FreeVec(window->preload_path);
+    FreeVec(window->preload_source);
+    FreeVec(window->process_snapshot);
+    if (electron_window_last == window)
+        electron_window_last = NULL;
+    memset(window, 0, sizeof(*window));
+    ReleaseSemaphore(&electron_window_lock);
+}
+
+/*
+ * The window the bootstrap is talking about: the payload of every per-window
+ * request starts with the window id and a tab, the app is the one being
+ * serviced. Returns the rest of the payload.
+ */
+static CONST_STRPTR electron_window_from_payload(CONST_STRPTR payload,
+    struct ElectronWindow **window)
+{
+    const char *cursor = (const char *)payload;
+    ULONG id;
+
+    *window = NULL;
+    if (cursor == NULL)
+        return "";
+    id = (ULONG)electron_parse_long(cursor);
+    while (*cursor >= '0' && *cursor <= '9')
+        ++cursor;
+    if (*cursor == '\t')
+        ++cursor;
+    *window = electron_find_or_create_window(electron_current_slot, id);
+    return (CONST_STRPTR)cursor;
+}
+
+/* Bound browsers can go: the browser identifier is stable per browser, the
+   record keeps its own reference. NULL unbinds and forgets the window. */
+static LONG electron_bind_window_browser(LONG slot, ULONG id,
+    cef_browser_t *browser)
+{
+    struct ElectronWindow *window;
+
+    if (browser == NULL)
+    {
+        window = electron_find_window(slot, id);
+        if (window != NULL && electron_active_browser == window->browser)
+            electron_set_active_browser(NULL);
+        electron_release_window(window);
+        return window != NULL ? 0 : 5;
+    }
+    window = electron_find_or_create_window(slot, id);
+    if (window == NULL)
+        return 20;
+    browser->base.add_ref(&browser->base);
+    if (window->browser != NULL)
+        window->browser->base.release(&window->browser->base);
+    window->browser = browser;
+    window->browser_identifier = browser->get_identifier(browser);
+    electron_set_active_browser(browser);
+    return 0;
 }
 
 static CONST_STRPTR electron_poll_event(void)
@@ -786,7 +961,7 @@ static CONST_STRPTR electron_poll_event(void)
              (next = (struct ElectronEvent *)scan->node.mln_Succ) != NULL;
              scan = next)
         {
-            if (scan->slot == 0 || scan->slot == electron_current_slot)
+            if (scan->slot == electron_current_slot)
             {
                 Remove((struct Node *)&scan->node);
                 event = scan;
@@ -1565,12 +1740,42 @@ static int CEF_CALLBACK electron_renderer_execute(cef_v8handler_t *self,
                 FreeVec(text);
                 return 1;
             }
-            *electron_append_long(id_text, (LONG)electron_window_id) = '\0';
-            parts[0] = "ipc\t";
-            parts[1] = id_text;
-            parts[2] = "\t";
-            parts[3] = text;
-            electron_post_event(electron_concat(parts, 4));
+            /* The extension prefixes the message with the window's own
+               address, "<slot>\t<id>\t" (AROSElectronRenderer.__w), when the
+               context was injected with one; a context without it is the
+               window prepared most recently. */
+            {
+                const char *cursor = text;
+                LONG slot = electron_current_slot;
+                ULONG id = electron_window_id;
+
+                if (*cursor >= '0' && *cursor <= '9')
+                {
+                    const char *probe = cursor;
+
+                    while (*probe >= '0' && *probe <= '9')
+                        ++probe;
+                    if (*probe == '\t' && probe[1] >= '0' && probe[1] <= '9')
+                    {
+                        const char *second = probe + 1;
+
+                        while (*second >= '0' && *second <= '9')
+                            ++second;
+                        if (*second == '\t')
+                        {
+                            slot = electron_parse_long(cursor);
+                            id = (ULONG)electron_parse_long(probe + 1);
+                            cursor = second + 1;
+                        }
+                    }
+                }
+                *electron_append_long(id_text, (LONG)id) = '\0';
+                parts[0] = "ipc\t";
+                parts[1] = id_text;
+                parts[2] = "\t";
+                parts[3] = cursor;
+                electron_post_event_for(electron_concat(parts, 4), slot);
+            }
             FreeVec(text);
         }
     }
@@ -1608,10 +1813,19 @@ static void electron_set_active_browser(cef_browser_t *browser)
         previous->base.release(&previous->base);
 }
 
-static CONST_STRPTR electron_execute_in_renderer(const char *code_utf8,
-    const cef_char_t *url_text, size_t url_length)
+/* The browser a per-window request addresses: the window's own once the
+   host has bound one, otherwise whatever is active (a request that arrives
+   between browser-window.create and the browser's creation). */
+static cef_browser_t *electron_window_browser(struct ElectronWindow *window)
 {
-    cef_browser_t *browser = electron_active_browser;
+    if (window != NULL && window->browser != NULL)
+        return window->browser;
+    return electron_active_browser;
+}
+
+static CONST_STRPTR electron_execute_in_renderer(cef_browser_t *browser,
+    const char *code_utf8, const cef_char_t *url_text, size_t url_length)
+{
     cef_frame_t *frame;
     cef_string_t code;
     cef_string_t url;
@@ -1637,34 +1851,47 @@ static CONST_STRPTR electron_execute_in_renderer(const char *code_utf8,
     return "executed";
 }
 
-static CONST_STRPTR electron_deliver_to_renderer(CONST_STRPTR literal)
+/* `web-contents.send` payload: id \t JSON literal of the message JSON */
+static CONST_STRPTR electron_deliver_to_renderer(CONST_STRPTR payload)
 {
+    struct ElectronWindow *window;
+    const char *literal = electron_window_from_payload(payload, &window);
     const char *parts[3];
     char *code;
     CONST_STRPTR result;
 
     parts[0] = "AROSElectronRenderer.deliver(";
-    parts[1] = literal != NULL ? (const char *)literal : "\"\"";
+    parts[1] = literal[0] != '\0' ? literal : "\"\"";
     parts[2] = ")";
     code = electron_concat(parts, 3);
     if (code == NULL)
         return "no-memory";
-    result = electron_execute_in_renderer(code, electron_renderer_deliver_url,
+    result = electron_execute_in_renderer(electron_window_browser(window),
+        code, electron_renderer_deliver_url,
         sizeof(electron_renderer_deliver_url) / sizeof(cef_char_t) - 1);
     FreeVec(code);
     return result;
 }
 
+/* `web-contents.execute-script` payload: id \t JavaScript source */
+static CONST_STRPTR electron_execute_in_window(CONST_STRPTR payload)
+{
+    struct ElectronWindow *window;
+    const char *code = electron_window_from_payload(payload, &window);
+
+    return electron_execute_in_renderer(electron_window_browser(window),
+        code, electron_renderer_script_url,
+        sizeof(electron_renderer_script_url) / sizeof(cef_char_t) - 1);
+}
+
+/* `browser-window.set-zoom-level` payload: id \t level */
 static CONST_STRPTR electron_set_zoom_level(CONST_STRPTR payload)
 {
-    cef_browser_t *browser = electron_active_browser;
+    struct ElectronWindow *window;
+    const char *level = electron_window_from_payload(payload, &window);
+    cef_browser_t *browser = electron_window_browser(window);
     cef_browser_host_t *host;
-    const char *level = payload != NULL ? (const char *)payload : "";
 
-    while (*level != '\0' && *level != '\t')
-        ++level;
-    if (*level == '\t')
-        ++level;
     if (browser == NULL)
         return "no-browser";
     host = browser->get_host(browser);
@@ -1675,35 +1902,35 @@ static CONST_STRPTR electron_set_zoom_level(CONST_STRPTR payload)
     return "zoomed";
 }
 
-/* `browser-window.create` payload: id \t preload \t additional args... */
 /* `browser-window.node-integration` payload: id \t 0|1 */
 static CONST_STRPTR electron_set_node_integration(CONST_STRPTR payload)
 {
-    const char *cursor = payload != NULL ? (const char *)payload : "";
+    struct ElectronWindow *window;
+    const char *cursor = electron_window_from_payload(payload, &window);
 
-    while (*cursor != '\0' && *cursor != '\t')
-        ++cursor;
-    if (*cursor == '\t')
-        ++cursor;
-    electron_window_node_integration = (*cursor == '1');
-    bug("[ELECTRON-RENDERER] window nodeIntegration=%ld\n",
-        (LONG)electron_window_node_integration);
+    if (window == NULL)
+        return "no-window";
+    window->node_integration = (*cursor == '1');
+    bug("[ELECTRON-RENDERER] window %ld/%lu nodeIntegration=%ld\n",
+        (long)window->slot, (unsigned long)window->id,
+        (long)window->node_integration);
     return "stored";
 }
 
+/* `browser-window.create` payload: id \t preload \t additional args... */
 static CONST_STRPTR electron_prepare_window(CONST_STRPTR payload)
 {
-    const char *cursor = payload != NULL ? (const char *)payload : "";
+    struct ElectronWindow *window;
+    const char *cursor = electron_window_from_payload(payload, &window);
     const char *preload_start;
     size_t preload_length = 0;
     BPTR file;
     LONG length;
 
-    electron_window_id = (ULONG)electron_parse_long(cursor);
-    while (*cursor != '\0' && *cursor != '\t')
-        ++cursor;
-    if (*cursor == '\t')
-        ++cursor;
+    if (window == NULL)
+        return "no-window";
+    electron_window_id = window->id;
+    electron_window_last = window;
     preload_start = cursor;
     while (*cursor != '\0' && *cursor != '\t')
     {
@@ -1711,58 +1938,63 @@ static CONST_STRPTR electron_prepare_window(CONST_STRPTR payload)
         ++preload_length;
     }
 
-    FreeVec(electron_window_preload_path);
-    FreeVec(electron_window_preload_source);
-    electron_window_preload_path = NULL;
-    electron_window_preload_source = NULL;
+    FreeVec(window->preload_path);
+    FreeVec(window->preload_source);
+    window->preload_path = NULL;
+    window->preload_source = NULL;
     if (preload_length != 0)
     {
-        electron_window_preload_path = AllocVec(preload_length + 1, MEMF_ANY);
-        if (electron_window_preload_path != NULL)
+        window->preload_path = AllocVec(preload_length + 1, MEMF_ANY);
+        if (window->preload_path != NULL)
         {
-            CopyMem((APTR)preload_start, electron_window_preload_path,
+            CopyMem((APTR)preload_start, window->preload_path,
                 preload_length);
-            electron_window_preload_path[preload_length] = '\0';
-            file = Open(electron_window_preload_path, MODE_OLDFILE);
+            window->preload_path[preload_length] = '\0';
+            file = Open(window->preload_path, MODE_OLDFILE);
             if (file != BNULL)
             {
                 Seek(file, 0, OFFSET_END);
                 length = Seek(file, 0, OFFSET_BEGINNING);
                 if (length >= 0)
                 {
-                    electron_window_preload_source =
+                    window->preload_source =
                         AllocVec((ULONG)length + 1, MEMF_ANY);
-                    if (electron_window_preload_source != NULL)
+                    if (window->preload_source != NULL)
                     {
-                        LONG got = Read(file, electron_window_preload_source,
+                        LONG got = Read(file, window->preload_source,
                             length);
 
                         if (got < 0)
                             got = 0;
-                        electron_window_preload_source[got] = '\0';
+                        window->preload_source[got] = '\0';
                     }
                 }
                 Close(file);
             }
-            bug("[ELECTRON-RENDERER] window %lu preload '%s' %s (%ld bytes)\n",
-                (unsigned long)electron_window_id,
-                electron_window_preload_path,
-                electron_window_preload_source != NULL ? "loaded" :
-                "NOT readable",
-                electron_window_preload_source != NULL ?
-                (long)strlen(electron_window_preload_source) : 0L);
+            bug("[ELECTRON-RENDERER] window %ld/%lu preload '%s' %s "
+                "(%ld bytes)\n",
+                (long)window->slot, (unsigned long)window->id,
+                window->preload_path,
+                window->preload_source != NULL ? "loaded" : "NOT readable",
+                window->preload_source != NULL ?
+                (long)strlen(window->preload_source) : 0L);
         }
     }
     return electron_queue_request("browser-window.create", payload) == 0 ?
         "queued" : "queue-full";
 }
 
+/* `renderer.process-snapshot` payload: id \t JSON */
 static CONST_STRPTR electron_store_process_snapshot(CONST_STRPTR payload)
 {
-    FreeVec(electron_window_process_snapshot);
-    electron_window_process_snapshot =
-        electron_strdup(payload != NULL ? (const char *)payload : "{}");
-    return electron_window_process_snapshot != NULL ? "stored" : "no-memory";
+    struct ElectronWindow *window;
+    const char *json = electron_window_from_payload(payload, &window);
+
+    if (window == NULL)
+        return "no-window";
+    FreeVec(window->process_snapshot);
+    window->process_snapshot = electron_strdup(json[0] != '\0' ? json : "{}");
+    return window->process_snapshot != NULL ? "stored" : "no-memory";
 }
 
 static char *electron_json_quote(const char *text)
@@ -1789,7 +2021,7 @@ static char *electron_json_quote(const char *text)
 static LONG electron_inject_renderer_context(cef_browser_t *browser,
     cef_frame_t *frame, cef_v8context_t *context)
 {
-    const char *parts[8];
+    const char *parts[9];
     char *quoted_path;
     char *script;
     cef_char_t *text;
@@ -1799,10 +2031,46 @@ static LONG electron_inject_renderer_context(cef_browser_t *browser,
     cef_v8value_t *retval = NULL;
     cef_v8exception_t *exception = NULL;
     int rc;
+    struct ElectronWindow *window;
+    char *address;
 
-    (void)browser;
     if (frame == NULL || context == NULL || !frame->is_main(frame))
         return 0;
+
+    /*
+     * Which window this context belongs to. The host binds the browser to
+     * its window record in on_after_created, which runs before the first
+     * context is created; a context whose browser is not bound (a host
+     * predating ElectronBindWindowBrowser) is the window prepared most
+     * recently, which is right for one window at a time.
+     *
+     * The address goes into the page first, so that every message the page
+     * sends back (AROSElectronRenderer.send) carries it.
+     */
+    window = electron_find_window_by_browser(browser);
+    if (window == NULL)
+        window = electron_window_last;
+    if (window == NULL)
+        window = electron_find_or_create_window(electron_current_slot,
+            electron_window_id);
+    if (window == NULL)
+        return 20;
+    {
+        char slot_text[16];
+        char id_text[16];
+        const char *address_parts[5];
+
+        *electron_append_long(slot_text, window->slot) = '\0';
+        *electron_append_long(id_text, (LONG)window->id) = '\0';
+        address_parts[0] = "AROSElectronRenderer.__w=\"";
+        address_parts[1] = slot_text;
+        address_parts[2] = "\\t";
+        address_parts[3] = id_text;
+        address_parts[4] = "\";";
+        address = electron_concat(address_parts, 5);
+        if (address == NULL)
+            return 20;
+    }
 
     /*
      * nodeIntegration: give the page its own Node runtime.
@@ -1821,7 +2089,7 @@ static LONG electron_inject_renderer_context(cef_browser_t *browser,
      * is its own task, so it gets its own record and does not collide with
      * the main process's runtime.
      */
-    if (electron_window_node_integration)
+    if (window->node_integration)
     {
         /*
          * Inside the page's context, not merely on its thread:
@@ -1840,19 +2108,27 @@ static LONG electron_inject_renderer_context(cef_browser_t *browser,
                     sizeof(cef_char_t) - 1);
     }
 
-    if (electron_window_preload_source == NULL &&
-        !electron_window_node_integration)
+    if (window->preload_source == NULL && !window->node_integration)
     {
         /* No preload and no Node, but the page still deserves to be heard:
            inject the console tee on its own so a plain window's logging and
            unhandled failures reach the AROS debug log like everything else. */
+        const char *tee_parts[2];
+        char *tee_script;
         cef_string_t tee_code;
         cef_string_t tee_url;
-        cef_char_t *tee_text;
+        cef_char_t *tee_text = NULL;
         size_t tee_length = 0;
 
-        tee_text = electron_utf8_to_utf16(electron_renderer_console_tee,
-            &tee_length);
+        tee_parts[0] = address;
+        tee_parts[1] = electron_renderer_console_tee;
+        tee_script = electron_concat(tee_parts, 2);
+        FreeVec(address);
+        if (tee_script != NULL)
+        {
+            tee_text = electron_utf8_to_utf16(tee_script, &tee_length);
+            FreeVec(tee_script);
+        }
         if (tee_text != NULL)
         {
             memset(&tee_code, 0, sizeof(tee_code));
@@ -1864,30 +2140,36 @@ static LONG electron_inject_renderer_context(cef_browser_t *browser,
             frame->execute_java_script(frame, &tee_code, &tee_url, 1);
             FreeVec(tee_text);
         }
-        bug("[ELECTRON-RENDERER] main frame context created, no preload to "
-            "inject (console tee only)\n");
+        bug("[ELECTRON-RENDERER] window %ld/%lu main frame context created, "
+            "no preload to inject (console tee only)\n",
+            (long)window->slot, (unsigned long)window->id);
         return 0;
     }
-    quoted_path = electron_json_quote(electron_window_preload_path != NULL ?
-        electron_window_preload_path : "");
+    quoted_path = electron_json_quote(window->preload_path != NULL ?
+        window->preload_path : "");
     if (quoted_path == NULL)
+    {
+        FreeVec(address);
         return 20;
-    parts[0] = electron_renderer_runtime_head;
-    parts[1] = electron_window_process_snapshot != NULL ?
-        electron_window_process_snapshot : "{}";
-    parts[2] = electron_renderer_runtime_middle;
-    parts[3] = quoted_path;
-    parts[4] = electron_renderer_runtime_body;
+    }
+    parts[0] = address;
+    parts[1] = electron_renderer_runtime_head;
+    parts[2] = window->process_snapshot != NULL ?
+        window->process_snapshot : "{}";
+    parts[3] = electron_renderer_runtime_middle;
+    parts[4] = quoted_path;
+    parts[5] = electron_renderer_runtime_body;
     /* Before the app's preload, so whatever the preload logs is already being
        teed. */
-    parts[5] = electron_renderer_console_tee;
+    parts[6] = electron_renderer_console_tee;
     /* A nodeIntegration window with no preload of its own still gets the
        runtime, so require('electron') has something to return. */
-    parts[6] = electron_window_preload_source != NULL ?
-        electron_window_preload_source : electron_renderer_publish_only;
-    parts[7] = electron_renderer_runtime_tail;
-    script = electron_concat(parts, 8);
+    parts[7] = window->preload_source != NULL ?
+        window->preload_source : electron_renderer_publish_only;
+    parts[8] = electron_renderer_runtime_tail;
+    script = electron_concat(parts, 9);
     FreeVec(quoted_path);
+    FreeVec(address);
     if (script == NULL)
         return 20;
     text = electron_utf8_to_utf16(script, &length);

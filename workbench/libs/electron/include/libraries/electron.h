@@ -48,5 +48,23 @@ LONG ElectronDeclareCustomScheme(CONST_STRPTR name, ULONG options);
 LONG ElectronRegisterRendererExtension(void);
 void ElectronSetActiveBrowser(APTR browser);
 LONG ElectronInjectRendererContext(APTR browser, APTR frame, APTR context);
+LONG ElectronPostWindowEvent(CONST_STRPTR name, CONST_STRPTR payload);
+
+/*
+ * Several apps in one process, several windows per app.  Each app runs in
+ * its own Node runtime slot (ElectronCreateAppRuntime / SelectAppRuntime /
+ * ReleaseAppRuntime); a window is addressed by (slot, BrowserWindow id),
+ * since every app numbers its windows from 1.  The host polls requests with
+ * the slot that made them, binds each CEF browser it creates to the window
+ * that asked for it, and reports window-system events to that window.
+ */
+LONG ElectronCreateAppRuntime(void);
+LONG ElectronSelectAppRuntime(LONG slot);
+LONG ElectronReleaseAppRuntime(LONG slot);
+LONG ElectronPollAppRequest(STRPTR method, ULONG method_size,
+    STRPTR payload, ULONG payload_size, LONG *slot);
+LONG ElectronBindWindowBrowser(LONG slot, ULONG id, APTR browser);
+LONG ElectronPostAppWindowEvent(LONG slot, ULONG id, CONST_STRPTR name,
+    CONST_STRPTR payload);
 
 #endif /* LIBRARIES_ELECTRON_H */

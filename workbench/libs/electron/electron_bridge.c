@@ -50,12 +50,27 @@ struct ElectronNativeRequest
 {
     char method[ELECTRON_REQUEST_METHOD_SIZE];
     char payload[ELECTRON_REQUEST_PAYLOAD_SIZE];
+    /* The app runtime slot that made the request (JOB-0099). Window ids are
+       per app - every app's first BrowserWindow is id 1 - so a host serving
+       several apps needs the slot to tell their windows apart. */
+    LONG slot;
 };
 
 static struct ElectronNativeRequest
     electron_requests[ELECTRON_REQUEST_CAPACITY];
 static ULONG electron_request_head;
 static ULONG electron_request_tail;
+
+/*
+ * Which app is being serviced right now.
+ *
+ * With several apps in one process each has its own Node runtime, and each of
+ * those runtimes talks to this library from its own pump. Requests and events
+ * carry the slot that was current when they were made, so a host can route a
+ * request to the right window and a poll only takes its own app's events (or
+ * untagged ones, which is every event a single-app process makes).
+ */
+static LONG electron_current_slot;
 static char electron_sync_result[32];
 static char electron_screen_result[96];
 
@@ -770,8 +785,11 @@ static const char electron_module_bootstrap[] =
     "const ipcReviver=(key,value)=>"
     "(value&&typeof value==='object'&&typeof value.__arosBin==='string')?"
     "Buffer.from(value.__arosBin,'base64'):value;"
+    /* Window id first: with several windows (or several apps) in one engine
+       the seam picks the browser by it. */
     "const deliverToRenderer=(contents,message)=>binding.invoke("
-    "'web-contents.send',JSON.stringify(JSON.stringify(message,ipcReplacer)));"
+    "'web-contents.send',String(contents._window.id)+'\\t'+"
+    "JSON.stringify(JSON.stringify(message,ipcReplacer)));"
     "let nextWebContentsId=1;"
     "const webContentsById=new Map();"
     "class WebContents extends EventEmitter{"
@@ -793,7 +811,8 @@ static const char electron_module_bootstrap[] =
     "args:[message],ports});"
     "}"
     "executeJavaScript(code){"
-    "binding.invoke('web-contents.execute-script',String(code));"
+    "binding.invoke('web-contents.execute-script',"
+    "String(this._window.id)+'\\t'+String(code));"
     "return Promise.resolve();"
     "}"
     "getOSProcessId(){return process.pid;}"
@@ -873,7 +892,8 @@ static const char electron_module_bootstrap[] =
     "?webPreferences.additionalArguments.map(String):[];"
     /* The renderer's process shim is built from this snapshot; it must be
        stored before browser-window.create reads the preload. */
-    "binding.invoke('renderer.process-snapshot',JSON.stringify({"
+    "binding.invoke('renderer.process-snapshot',String(this.id)+'\\t'+"
+    "JSON.stringify({"
     "platform:process.platform,arch:process.arch,env:{...process.env},"
     "versions:{...process.versions},execPath:process.execPath,"
     "pid:process.pid,cwd:process.cwd(),"
@@ -1627,9 +1647,39 @@ static LONG electron_queue_request(CONST_STRPTR method, CONST_STRPTR payload)
     strncpy(request->payload, payload_text,
         sizeof(request->payload) - 1);
     request->payload[sizeof(request->payload) - 1] = '\0';
+    request->slot = electron_current_slot;
     electron_request_tail = next_tail;
     Permit();
     return 0;
+}
+
+/* Pops the oldest request; slot (may be NULL) receives the app it came from. */
+static LONG electron_poll_request(STRPTR method, ULONG method_size,
+    STRPTR payload, ULONG payload_size, LONG *slot)
+{
+    struct ElectronNativeRequest *request;
+
+    if (method == NULL || method_size == 0 ||
+        payload == NULL || payload_size == 0)
+        return 20;
+
+    Forbid();
+    if (electron_request_head == electron_request_tail)
+    {
+        Permit();
+        return 0;
+    }
+    request = &electron_requests[electron_request_head];
+    strncpy(method, request->method, method_size - 1);
+    method[method_size - 1] = '\0';
+    strncpy(payload, request->payload, payload_size - 1);
+    payload[payload_size - 1] = '\0';
+    if (slot != NULL)
+        *slot = request->slot;
+    electron_request_head =
+        (electron_request_head + 1) % ELECTRON_REQUEST_CAPACITY;
+    Permit();
+    return 1;
 }
 
 #include "electron_renderer_seam.inc.c"
@@ -1729,10 +1779,7 @@ static CONST_STRPTR electron_node_invoke(CONST_STRPTR method,
     if (method != NULL && strcmp(method, "web-contents.send") == 0)
         return electron_deliver_to_renderer(payload);
     if (method != NULL && strcmp(method, "web-contents.execute-script") == 0)
-        return electron_execute_in_renderer(
-            payload != NULL ? (const char *)payload : "",
-            electron_renderer_execute_url,
-            sizeof(electron_renderer_execute_url) / sizeof(cef_char_t) - 1);
+        return electron_execute_in_window(payload);
     if (method != NULL &&
         (strncmp(method, "browser-window.", 15) == 0 ||
         strcmp(method, "app.exit") == 0 ||
@@ -2044,28 +2091,9 @@ AROS_LH4(LONG, ElectronPollNativeRequest,
     LIBBASETYPEPTR, LIBBASE, 26, Electron)
 {
     AROS_LIBFUNC_INIT
-    struct ElectronNativeRequest *request;
-
     (void)LIBBASE;
-    if (method == NULL || method_size == 0 ||
-        payload == NULL || payload_size == 0)
-        return 20;
-
-    Forbid();
-    if (electron_request_head == electron_request_tail)
-    {
-        Permit();
-        return 0;
-    }
-    request = &electron_requests[electron_request_head];
-    strncpy(method, request->method, method_size - 1);
-    method[method_size - 1] = '\0';
-    strncpy(payload, request->payload, payload_size - 1);
-    payload[payload_size - 1] = '\0';
-    electron_request_head =
-        (electron_request_head + 1) % ELECTRON_REQUEST_CAPACITY;
-    Permit();
-    return 1;
+    return electron_poll_request(method, method_size, payload, payload_size,
+        NULL);
     AROS_LIBFUNC_EXIT
 }
 
@@ -2198,5 +2226,56 @@ AROS_LH3(LONG, ElectronInjectRendererContext,
     (void)LIBBASE;
     return electron_inject_renderer_context((cef_browser_t *)browser,
         (cef_frame_t *)frame, (cef_v8context_t *)context);
+    AROS_LIBFUNC_EXIT
+}
+
+/*
+ * Windows addressed by (app slot, window id): the multi-app seam (JOB-0099).
+ *
+ * A host that serves several apps polls with ElectronPollAppRequest so it
+ * learns which app a `browser-window.*` request belongs to, binds each CEF
+ * browser it creates to that (slot, id) with ElectronBindWindowBrowser, and
+ * reports window-system facts with ElectronPostAppWindowEvent so the event
+ * reaches that app's poll and no other. The three older vectors
+ * (ElectronPollNativeRequest, ElectronSetActiveBrowser,
+ * ElectronPostWindowEvent) keep serving a single-window host unchanged.
+ */
+AROS_LH5(LONG, ElectronPollAppRequest,
+    AROS_LHA(STRPTR, method, A0),
+    AROS_LHA(ULONG, method_size, D0),
+    AROS_LHA(STRPTR, payload, A1),
+    AROS_LHA(ULONG, payload_size, D1),
+    AROS_LHA(LONG *, slot, A2),
+    LIBBASETYPEPTR, LIBBASE, 36, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return electron_poll_request(method, method_size, payload, payload_size,
+        slot);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH3(LONG, ElectronBindWindowBrowser,
+    AROS_LHA(LONG, slot, D0),
+    AROS_LHA(ULONG, id, D1),
+    AROS_LHA(APTR, browser, A0),
+    LIBBASETYPEPTR, LIBBASE, 37, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return electron_bind_window_browser(slot, id, (cef_browser_t *)browser);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH4(LONG, ElectronPostAppWindowEvent,
+    AROS_LHA(LONG, slot, D0),
+    AROS_LHA(ULONG, id, D1),
+    AROS_LHA(CONST_STRPTR, name, A0),
+    AROS_LHA(CONST_STRPTR, payload, A1),
+    LIBBASETYPEPTR, LIBBASE, 38, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return electron_post_app_window_event(slot, id, name, payload);
     AROS_LIBFUNC_EXIT
 }
