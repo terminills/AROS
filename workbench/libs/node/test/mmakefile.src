@@ -27,4 +27,15 @@ include $(SRCDIR)/config/aros.cfg
     files=npm_bootstrap.js \
     dst=$(AROS_S)
 
+#MM workbench-libs-node-git-remote-https : workbench-libs-node workbench-libs-node-git-remote-https-script
+%build_prog mmake=workbench-libs-node-git-remote-https \
+    progname=git-remote-https \
+    files=git_remote_https_cli \
+    targetdir=$(AROS_C) \
+    uselibs="node stdc"
+
+%copy_files_q mmake=workbench-libs-node-git-remote-https-script \
+    files=git_remote_https.js \
+    dst=$(AROS_S)
+
 %common
