@@ -54,6 +54,7 @@ struct ElectronResource
     LONG error;                         /* cef_errorcode_t, 0 = serve path */
     BPTR file;
     LONG length;
+    LONG slot;                          /* app whose browser asked */
 };
 
 static int electron_state_ready;
@@ -1054,7 +1055,7 @@ static int CEF_CALLBACK electron_resource_open(cef_resource_handler_t *self,
     AddTail((struct List *)&electron_pending_resources,
         (struct Node *)&resource->node);
     ReleaseSemaphore(&electron_resource_lock);
-    electron_post_event(text);
+    electron_post_event_for(text, resource->slot);
     return 1;
 }
 
@@ -1277,13 +1278,28 @@ static cef_resource_handler_t *CEF_CALLBACK electron_scheme_factory_create(
     cef_request_t *request)
 {
     struct ElectronResource *resource;
+    struct ElectronWindow *window;
 
     (void)self;
-    (void)browser;
     (void)frame;
     resource = AllocVec(sizeof(*resource), MEMF_CLEAR);
     if (resource == NULL)
         return NULL;
+    /*
+     * The request is answered by the protocol handler the REQUESTING app
+     * registered, so it must reach that app's runtime.  This runs on a CEF
+     * IO thread while the main pump may be servicing any app, so the pump's
+     * current slot is the wrong answer with two apps up: a vscode-file://
+     * script request that landed in GitHub Desktop's runtime found no
+     * handler there and failed the whole workbench load (user-29,
+     * 2026-09-16).  The browser that asked is bound to its window record
+     * (ElectronBindWindowBrowser, from on_after_created); the fallbacks are
+     * the ones renderer-context injection uses.
+     */
+    window = electron_find_window_by_browser(browser);
+    if (window == NULL)
+        window = electron_window_last;
+    resource->slot = window != NULL ? window->slot : electron_current_slot;
     resource->handler.base.size = sizeof(cef_resource_handler_t);
     resource->handler.base.add_ref = electron_resource_add_ref;
     resource->handler.base.release = electron_resource_release;
