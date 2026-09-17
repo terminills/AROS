@@ -23,12 +23,18 @@ CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
 CEF_HEADERS := $(CEF_SOURCE)/cef
 CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/includes
 
-#MM workbench-tools-electronshell : workbench-libs-electron
+#MM workbench-tools-electronshell : workbench-libs-electron workbench-tools-electronshell-tests
 %build_prog mmake=workbench-tools-electronshell \
     progname=ElectronShell \
     files=ElectronShell \
     cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
     targetdir=$(AROS_TOOLS) \
     uselibs="electron debug intuition dos stdc"
+
+# Probe apps for the multi-app shell (JOB-0099): tiny Electron main scripts
+# that exercise one lifecycle each, installed where RunBoth-style scripts
+# can reach them.
+%copy_files_q mmake=workbench-tools-electronshell-tests \
+    files="exit-after.js RunExitProbe two-windows.js" src=tests dst=$(AROS_DEVELOPER)/ElectronShell
 
 %common

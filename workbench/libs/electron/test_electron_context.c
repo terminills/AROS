@@ -12,6 +12,7 @@
  */
 
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -105,10 +106,17 @@ struct ExtraApp
     const char *path;
     LONG slot;
     int attached;
+    int exit_requested;         /* app.exit seen; windows closing */
+    LONG exit_code;
+    int finished;               /* runtime detached, slot released */
 };
 
 static struct ExtraApp extra_apps[MAX_EXTRA_APPS];
 static int extra_app_count;
+/* The primary app asked to exit; the process follows once no extra app is
+   left (JOB-0099: one app's exit must not end the others). */
+static int primary_exit_requested;
+static ULONG primary_exit_tick;
 static cef_app_t app;
 static cef_client_t client;
 static cef_display_handler_t display_handler;
@@ -983,6 +991,127 @@ static void shell_request_all_windows_close(void)
             shell_request_window_close(&shell_windows[i]);
 }
 
+/* One app's windows: the ones created under its runtime slot. */
+static int shell_slot_window_count(LONG slot)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+        if (shell_windows[i].in_use && shell_windows[i].slot == slot)
+            ++count;
+    return count;
+}
+
+static void shell_request_slot_windows_close(LONG slot)
+{
+    int i;
+
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+        if (shell_windows[i].in_use && shell_windows[i].slot == slot)
+            shell_request_window_close(&shell_windows[i]);
+}
+
+static struct ExtraApp *shell_find_extra_app(LONG slot)
+{
+    int i;
+
+    for (i = 0; i < extra_app_count; ++i)
+        if (extra_apps[i].attached && extra_apps[i].slot == slot)
+            return &extra_apps[i];
+    return NULL;
+}
+
+/* Extra apps still running a Node runtime. */
+static int shell_live_extra_app_count(void)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < extra_app_count; ++i)
+        if (extra_apps[i].attached && !extra_apps[i].finished)
+            ++count;
+    return count;
+}
+
+/*
+ * Ends one extra app: its windows are gone, so detach its Node runtime and
+ * give the slot back. The process goes on with whatever apps remain - a
+ * GitHub Desktop quit must not take VS Code with it (JOB-0099). Node events
+ * the seam still posts to the released slot ('closed' for a late
+ * on_before_close) go to a queue nothing drains, which is harmless.
+ */
+static void shell_finish_extra_app(struct ExtraApp *extra)
+{
+    if (extra->finished)
+        return;
+    extra->finished = 1;
+    if (ElectronSelectAppRuntime(extra->slot) == 0)
+    {
+        ElectronDetachNodeEmbedder();
+        ElectronSelectAppRuntime(0);
+    }
+    ElectronReleaseAppRuntime(extra->slot);
+    KPrintF("[ELECTRON-CONTEXT] app slot %ld exited code=%ld, %ld app(s) "
+        "still running\n", extra->slot, extra->exit_code,
+        (LONG)(shell_live_extra_app_count() +
+            (node_attached && !node_detached ? 1 : 0)));
+}
+
+/*
+ * The primary app is done: its windows are closed, its runtime comes down
+ * now rather than at process end, and the process itself ends when the last
+ * extra app has gone. Its exit code stays the process's.
+ */
+static void shell_finish_primary_app(void)
+{
+    if (node_attached && !node_detached)
+    {
+        ElectronSelectAppRuntime(0);
+        ElectronDetachNodeEmbedder();
+        node_detached = 1;
+    }
+    KPrintF("[ELECTRON-CONTEXT] primary app exited code=%ld, %ld extra "
+        "app(s) still running\n", requested_exit_code,
+        (LONG)shell_live_extra_app_count());
+    if (shell_live_extra_app_count() == 0)
+        exit_requested = 1;
+}
+
+/* Runs once per service pass: apps whose exit is pending finish as soon as
+   their last window has closed. */
+static void shell_finish_exited_apps(void)
+{
+    int i;
+
+    for (i = 0; i < extra_app_count; ++i)
+    {
+        struct ExtraApp *extra = &extra_apps[i];
+
+        if (extra->attached && extra->exit_requested && !extra->finished &&
+            shell_slot_window_count(extra->slot) == 0)
+            shell_finish_extra_app(extra);
+    }
+    if (primary_exit_requested && !exit_requested &&
+        shell_slot_window_count(0) == 0)
+    {
+        if (node_attached && !node_detached)
+            shell_finish_primary_app();
+        else if (shell_live_extra_app_count() == 0)
+            exit_requested = 1;
+    }
+    else if (primary_exit_requested && !exit_requested &&
+        pump_tick > primary_exit_tick + CLOSE_TIMEOUT_TICKS)
+    {
+        /* A window that never reports on_before_close must not keep the
+           process alive forever; the close loop below the pump drains it. */
+        KPrintF("[ELECTRON-CONTEXT] primary app.exit: %ld window(s) still "
+            "open after %ld ticks, exiting anyway\n",
+            (LONG)shell_slot_window_count(0), (LONG)CLOSE_TIMEOUT_TICKS);
+        exit_requested = 1;
+    }
+}
+
 /* Create the CEF browser for a window whose script asked for one. */
 static void shell_create_window(struct ShellWindow *window,
     cef_window_info_t *window_info, cef_browser_settings_t *browser_settings,
@@ -1132,18 +1261,31 @@ static void service_native_window_requests(cef_window_info_t *window_info,
             shell_request_window_close(window);
         else if (strcmp(method, "app.exit") == 0)
         {
-            /* Phase 1 of JOB-0099: app.exit from any app ends the process,
-               every app in it included; per-app exit is the next step. */
-            requested_exit_code = strtol(payload, NULL, 10);
-            exit_requested = 1;
+            /* app.exit ends the app that asked, not the process: its
+               windows close, then shell_finish_exited_apps() takes its
+               runtime down. The process ends with its last app; the exit
+               status is the primary app's (JOB-0099 phase 2). */
+            LONG code = strtol(payload, NULL, 10);
+            struct ExtraApp *extra = shell_find_extra_app(slot);
+
             KPrintF("[ELECTRON-CONTEXT] app.exit requested by slot %ld "
-                "code=%ld\n", slot, requested_exit_code);
-            if (shell_live_window_count() > 0)
-                shell_request_all_windows_close();
+                "code=%ld\n", slot, code);
+            if (extra != NULL)
+            {
+                extra->exit_requested = 1;
+                extra->exit_code = code;
+            }
             else
-                browser_closed = 1;
+            {
+                requested_exit_code = code;
+                primary_exit_requested = 1;
+                primary_exit_tick = pump_tick;
+            }
+            if (shell_slot_window_count(slot) > 0)
+                shell_request_slot_windows_close(slot);
         }
     }
+    shell_finish_exited_apps();
 
     {
         int i;
@@ -1823,13 +1965,14 @@ static size_t append_node_argv_entry(size_t length, const char *argument)
  * with no app path present it drops every argument instead.  So the main
  * script's directory goes in first, exactly where Electron puts it.
  */
-static int make_node_main_script(const char *path, int argc, char **argv)
+static int make_node_main_script(const char *path, LONG slot, int argc,
+    char **argv)
 {
     static const char prefix[] =
         "process.argv=['AROS-Electron','--no-sandbox',"
         "'--disable-gpu','--disable-gpu-compositing'";
+    static const char argv_end[] = "];";
     static const char middle[] =
-        "];"
         "process.env.VSCODE_DEV='1';"
         "process._rawDebug('[ELECTRON-MODULE] loading main entry "
         MAIN_SCRIPT_OPTION "');"
@@ -1850,9 +1993,11 @@ static int make_node_main_script(const char *path, int argc, char **argv)
         "console.error('[ELECTRON-MODULE] main threw: '+"
         "((e&&e.stack)||e));throw e;}";
     const size_t prefix_length = sizeof(prefix) - 1;
+    const size_t argv_end_length = sizeof(argv_end) - 1;
     const size_t middle_length = sizeof(middle) - 1;
     const size_t suffix_length = sizeof(suffix) - 1;
     const size_t path_length = strlen(path);
+    char slot_env[sizeof("process.env.ELECTRON_APP_SLOT='';") + 20];
     size_t length = prefix_length;
     int arg_index;
 
@@ -1898,10 +2043,17 @@ static int make_node_main_script(const char *path, int argc, char **argv)
         KPrintF("[ELECTRON-CONTEXT] forwarding process.argv entry '%s'\n",
             argv[arg_index]);
     }
-    if (length + middle_length + path_length + suffix_length + 1 >
-        sizeof(command_node_script))
+    if (length + argv_end_length + sizeof(slot_env) + middle_length +
+        path_length + suffix_length + 1 > sizeof(command_node_script))
         return 0;
 
+    memcpy(command_node_script + length, argv_end, argv_end_length);
+    length += argv_end_length;
+    /* Which runtime slot the app runs in (0 = the primary app), so a script
+       serving as more than one app in a process can tell its instances
+       apart (JOB-0099). */
+    length += snprintf(command_node_script + length, sizeof(slot_env),
+        "process.env.ELECTRON_APP_SLOT='%ld';", (long)slot);
     memcpy(command_node_script + length, middle, middle_length);
     length += middle_length;
     memcpy(command_node_script + length, path, path_length);
@@ -1959,7 +2111,7 @@ int main(int argc, char **argv)
         {
             const char *main_script_path =
                 argv[arg_index] + main_script_option_length;
-            if (!make_node_main_script(main_script_path, argc, argv))
+            if (!make_node_main_script(main_script_path, 0, argc, argv))
             {
                 KPrintF("[ELECTRON-CONTEXT] invalid main script path '%s'\n",
                     main_script_path);
@@ -2210,7 +2362,7 @@ int main(int argc, char **argv)
                 (LONG)extra_index, extra->slot);
             continue;
         }
-        if (!make_node_main_script(extra->path, argc, argv))
+        if (!make_node_main_script(extra->path, extra->slot, argc, argv))
         {
             KPrintF("[ELECTRON-CONTEXT] extra app %ld: bad script '%s'\n",
                 (LONG)extra_index, extra->path);
@@ -2253,7 +2405,7 @@ int main(int argc, char **argv)
         {
             struct ExtraApp *extra = &extra_apps[extra_index];
 
-            if (!extra->attached)
+            if (!extra->attached || extra->finished)
                 continue;
             if (ElectronSelectAppRuntime(extra->slot) == 0)
             {
@@ -2308,6 +2460,14 @@ int main(int argc, char **argv)
     {
         ElectronDetachNodeEmbedder();
         node_detached = 1;
+    }
+    /* Extra apps still running when the process ends (primary app.exit
+       timed out, or a shutdown request) go down the same way as one that
+       exited on its own. */
+    for (extra_index = 0; extra_index < extra_app_count; ++extra_index)
+    {
+        if (extra_apps[extra_index].attached && !extra_apps[extra_index].finished)
+            shell_finish_extra_app(&extra_apps[extra_index]);
     }
 #endif
     if (app_mode)
