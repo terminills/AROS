@@ -48,6 +48,8 @@
 
 /* aros.c: is the calling task the one holding this loop's exec resources? */
 int uv__aros_loop_owned_by_caller(uv_loop_t* loop);
+/* aros-net.c: drop the calling task's socket state. */
+void uv__aros_net_task_release(void);
 
 /* genmodule's per-task base lookup for this module (own slot, then the
    creator's slot).  Emitted hidden into uv1_start.c; the same module may
@@ -123,6 +125,9 @@ static void uv_aros_reclaim_default_loop(struct UV1IntBase *base)
 static int uv_aros_close_last(struct Library *lh)
 {
     uv_aros_reclaim_default_loop((struct UV1IntBase *)lh);
+    /* The closing task's bsdsocket base and socket registry (aros-net.c
+       keeps them per task); exec calls only, like everything here. */
+    uv__aros_net_task_release();
     uv_aros_closer_id = GetETaskID(FindTask(NULL));
     return 1;
 }

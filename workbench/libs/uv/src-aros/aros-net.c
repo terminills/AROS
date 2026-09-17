@@ -8,8 +8,9 @@
     libuv uses the generic ops, so we:
       - provide socket()/connect()/bind()/... as real functions calling the
         bsdsocket LVOs (via the __*_WB explicit-base macros) on a lazily-opened
-        global SocketBase;
-      - keep a REGISTRY of which fds are sockets (set on socket()/accept());
+        SocketBase owned by the CALLING TASK;
+      - keep a per-task REGISTRY of which fds are sockets (set on
+        socket()/accept());
       - route close/read/write for registered fds to CloseSocket/recv/send via a
         linker --wrap layer, falling through to posixc for file fds.  posixc
         mangles its entry points (close -> __posixc_close, see
@@ -21,8 +22,20 @@
     from zero. Keep sockets in the upper half of WaitSelect's descriptor range
     so ordinary low-numbered files cannot alias them in the routing registry.
     Full descriptor-space unification remains a longer-term POSIX substrate job.
-    SocketBase is also per-task: opened on the loop task; threadpool DNS would
-    need its own (deferred).
+
+    A bsdsocket base belongs to the task that opened it: every AROSTCP entry
+    runs CHECK_TASK() and returns -1 -- errno untouched -- when any other task
+    calls through it.  One global SocketBase for the whole library image
+    therefore only ever works for the first task that touches the network.
+    With several Node runtimes in one ElectronShell (JOB-0099) the base was
+    opened by GitHub Desktop's renderer runtime (Chrome_InProcRendererThread)
+    and VS Code's single-instance bind() on CrBrowserMain came back with a
+    stale ENOENT ("listen ENOENT ... 1.92-main.sock", hosted user-27,
+    2026-09-16).  So the base, the errno wiring and the socket/AF_UNIX
+    registries (bsdsocket numbers descriptors per base) are kept per task,
+    keyed by exec's unique task id, looked up on every call.  A loop only
+    ever touches its sockets from the task that polls it, so this is the
+    natural ownership; threadpool DNS never reaches these shims.
 */
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -56,6 +69,8 @@
 #undef getsockname
 #undef getpeername
 #undef shutdown
+#undef sendmsg
+#undef recvmsg
 #undef IoctlSocket
 #undef CloseSocket
 #undef WaitSelect
@@ -73,29 +88,104 @@
 #include <stdlib.h>              /* atol (AF_UNIX registry port parse) */
 #include <strings.h>             /* bzero, used by FD_ZERO */
 
-struct Library *SocketBase = NULL;          /* consumed by aros.c backend too */
-static struct SignalSemaphore net_sem;
-static int net_sem_ready = 0;
-static int errno_wired = 0;
-static unsigned int net_loop_users = 0;
-
 /* socket-fd registry: one flag per fd (bsdsocket default dtable is small). */
 #define UV_AROS_MAXSOCK 256
-static unsigned char is_sock[UV_AROS_MAXSOCK];
+
+/*
+ * Per-task socket state (see the file comment).  is_dos_pipe stays one table:
+ * DOS pipe descriptors are posixc numbers, which every pthread of a process
+ * shares, and a pipe is registered and used by the loop task alone.
+ */
+struct uv__aros_net_task {
+    struct uv__aros_net_task *next;
+    ULONG           task_id;        /* GetETaskID: task pointers are recycled */
+    struct Library *socket_base;    /* opened lazily, on first socket call */
+    int             errno_wired;    /* SBTC_ERRNOPTR -> this task's errno */
+    unsigned int    loop_users;     /* loops created on this task */
+    unsigned char   is_sock[UV_AROS_MAXSOCK];
+    /* JOB-0033: AF_UNIX named-pipe emulation. bsdsocket has no AF_UNIX, so a
+       path-based socket (e.g. VS Code's single-instance .sock) is backed by a
+       127.0.0.1 loopback TCP socket -- exactly like the anonymous socketpair()
+       emulation below. is_unix[fd] marks fds created as socket(AF_UNIX,...) so
+       bind()/connect() route the sockaddr_un path through the loopback + a
+       path->port registry file, instead of handing AF_UNIX to bsdsocket. The
+       registry file at the path holds the ephemeral loopback port; the file's
+       existence + content IS the AF_UNIX name (stale file -> connect refuses ->
+       the caller re-binds, matching AF_UNIX stale-socket semantics). */
+    unsigned char   is_unix[UV_AROS_MAXSOCK];
+};
+
+static struct uv__aros_net_task *net_tasks = NULL;
+static struct SignalSemaphore net_sem;
+static int net_sem_ready = 0;
 static unsigned char is_dos_pipe[UV_AROS_MAXSOCK];
-/* JOB-0033: AF_UNIX named-pipe emulation. bsdsocket has no AF_UNIX, so a
-   path-based socket (e.g. VS Code's single-instance .sock) is backed by a
-   127.0.0.1 loopback TCP socket -- exactly like the anonymous socketpair()
-   emulation below. is_unix[fd] marks fds created as socket(AF_UNIX,...) so
-   bind()/connect() route the sockaddr_un path through the loopback + a
-   path->port registry file, instead of handing AF_UNIX to bsdsocket. The
-   registry file at the path holds the ephemeral loopback port; the file's
-   existence + content IS the AF_UNIX name (stale file -> connect refuses ->
-   the caller re-binds, matching AF_UNIX stale-socket semantics). */
-static unsigned char is_unix[UV_AROS_MAXSOCK];
-static void ux_set(int fd) { if (fd >= 0 && fd < UV_AROS_MAXSOCK) is_unix[fd] = 1; }
-static void ux_clr(int fd) { if (fd >= 0 && fd < UV_AROS_MAXSOCK) is_unix[fd] = 0; }
-static int  ux_is (int fd) { return (fd >= 0 && fd < UV_AROS_MAXSOCK) ? is_unix[fd] : 0; }
+
+static void uv__aros_net_sem_init(void);
+
+/* The calling task's context; created on demand when create is set. */
+static struct uv__aros_net_task *net_ctx(int create)
+{
+    ULONG id = GetETaskID(FindTask(NULL));
+    struct uv__aros_net_task *ctx;
+
+    uv__aros_net_sem_init();
+    ObtainSemaphore(&net_sem);
+    for (ctx = net_tasks; ctx != NULL; ctx = ctx->next)
+        if (ctx->task_id == id)
+            break;
+    if (ctx == NULL && create) {
+        ctx = AllocMem(sizeof(*ctx), MEMF_ANY | MEMF_CLEAR);
+        if (ctx != NULL) {
+            ctx->task_id = id;
+            ctx->next = net_tasks;
+            net_tasks = ctx;
+        }
+    }
+    ReleaseSemaphore(&net_sem);
+    return ctx;
+}
+
+/* Unlink and free the calling task's context.  Exec only: this also runs
+   from the last per-task close of uv1.library (aros-taskbase.c). */
+static void net_ctx_release(void)
+{
+    ULONG id = GetETaskID(FindTask(NULL));
+    struct uv__aros_net_task **link;
+    struct uv__aros_net_task *ctx = NULL;
+
+    uv__aros_net_sem_init();
+    ObtainSemaphore(&net_sem);
+    for (link = &net_tasks; *link != NULL; link = &(*link)->next) {
+        if ((*link)->task_id == id) {
+            ctx = *link;
+            *link = ctx->next;
+            break;
+        }
+    }
+    ReleaseSemaphore(&net_sem);
+
+    if (ctx != NULL) {
+        if (ctx->socket_base != NULL)
+            CloseLibrary(ctx->socket_base);
+        FreeMem(ctx, sizeof(*ctx));
+    }
+}
+
+static void ux_set(int fd)
+{
+    struct uv__aros_net_task *ctx = net_ctx(0);
+    if (ctx != NULL && fd >= 0 && fd < UV_AROS_MAXSOCK) ctx->is_unix[fd] = 1;
+}
+static void ux_clr(int fd)
+{
+    struct uv__aros_net_task *ctx = net_ctx(0);
+    if (ctx != NULL && fd >= 0 && fd < UV_AROS_MAXSOCK) ctx->is_unix[fd] = 0;
+}
+static int ux_is(int fd)
+{
+    struct uv__aros_net_task *ctx = net_ctx(0);
+    return (ctx != NULL && fd >= 0 && fd < UV_AROS_MAXSOCK) ? ctx->is_unix[fd] : 0;
+}
 #ifndef AF_UNIX
 #define AF_UNIX 1
 #endif
@@ -137,9 +227,21 @@ static int ux_read_port(const char *path, unsigned short *port)
     return 0;
 }
 
-static void reg_add(int fd) { if (fd >= 0 && fd < UV_AROS_MAXSOCK) is_sock[fd] = 1; }
-static void reg_del(int fd) { if (fd >= 0 && fd < UV_AROS_MAXSOCK) is_sock[fd] = 0; }
-int uv__aros_is_socket(int fd) { return (fd >= 0 && fd < UV_AROS_MAXSOCK) ? is_sock[fd] : 0; }
+static void reg_add(int fd)
+{
+    struct uv__aros_net_task *ctx = net_ctx(0);
+    if (ctx != NULL && fd >= 0 && fd < UV_AROS_MAXSOCK) ctx->is_sock[fd] = 1;
+}
+static void reg_del(int fd)
+{
+    struct uv__aros_net_task *ctx = net_ctx(0);
+    if (ctx != NULL && fd >= 0 && fd < UV_AROS_MAXSOCK) ctx->is_sock[fd] = 0;
+}
+int uv__aros_is_socket(int fd)
+{
+    struct uv__aros_net_task *ctx = net_ctx(0);
+    return (ctx != NULL && fd >= 0 && fd < UV_AROS_MAXSOCK) ? ctx->is_sock[fd] : 0;
+}
 void uv__aros_register_dos_pipe(int fd) {
     if (fd >= 0 && fd < UV_AROS_MAXSOCK)
         is_dos_pipe[fd] = 1;
@@ -167,24 +269,30 @@ static void uv__aros_net_sem_init(void)
 
 void uv__aros_net_loop_init(void)
 {
-    uv__aros_net_sem_init();
-    ObtainSemaphore(&net_sem);
-    net_loop_users++;
-    ReleaseSemaphore(&net_sem);
+    struct uv__aros_net_task *ctx = net_ctx(1);
+
+    if (ctx != NULL)
+        ctx->loop_users++;
 }
 
+/* The last loop of this task goes: drop its bsdsocket base with it.  A task
+   that only ever ran socket calls without a loop of its own keeps its
+   context until its last uv1.library close (uv__aros_net_task_release). */
 void uv__aros_net_loop_delete(void)
 {
-    uv__aros_net_sem_init();
-    ObtainSemaphore(&net_sem);
-    if (net_loop_users > 0)
-        net_loop_users--;
-    if (net_loop_users == 0 && SocketBase != NULL) {
-        CloseLibrary(SocketBase);
-        SocketBase = NULL;
-        errno_wired = 0;
-    }
-    ReleaseSemaphore(&net_sem);
+    struct uv__aros_net_task *ctx = net_ctx(0);
+
+    if (ctx == NULL)
+        return;
+    if (ctx->loop_users > 0)
+        ctx->loop_users--;
+    if (ctx->loop_users == 0)
+        net_ctx_release();
+}
+
+void uv__aros_net_task_release(void)
+{
+    net_ctx_release();
 }
 
 int uv__aros_dos_pipe_ready(int fd)
@@ -198,7 +306,7 @@ int uv__aros_dos_pipe_ready(int fd)
     return WaitForChar((BPTR)fh, 0) != 0;
 }
 
-static int promote_socket(int fd)
+static int promote_socket(struct Library *sb, int fd)
 {
     int target;
     int saved;
@@ -208,9 +316,9 @@ static int promote_socket(int fd)
 
         if (target == fd || uv__aros_is_socket(target))
             continue;
-        promoted = __Dup2Socket_WB(SocketBase, fd, target);
+        promoted = __Dup2Socket_WB(sb, fd, target);
         if (promoted >= 0) {
-            __CloseSocket_WB(SocketBase, fd);
+            __CloseSocket_WB(sb, fd);
             reg_add(promoted);
             return promoted;
         }
@@ -222,29 +330,28 @@ static int promote_socket(int fd)
     return fd;
 }
 
-/* Open bsdsocket once, on first use, and wire bsdsocket's errno to C errno. */
+/* The calling task's bsdsocket base: opened on first use, with bsdsocket's
+   errno wired to this task's C errno (stdc keeps one errno cell per task). */
 struct Library *uv__aros_socketbase(void)
 {
-    if (SocketBase != NULL)
-        return SocketBase;
+    struct uv__aros_net_task *ctx = net_ctx(1);
 
-    uv__aros_net_sem_init();
-    ObtainSemaphore(&net_sem);
-    if (SocketBase == NULL)
-        SocketBase = OpenLibrary((CONST_STRPTR)"bsdsocket.library", 4);
-    if (SocketBase != NULL && !errno_wired) {
+    if (ctx == NULL)
+        return NULL;
+    if (ctx->socket_base == NULL)
+        ctx->socket_base = OpenLibrary((CONST_STRPTR)"bsdsocket.library", 4);
+    if (ctx->socket_base != NULL && !ctx->errno_wired) {
         struct TagItem tags[] = {
             { SBTM_SETVAL(SBTC_ERRNOPTR(sizeof(errno))), (IPTR)&errno },
             { TAG_END, 0 }
         };
-        __SocketBaseTagList_WB(SocketBase, tags);
-        errno_wired = 1;
+        __SocketBaseTagList_WB(ctx->socket_base, tags);
+        ctx->errno_wired = 1;
     }
-    ReleaseSemaphore(&net_sem);
-    return SocketBase;
+    return ctx->socket_base;
 }
 
-#define BASE (SocketBase ? SocketBase : uv__aros_socketbase())
+#define BASE (uv__aros_socketbase())
 
 /* A shim must never return -1 with errno untouched: the caller (libuv's
    UV__ERR(errno)) would report whatever the previous call left behind. */
@@ -252,6 +359,7 @@ static int no_base(void) { errno = ENOSYS; return -1; }
 
 int socket(int domain, int type, int protocol)
 {
+    struct Library *sb = BASE;
     int fd;
     int posix_flags = 0;
     /* JOB-0033: AF_UNIX has no bsdsocket domain -- emulate over 127.0.0.1 TCP.
@@ -267,8 +375,8 @@ int socket(int domain, int type, int protocol)
     posix_flags |= type & SOCK_CLOEXEC;
 #endif
 
-    if (BASE == NULL) { errno = ENOSYS; return -1; }
-    fd = __socket_WB(SocketBase, domain, type, protocol);
+    if (sb == NULL) { errno = ENOSYS; return -1; }
+    fd = __socket_WB(sb, domain, type, protocol);
     /*
      * libuv probes atomic SOCK_NONBLOCK|SOCK_CLOEXEC creation first and
      * retries the plain socket plus fcntl when the platform reports EINVAL.
@@ -279,7 +387,7 @@ int socket(int domain, int type, int protocol)
     if (fd < 0 && posix_flags != 0 && errno == EPROTONOSUPPORT)
         errno = EINVAL;
     if (fd >= 0) {
-        fd = promote_socket(fd);
+        fd = promote_socket(sb, fd);
         if (fd >= 0 && unix_dom)
             ux_set(fd);
     }
@@ -288,16 +396,18 @@ int socket(int domain, int type, int protocol)
 
 int accept(int s, struct sockaddr *addr, socklen_t *addrlen)
 {
+    struct Library *sb = BASE;
     int fd;
-    if (BASE == NULL) { errno = ENOSYS; return -1; }
-    fd = __accept_WB(SocketBase, s, addr, addrlen);
+    if (sb == NULL) { errno = ENOSYS; return -1; }
+    fd = __accept_WB(sb, s, addr, addrlen);
     if (fd >= 0)
-        fd = promote_socket(fd);
+        fd = promote_socket(sb, fd);
     return fd;
 }
 
 int connect(int s, const struct sockaddr *name, socklen_t namelen)
 {
+    struct Library *sb = BASE;
     /* JOB-0033: AF_UNIX path -> read the loopback port from the registry file
        and connect to 127.0.0.1:<port>. A missing/stale file (owner gone) makes
        connect refuse, which is exactly the AF_UNIX stale-socket contract that
@@ -306,19 +416,20 @@ int connect(int s, const struct sockaddr *name, socklen_t namelen)
         const struct sockaddr_un *un = (const struct sockaddr_un *)name;
         struct sockaddr_in a;
         unsigned short port;
-        if (!BASE) { errno = ENOSYS; return -1; }
+        if (sb == NULL) { errno = ENOSYS; return -1; }
         if (ux_read_port(un->sun_path, &port) < 0) { errno = ENOENT; return -1; }
         bzero(&a, sizeof(a));
         a.sin_family      = AF_INET;
         a.sin_addr.s_addr = 0x0100007fUL;   /* 127.0.0.1 */
         a.sin_port        = htons(port);
-        return __connect_WB(SocketBase, s, (struct sockaddr *)&a, sizeof(a));
+        return __connect_WB(sb, s, (struct sockaddr *)&a, sizeof(a));
     }
-    return BASE ? __connect_WB(SocketBase, s, (struct sockaddr *)name, namelen) : no_base();
+    return sb ? __connect_WB(sb, s, (struct sockaddr *)name, namelen) : no_base();
 }
 
 int bind(int s, const struct sockaddr *name, socklen_t namelen)
 {
+    struct Library *sb = BASE;
     /* JOB-0033: AF_UNIX path -> bind a 127.0.0.1 ephemeral-port listener and
        publish the port in a registry file at the path. listen()/accept() then
        run unmodified on the AF_INET fd (real accept, multi-client). */
@@ -326,58 +437,66 @@ int bind(int s, const struct sockaddr *name, socklen_t namelen)
         const struct sockaddr_un *un = (const struct sockaddr_un *)name;
         struct sockaddr_in a;
         socklen_t alen = sizeof(a);
-        if (!BASE) { errno = ENOSYS; return -1; }
+        if (sb == NULL) { errno = ENOSYS; return -1; }
         bzero(&a, sizeof(a));
         a.sin_family      = AF_INET;
         a.sin_addr.s_addr = 0x0100007fUL;   /* 127.0.0.1 */
         a.sin_port        = 0;              /* ephemeral */
-        if (__bind_WB(SocketBase, s, (struct sockaddr *)&a, sizeof(a)) < 0)
+        if (__bind_WB(sb, s, (struct sockaddr *)&a, sizeof(a)) < 0)
             return -1;
-        if (__getsockname_WB(SocketBase, s, (struct sockaddr *)&a, &alen) < 0)
+        if (__getsockname_WB(sb, s, (struct sockaddr *)&a, &alen) < 0)
             return -1;
         if (ux_write_port(un->sun_path, ntohs(a.sin_port)) < 0)
             return -1;
         return 0;
     }
-    return BASE ? __bind_WB(SocketBase, s, (struct sockaddr *)name, namelen) : no_base();
+    return sb ? __bind_WB(sb, s, (struct sockaddr *)name, namelen) : no_base();
 }
 
 int listen(int s, int backlog)
-{ return BASE ? __listen_WB(SocketBase, s, backlog) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __listen_WB(sb, s, backlog) : no_base(); }
 
 ssize_t send(int s, const void *buf, size_t len, int flags)
-{ return BASE ? __send_WB(SocketBase, s, (void *)buf, len, flags) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __send_WB(sb, s, (void *)buf, len, flags) : no_base(); }
 
 ssize_t recv(int s, void *buf, size_t len, int flags)
-{ return BASE ? __recv_WB(SocketBase, s, buf, len, flags) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __recv_WB(sb, s, buf, len, flags) : no_base(); }
 
 ssize_t sendto(int s, const void *buf, size_t len, int flags,
                const struct sockaddr *to, socklen_t tolen)
-{ return BASE ? __sendto_WB(SocketBase, s, (void *)buf, len, flags,
-                            (struct sockaddr *)to, tolen) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __sendto_WB(sb, s, (void *)buf, len, flags,
+                                                 (struct sockaddr *)to, tolen) : no_base(); }
 
 ssize_t recvfrom(int s, void *buf, size_t len, int flags,
                  struct sockaddr *from, socklen_t *fromlen)
-{ return BASE ? __recvfrom_WB(SocketBase, s, buf, len, flags, from, fromlen) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __recvfrom_WB(sb, s, buf, len, flags, from, fromlen) : no_base(); }
 
 int setsockopt(int s, int level, int optname, const void *optval, socklen_t optlen)
-{ return BASE ? __setsockopt_WB(SocketBase, s, level, optname, (void *)optval, optlen) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __setsockopt_WB(sb, s, level, optname, (void *)optval, optlen) : no_base(); }
 
 int getsockopt(int s, int level, int optname, void *optval, socklen_t *optlen)
-{ return BASE ? __getsockopt_WB(SocketBase, s, level, optname, optval, optlen) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __getsockopt_WB(sb, s, level, optname, optval, optlen) : no_base(); }
 
 int getsockname(int s, struct sockaddr *name, socklen_t *namelen)
-{ return BASE ? __getsockname_WB(SocketBase, s, name, namelen) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __getsockname_WB(sb, s, name, namelen) : no_base(); }
 
 int getpeername(int s, struct sockaddr *name, socklen_t *namelen)
-{ return BASE ? __getpeername_WB(SocketBase, s, name, namelen) : no_base(); }
+{ struct Library *sb = BASE; return sb ? __getpeername_WB(sb, s, name, namelen) : no_base(); }
+
+/* uv__try_write (fd passing) and udp reach these; through the bsdsocket
+   macros they would name a process-global SocketBase that no longer exists. */
+ssize_t sendmsg(int s, const struct msghdr *msg, int flags)
+{ struct Library *sb = BASE; return sb ? __sendmsg_WB(sb, s, (struct msghdr *)msg, flags) : no_base(); }
+
+ssize_t recvmsg(int s, struct msghdr *msg, int flags)
+{ struct Library *sb = BASE; return sb ? __recvmsg_WB(sb, s, msg, flags) : no_base(); }
 
 /*
  * shutdown(): libuv half-closes a stream's write side with shutdown(SHUT_WR)
  * (uv__drain, after uv_shutdown()); node's spawnSync does exactly that on the
  * child's stdin pipe once the input is written.  Without this function the
  * call was the bsdsocket LVO macro (uv/aros.h left `shutdown` defined) on
- * uv1's global SocketBase, which is NULL until the first socket is created:
+ * uv1's SocketBase, which is NULL until the first socket is created:
  * every spawnSync in a process that had not touched the network jumped
  * through -0x70 (JOB-0033 run 24 control probe, C:Node page fault in
  * uv__drain).  Sockets go to bsdsocket.  A DOS descriptor cannot be
@@ -391,8 +510,10 @@ int shutdown(int s, int how)
     int nullfd;
     int mode;
 
-    if (uv__aros_is_socket(s))
-        return BASE ? __shutdown_WB(SocketBase, s, how) : no_base();
+    if (uv__aros_is_socket(s)) {
+        struct Library *sb = BASE;
+        return sb ? __shutdown_WB(sb, s, how) : no_base();
+    }
 
     if (how == SHUT_RD)
         mode = O_RDONLY;
@@ -454,16 +575,16 @@ int socketpair(int domain, int type, int protocol, int sv[2])
     if (acc < 0) goto fail;
 
     reg_del(lst);
-    __CloseSocket_WB(SocketBase, lst);
+    __CloseSocket_WB(BASE, lst);
     sv[0] = cli;
     sv[1] = acc;
     return 0;
 
 fail:
     saved = errno;
-    if (acc >= 0) { reg_del(acc); __CloseSocket_WB(SocketBase, acc); }
-    if (cli >= 0) { reg_del(cli); __CloseSocket_WB(SocketBase, cli); }
-    if (lst >= 0) { reg_del(lst); __CloseSocket_WB(SocketBase, lst); }
+    if (acc >= 0) { reg_del(acc); __CloseSocket_WB(BASE, acc); }
+    if (cli >= 0) { reg_del(cli); __CloseSocket_WB(BASE, cli); }
+    if (lst >= 0) { reg_del(lst); __CloseSocket_WB(BASE, lst); }
     errno = saved;
     return -1;
 }
@@ -487,7 +608,8 @@ extern ssize_t UV_REAL(write)(int fd, const void *buf, size_t n);
 int UV_WRAP(close)(int fd)
 {
     if (uv__aros_is_socket(fd)) {
-        int r = SocketBase ? __CloseSocket_WB(SocketBase, fd) : no_base();
+        struct Library *sb = BASE;
+        int r = sb ? __CloseSocket_WB(sb, fd) : no_base();
         reg_del(fd);
         ux_clr(fd);   /* JOB-0033: clear AF_UNIX tag (libuv unlinks the .sock path) */
         return r;
@@ -498,8 +620,10 @@ int UV_WRAP(close)(int fd)
 
 ssize_t UV_WRAP(read)(int fd, void *buf, size_t n)
 {
-    if (uv__aros_is_socket(fd))
-        return SocketBase ? __recv_WB(SocketBase, fd, buf, n, 0) : no_base();
+    if (uv__aros_is_socket(fd)) {
+        struct Library *sb = BASE;
+        return sb ? __recv_WB(sb, fd, buf, n, 0) : no_base();
+    }
     /*
      * DOS PIPE: reads are blocking.  The event backend dispatches them only
      * after ACTION_WAIT_CHAR says data or EOF is ready, but uv__read() may
@@ -515,8 +639,10 @@ ssize_t UV_WRAP(read)(int fd, void *buf, size_t n)
 
 ssize_t UV_WRAP(write)(int fd, const void *buf, size_t n)
 {
-    if (uv__aros_is_socket(fd))
-        return SocketBase ? __send_WB(SocketBase, fd, (void *)buf, n, 0) : no_base();
+    if (uv__aros_is_socket(fd)) {
+        struct Library *sb = BASE;
+        return sb ? __send_WB(sb, fd, (void *)buf, n, 0) : no_base();
+    }
     return UV_REAL(write)(fd, buf, n);
 }
 
@@ -542,8 +668,9 @@ int __wrap_fcntl(int fd, int cmd, ...)
             return 0;                       /* report "no flags set" */
         if (cmd == F_SETFL) {
             int nb = (arg & O_NONBLOCK) ? 1 : 0;
-            if (SocketBase)
-                __IoctlSocket_WB(SocketBase, fd, FIONBIO, (char *)&nb);
+            struct Library *sb = BASE;
+            if (sb)
+                __IoctlSocket_WB(sb, fd, FIONBIO, (char *)&nb);
             return 0;                       /* keep uv_poll_init happy regardless */
         }
         return 0;                           /* other cmds: no-op success */
@@ -561,6 +688,7 @@ int __wrap_fcntl(int fd, int cmd, ...)
 int uv__aros_waitselect(const int *fds, const int *wanted, int *revents,
                         int nfds, int timeout_ms, int asyncsig, int *async_fired)
 {
+    struct Library *sb = BASE;
     fd_set rd, wr;
     struct timeval tv;
     struct timeval *tvp;
@@ -568,7 +696,7 @@ int uv__aros_waitselect(const int *fds, const int *wanted, int *revents,
     int i, maxfd, n;
 
     *async_fired = 0;
-    if (BASE == NULL)
+    if (sb == NULL)
         return -1;
 
     FD_ZERO(&rd);
@@ -594,7 +722,7 @@ int uv__aros_waitselect(const int *fds, const int *wanted, int *revents,
         tvp = NULL;
     }
 
-    n = __WaitSelect_WB(SocketBase, maxfd + 1, &rd, &wr,
+    n = __WaitSelect_WB(sb, maxfd + 1, &rd, &wr,
                         (fd_set *)0, tvp, &sigmask);
 
     /*

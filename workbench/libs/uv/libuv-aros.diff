@@ -1,7 +1,7 @@
 diff -ruN libuv-v1.48.0.orig/include/uv/aros.h libuv-v1.48.0/include/uv/aros.h
 --- libuv-v1.48.0.orig/include/uv/aros.h	1969-12-31 18:00:00.000000000 -0600
 +++ libuv-v1.48.0/include/uv/aros.h	2026-09-15 07:11:13.941157378 -0500
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,53 @@
 +/* AROS custom event-loop backend platform loop fields.
 + *
 + * Core-first (no socket layer yet): the loop times out via timer.device and
@@ -43,6 +43,9 @@ diff -ruN libuv-v1.48.0.orig/include/uv/aros.h libuv-v1.48.0/include/uv/aros.h
 +#undef getpeername
 +#undef shutdown   /* left defined it turned uv__drain's shutdown(SHUT_WR) into a
 +                     bsdsocket LVO call on a NULL SocketBase (JOB-0033) */
++#undef sendmsg    /* uv__try_write / udp: through the macro they reached a
++                     process-global SocketBase; uv1 keeps one per task (JOB-0099) */
++#undef recvmsg
 +
 +#define UV_PLATFORM_LOOP_FIELDS \
 +  void* aros_timerport; \
