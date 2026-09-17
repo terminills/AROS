@@ -1,0 +1,7 @@
+include $(SRCDIR)/config/aros.cfg
+
+#MM test-layerspy : includes linklibs
+
+%build_prog mmake=test-layerspy \
+    progname=layerspy files=layerspy \
+    targetdir=$(AROS_TESTS)

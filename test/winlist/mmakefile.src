@@ -1,0 +1,7 @@
+include $(SRCDIR)/config/aros.cfg
+
+#MM test-winlist : includes linklibs
+
+%build_prog mmake=test-winlist \
+    progname=winlist files=winlist \
+    targetdir=$(AROS_TESTS)
