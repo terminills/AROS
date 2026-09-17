@@ -502,13 +502,110 @@ struct shell_window_geometry
     char title[256];
 };
 
-static struct shell_window_geometry window_geometry;
+/*
+ * One record per BrowserWindow, of any app in this process (JOB-0099).  A
+ * window is addressed the way the engine addresses it, by (app runtime slot,
+ * BrowserWindow id) - ids restart at 1 in every app.  The record collects
+ * what the script asked for before the browser exists (URL, geometry), then
+ * the browser CEF created for it; CEF's callbacks find it again through the
+ * browser identifier, which the browser and renderer sides agree on.
+ */
+#define MAX_SHELL_WINDOWS 16
 
-static struct Window *shell_native_window(void)
+struct ShellWindow
 {
-    cef_browser_host_t *host = get_browser_host();
+    int in_use;
+    LONG slot;
+    ULONG id;
+    cef_browser_t *browser;
+    int browser_identifier;
+    /* Created, waiting for on_after_created; the oldest such record is the
+       one the next created browser belongs to. */
+    int creating;
+    ULONG create_order;
+    int create_requested;       /* create once this service pass drained */
+    int close_requested;
+    int url_dirty;              /* a load-url arrived after creation */
+    cef_char_t url[2048];
+    size_t url_length;
+    struct shell_window_geometry geometry;
+};
+
+static struct ShellWindow shell_windows[MAX_SHELL_WINDOWS];
+static ULONG shell_create_counter;
+static struct ShellWindow *shell_find_window(LONG slot, ULONG id)
+{
+    int i;
+
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+        if (shell_windows[i].in_use && shell_windows[i].slot == slot &&
+            shell_windows[i].id == id)
+            return &shell_windows[i];
+    return NULL;
+}
+
+static struct ShellWindow *shell_find_window_by_browser(
+    cef_browser_t *cef_browser)
+{
+    int identifier;
+    int i;
+
+    if (cef_browser == NULL || cef_browser->get_identifier == NULL)
+        return NULL;
+    identifier = cef_browser->get_identifier(cef_browser);
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+        if (shell_windows[i].in_use && shell_windows[i].browser != NULL &&
+            shell_windows[i].browser_identifier == identifier)
+            return &shell_windows[i];
+    return NULL;
+}
+
+static struct ShellWindow *shell_find_or_create_window(LONG slot, ULONG id)
+{
+    struct ShellWindow *window = shell_find_window(slot, id);
+    int i;
+
+    if (window != NULL)
+        return window;
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+    {
+        if (!shell_windows[i].in_use)
+        {
+            window = &shell_windows[i];
+            memset(window, 0, sizeof(*window));
+            window->in_use = 1;
+            window->slot = slot;
+            window->id = id;
+            /* Electron's BrowserWindow default until the script says
+               otherwise. */
+            window->geometry.width = 800;
+            window->geometry.height = 600;
+            return window;
+        }
+    }
+    KPrintF("[ELECTRON-CONTEXT] no window record for %ld/%lu "
+        "(%ld windows max)\n", slot, id, (LONG)MAX_SHELL_WINDOWS);
+    return NULL;
+}
+
+static int shell_live_window_count(void)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+        if (shell_windows[i].in_use)
+            ++count;
+    return count;
+}
+
+static struct Window *shell_native_window(struct ShellWindow *window)
+{
+    cef_browser_host_t *host = NULL;
     struct Window *native_window = NULL;
 
+    if (window->browser != NULL && window->browser->get_host != NULL)
+        host = window->browser->get_host(window->browser);
     if (host != NULL)
     {
         native_window = (struct Window *)host->get_window_handle(host);
@@ -551,9 +648,11 @@ static LONG clamp_long(LONG value, LONG low, LONG high)
 
 /* Resolve the client bounds to apply: the maximize/full-screen work area or
    the requested bounds clamped into it. */
-static void shell_resolve_bounds(struct Window *native_window,
+static void shell_resolve_bounds(struct ShellWindow *window,
+    struct Window *native_window,
     LONG *x, LONG *y, LONG *width, LONG *height, int *has_position)
 {
+    struct shell_window_geometry *geometry = &window->geometry;
     LONG area_x, area_y, area_width, area_height;
     LONG border_x = 0, border_y = 0;
 
@@ -562,9 +661,9 @@ static void shell_resolve_bounds(struct Window *native_window,
         border_x = native_window->BorderLeft + native_window->BorderRight;
         border_y = native_window->BorderTop + native_window->BorderBottom;
     }
-    shell_work_area(native_window, window_geometry.fullscreen,
+    shell_work_area(native_window, geometry->fullscreen,
         &area_x, &area_y, &area_width, &area_height);
-    if (window_geometry.maximized || window_geometry.fullscreen)
+    if (geometry->maximized || geometry->fullscreen)
     {
         *x = area_x;
         *y = area_y;
@@ -573,103 +672,115 @@ static void shell_resolve_bounds(struct Window *native_window,
         *has_position = 1;
         return;
     }
-    *width = clamp_long(window_geometry.width, 1, area_width - border_x);
-    *height = clamp_long(window_geometry.height, 1, area_height - border_y);
-    *has_position = window_geometry.has_position;
-    *x = clamp_long(window_geometry.x, area_x,
+    *width = clamp_long(geometry->width, 1, area_width - border_x);
+    *height = clamp_long(geometry->height, 1, area_height - border_y);
+    *has_position = geometry->has_position;
+    *x = clamp_long(geometry->x, area_x,
         area_x + area_width - (*width + border_x));
-    *y = clamp_long(window_geometry.y, area_y,
+    *y = clamp_long(geometry->y, area_y,
         area_y + area_height - (*height + border_y));
 }
 
 /* Apply whatever changed to the live Intuition window; a no-op until the
    browser (and with it the window) exists. */
-static void shell_sync_window_geometry(void)
+static void shell_sync_window_geometry(struct ShellWindow *window)
 {
+    struct shell_window_geometry *geometry = &window->geometry;
     struct Window *native_window;
     LONG x, y, width, height;
     int has_position;
 
-    if (browser == NULL)
+    if (window->browser == NULL)
         return;
-    native_window = shell_native_window();
+    native_window = shell_native_window(window);
     if (native_window == NULL)
     {
-        if (window_geometry.bounds_dirty || window_geometry.title_dirty ||
-            window_geometry.limits_dirty)
-            KPrintF("[ELECTRON-CONTEXT] BrowserWindow has no native window "
-                "handle; geometry request dropped\n");
-        window_geometry.bounds_dirty = 0;
-        window_geometry.limits_dirty = 0;
-        window_geometry.title_dirty = 0;
-        window_geometry.activate_dirty = 0;
+        if (geometry->bounds_dirty || geometry->title_dirty ||
+            geometry->limits_dirty)
+            KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu has no native "
+                "window handle; geometry request dropped\n",
+                window->slot, window->id);
+        geometry->bounds_dirty = 0;
+        geometry->limits_dirty = 0;
+        geometry->title_dirty = 0;
+        geometry->activate_dirty = 0;
         return;
     }
-    if (window_geometry.limits_dirty)
+    if (geometry->limits_dirty)
     {
-        window_geometry.limits_dirty = 0;
+        geometry->limits_dirty = 0;
         WindowLimits(native_window,
-            window_geometry.min_width + native_window->BorderLeft +
+            geometry->min_width + native_window->BorderLeft +
                 native_window->BorderRight,
-            window_geometry.min_height + native_window->BorderTop +
+            geometry->min_height + native_window->BorderTop +
                 native_window->BorderBottom,
             ~0, ~0);
     }
-    if (window_geometry.bounds_dirty)
+    if (geometry->bounds_dirty)
     {
-        window_geometry.bounds_dirty = 0;
-        shell_resolve_bounds(native_window, &x, &y, &width, &height,
+        geometry->bounds_dirty = 0;
+        shell_resolve_bounds(window, native_window, &x, &y, &width, &height,
             &has_position);
         if (!has_position)
         {
             x = native_window->LeftEdge;
             y = native_window->TopEdge;
         }
-        KPrintF("[ELECTRON-CONTEXT] BrowserWindow bounds -> %ld,%ld %ldx%ld "
-            "(maximized=%ld fullscreen=%ld window=%p)\n", x, y, width, height,
-            (LONG)window_geometry.maximized, (LONG)window_geometry.fullscreen,
+        KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu bounds -> %ld,%ld "
+            "%ldx%ld (maximized=%ld fullscreen=%ld window=%p)\n",
+            window->slot, window->id, x, y, width, height,
+            (LONG)geometry->maximized, (LONG)geometry->fullscreen,
             native_window);
         ChangeWindowBox(native_window, x, y,
             width + native_window->BorderLeft + native_window->BorderRight,
             height + native_window->BorderTop + native_window->BorderBottom);
     }
-    if (window_geometry.title_dirty)
+    if (geometry->title_dirty)
     {
-        window_geometry.title_dirty = 0;
-        SetWindowTitles(native_window, window_geometry.title, (STRPTR)~0);
+        geometry->title_dirty = 0;
+        SetWindowTitles(native_window, geometry->title, (STRPTR)~0);
     }
-    if (window_geometry.activate_dirty)
+    if (geometry->activate_dirty)
     {
-        window_geometry.activate_dirty = 0;
+        geometry->activate_dirty = 0;
         WindowToFront(native_window);
         ActivateWindow(native_window);
     }
 }
 
-/* Remember the normal bounds before maximize/full-screen so restore has
-   something to go back to. */
-static void shell_save_restore_bounds(void)
+static void shell_sync_all_window_geometry(void)
 {
-    if (window_geometry.restore_valid || window_geometry.maximized ||
-        window_geometry.fullscreen)
-        return;
-    window_geometry.restore_x = window_geometry.x;
-    window_geometry.restore_y = window_geometry.y;
-    window_geometry.restore_width = window_geometry.width;
-    window_geometry.restore_height = window_geometry.height;
-    window_geometry.restore_valid = 1;
+    int i;
+
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+        if (shell_windows[i].in_use)
+            shell_sync_window_geometry(&shell_windows[i]);
 }
 
-static void shell_restore_bounds(void)
+/* Remember the normal bounds before maximize/full-screen so restore has
+   something to go back to. */
+static void shell_save_restore_bounds(struct shell_window_geometry *geometry)
 {
-    if (window_geometry.maximized || window_geometry.fullscreen ||
-        !window_geometry.restore_valid)
+    if (geometry->restore_valid || geometry->maximized ||
+        geometry->fullscreen)
         return;
-    window_geometry.x = window_geometry.restore_x;
-    window_geometry.y = window_geometry.restore_y;
-    window_geometry.width = window_geometry.restore_width;
-    window_geometry.height = window_geometry.restore_height;
-    window_geometry.restore_valid = 0;
+    geometry->restore_x = geometry->x;
+    geometry->restore_y = geometry->y;
+    geometry->restore_width = geometry->width;
+    geometry->restore_height = geometry->height;
+    geometry->restore_valid = 1;
+}
+
+static void shell_restore_bounds(struct shell_window_geometry *geometry)
+{
+    if (geometry->maximized || geometry->fullscreen ||
+        !geometry->restore_valid)
+        return;
+    geometry->x = geometry->restore_x;
+    geometry->y = geometry->restore_y;
+    geometry->width = geometry->restore_width;
+    geometry->height = geometry->restore_height;
+    geometry->restore_valid = 0;
 }
 
 /* Tab-separated numeric fields after the window id; an empty field leaves
@@ -732,51 +843,52 @@ static int url_has_known_scheme(const char *url)
     return 0;
 }
 
-static int handle_window_geometry_request(const char *method,
-    const char *payload)
+static int handle_window_geometry_request(struct ShellWindow *window,
+    const char *method, const char *payload)
 {
+    struct shell_window_geometry *geometry = &window->geometry;
     LONG values[4];
     int given[4];
 
     if (strcmp(method, "browser-window.set-bounds") == 0)
     {
-        values[0] = window_geometry.x;
-        values[1] = window_geometry.y;
-        values[2] = window_geometry.width;
-        values[3] = window_geometry.height;
+        values[0] = geometry->x;
+        values[1] = geometry->y;
+        values[2] = geometry->width;
+        values[3] = geometry->height;
         parse_geometry_fields(payload, values, 4, given);
-        window_geometry.x = values[0];
-        window_geometry.y = values[1];
+        geometry->x = values[0];
+        geometry->y = values[1];
         if (given[0] && given[1])
-            window_geometry.has_position = 1;
+            geometry->has_position = 1;
         if (values[2] > 0)
-            window_geometry.width = values[2];
+            geometry->width = values[2];
         if (values[3] > 0)
-            window_geometry.height = values[3];
-        window_geometry.restore_valid = 0;
-        window_geometry.bounds_dirty = 1;
+            geometry->height = values[3];
+        geometry->restore_valid = 0;
+        geometry->bounds_dirty = 1;
     }
     else if (strcmp(method, "browser-window.set-minimum-size") == 0)
     {
-        values[0] = window_geometry.min_width;
-        values[1] = window_geometry.min_height;
+        values[0] = geometry->min_width;
+        values[1] = geometry->min_height;
         parse_geometry_fields(payload, values, 2, given);
-        window_geometry.min_width = values[0] > 0 ? values[0] : 0;
-        window_geometry.min_height = values[1] > 0 ? values[1] : 0;
-        window_geometry.limits_dirty = 1;
+        geometry->min_width = values[0] > 0 ? values[0] : 0;
+        geometry->min_height = values[1] > 0 ? values[1] : 0;
+        geometry->limits_dirty = 1;
     }
     else if (strcmp(method, "browser-window.maximize") == 0)
     {
-        shell_save_restore_bounds();
-        window_geometry.maximized = 1;
-        window_geometry.bounds_dirty = 1;
+        shell_save_restore_bounds(geometry);
+        geometry->maximized = 1;
+        geometry->bounds_dirty = 1;
     }
     else if (strcmp(method, "browser-window.unmaximize") == 0 ||
         strcmp(method, "browser-window.restore") == 0)
     {
-        window_geometry.maximized = 0;
-        shell_restore_bounds();
-        window_geometry.bounds_dirty = 1;
+        geometry->maximized = 0;
+        shell_restore_bounds(geometry);
+        geometry->bounds_dirty = 1;
     }
     else if (strcmp(method, "browser-window.set-full-screen") == 0)
     {
@@ -784,11 +896,11 @@ static int handle_window_geometry_request(const char *method,
         int fullscreen = value != NULL && strcmp(value + 1, "true") == 0;
 
         if (fullscreen)
-            shell_save_restore_bounds();
-        window_geometry.fullscreen = fullscreen;
+            shell_save_restore_bounds(geometry);
+        geometry->fullscreen = fullscreen;
         if (!fullscreen)
-            shell_restore_bounds();
-        window_geometry.bounds_dirty = 1;
+            shell_restore_bounds(geometry);
+        geometry->bounds_dirty = 1;
     }
     else if (strcmp(method, "browser-window.set-title") == 0)
     {
@@ -796,18 +908,172 @@ static int handle_window_geometry_request(const char *method,
 
         if (value != NULL)
         {
-            strncpy(window_geometry.title, value + 1,
-                sizeof(window_geometry.title) - 1);
-            window_geometry.title[sizeof(window_geometry.title) - 1] = '\0';
-            window_geometry.title_dirty = 1;
+            strncpy(geometry->title, value + 1, sizeof(geometry->title) - 1);
+            geometry->title[sizeof(geometry->title) - 1] = '\0';
+            geometry->title_dirty = 1;
         }
     }
     else if (strcmp(method, "browser-window.show") == 0 ||
         strcmp(method, "browser-window.focus") == 0)
-        window_geometry.activate_dirty = 1;
+        geometry->activate_dirty = 1;
     else
         return 0;
     return 1;
+}
+
+/* The URL a window shows, as CEF needs it: BrowserWindow accepts native
+   paths as well as URLs, and AROS volume syntax looks like a URL scheme to
+   CEF, so a path becomes a file URL before crossing the Electron/CEF seam. */
+static void shell_set_window_url(struct ShellWindow *window,
+    const char *requested_url)
+{
+    size_t i;
+    size_t output_offset = 0;
+
+    if (!url_has_known_scheme(requested_url) &&
+        strchr(requested_url, ':') != NULL)
+    {
+        static const char file_prefix[] = "file:///";
+
+        for (i = 0; file_prefix[i] != '\0'; ++i)
+            window->url[i] = (unsigned char)file_prefix[i];
+        output_offset = i;
+    }
+    for (i = 0; requested_url[i] != '\0' &&
+        output_offset + i + 1 < (sizeof(window->url) /
+            sizeof(window->url[0])); ++i)
+        window->url[output_offset + i] = (unsigned char)requested_url[i];
+    window->url[output_offset + i] = 0;
+    window->url_length = output_offset + i;
+    window->url_dirty = 1;
+    KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu requested URL '%s' "
+        "routed through CEF URL length=%lu\n", window->slot, window->id,
+        requested_url, (unsigned long)window->url_length);
+}
+
+static void shell_request_window_close(struct ShellWindow *window)
+{
+    cef_browser_host_t *host;
+
+    if (window->close_requested)
+        return;
+    window->close_requested = 1;
+    if (window->browser == NULL)
+    {
+        /* Never got a browser (creation failed, or closed before it
+           existed): nothing will call on_before_close for it. */
+        KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu closed before "
+            "creation\n", window->slot, window->id);
+        ElectronBindWindowBrowser(window->slot, window->id, NULL);
+        window->in_use = 0;
+        return;
+    }
+    host = window->browser->get_host(window->browser);
+    if (host != NULL && host->close_browser != NULL)
+        host->close_browser(host, 1);
+    release_browser_host(host);
+}
+
+static void shell_request_all_windows_close(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+        if (shell_windows[i].in_use)
+            shell_request_window_close(&shell_windows[i]);
+}
+
+/* Create the CEF browser for a window whose script asked for one. */
+static void shell_create_window(struct ShellWindow *window,
+    cef_window_info_t *window_info, cef_browser_settings_t *browser_settings,
+    cef_char_t *default_url, size_t default_url_length)
+{
+    cef_string_t url;
+    LONG x, y, width, height;
+    int has_position;
+    LONG rc;
+
+    /* Everything queued before creation shapes the window CEF opens. */
+    shell_resolve_bounds(window, NULL, &x, &y, &width, &height,
+        &has_position);
+    window_info->bounds.x = 0;
+    window_info->bounds.y = 0;
+    if (has_position)
+    {
+        window_info->bounds.x = x;
+        window_info->bounds.y = y;
+    }
+    else if (!window->geometry.maximized && !window->geometry.fullscreen)
+    {
+        /* No position asked for: every such window lands at the work
+           area's origin, so a second app's window sits exactly under the
+           first's and the screen shows one window where two are open
+           (hosted user-22, 2026-09-16). Cascade by the windows already
+           open instead; each app still gets whatever it asked for. */
+        LONG area_x, area_y, area_width, area_height;
+        LONG open = 0;
+        int i;
+
+        for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+            if (shell_windows[i].in_use && &shell_windows[i] != window &&
+                (shell_windows[i].browser != NULL ||
+                    shell_windows[i].creating))
+                ++open;
+        if (open > 0)
+        {
+            shell_work_area(NULL, 0, &area_x, &area_y, &area_width,
+                &area_height);
+            window_info->bounds.x = clamp_long(area_x + open * 32, area_x,
+                area_x + area_width - width);
+            window_info->bounds.y = clamp_long(area_y + open * 32, area_y,
+                area_y + area_height - height);
+        }
+    }
+    window_info->bounds.width = width;
+    window_info->bounds.height = height;
+    window->geometry.bounds_dirty = 0;
+    KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu initial bounds "
+        "%ld,%ld %ldx%ld (maximized=%ld)\n", window->slot, window->id,
+        (LONG)window_info->bounds.x, (LONG)window_info->bounds.y, width,
+        height, (LONG)window->geometry.maximized);
+    memset(&url, 0, sizeof(url));
+    if (window->url_dirty)
+    {
+        set_static_cef_string(&url, window->url, window->url_length);
+        window->url_dirty = 0;
+    }
+    else
+        set_static_cef_string(&url, default_url, default_url_length);
+    window->creating = 1;
+    window->create_order = ++shell_create_counter;
+    rc = ElectronCreateCEFBrowser(window_info, &client, &url,
+        browser_settings, NULL, NULL);
+    KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu create rc=%ld\n",
+        window->slot, window->id, rc);
+    if (rc == 0)
+    {
+        window->creating = 0;
+        ElectronBindWindowBrowser(window->slot, window->id, NULL);
+        window->in_use = 0;
+    }
+}
+
+/* A load-url after creation navigates the live browser. */
+static void shell_navigate_window(struct ShellWindow *window)
+{
+    cef_frame_t *frame;
+    cef_string_t url;
+
+    if (window->browser == NULL || !window->url_dirty)
+        return;
+    window->url_dirty = 0;
+    frame = window->browser->get_main_frame(window->browser);
+    if (frame == NULL)
+        return;
+    memset(&url, 0, sizeof(url));
+    set_static_cef_string(&url, window->url, window->url_length);
+    frame->load_url(frame, &url);
+    frame->base.release(&frame->base);
 }
 
 static void service_native_window_requests(cef_window_info_t *window_info,
@@ -816,102 +1082,86 @@ static void service_native_window_requests(cef_window_info_t *window_info,
 {
     char method[64];
     char payload[2048];
-    int create_requested = 0;
+    LONG slot;
     LONG rc;
 
-    while ((rc = ElectronPollNativeRequest(method, sizeof(method),
-        payload, sizeof(payload))) > 0)
+    while ((rc = ElectronPollAppRequest(method, sizeof(method),
+        payload, sizeof(payload), &slot)) > 0)
     {
-        KPrintF("[ELECTRON-CONTEXT] native request method='%s' "
-            "payload='%s'\n", method, payload);
+        struct ShellWindow *window = NULL;
+
+        KPrintF("[ELECTRON-CONTEXT] native request slot=%ld method='%s' "
+            "payload='%s'\n", slot, method, payload);
+        if (strncmp(method, "browser-window.", 15) == 0)
+        {
+            /* Every browser-window request names its window first. */
+            ULONG id = (ULONG)strtoul(payload, NULL, 10);
+
+            window = strcmp(method, "browser-window.close") == 0 ?
+                shell_find_window(slot, id) :
+                shell_find_or_create_window(slot, id);
+            if (window == NULL)
+                continue;
+        }
         if (strcmp(method, "browser-window.create") == 0)
-            create_requested = 1;
+        {
+            /* Created below, once this pass has drained the ring: the
+               BrowserWindow constructor queues create, set-bounds and
+               load-url in one JS turn, and creating on the first of them
+               opened every window at the 800x600 default (hosted user-23,
+               2026-09-16) where the single-window shell honoured the
+               requested size. */
+            if (window->browser == NULL && !window->creating)
+                window->create_requested = 1;
+        }
         else if (strcmp(method, "browser-window.load-url") == 0)
         {
             const char *requested_url = strchr(payload, '\t');
-            size_t i;
-            size_t output_offset = 0;
 
-            create_requested = 1;
             if (requested_url != NULL && requested_url[1] != '\0')
-            {
-                ++requested_url;
-                /*
-                 * BrowserWindow accepts native paths as well as URLs.  AROS
-                 * volume syntax looks like a URL scheme to CEF, so convert it
-                 * to a file URL before crossing the Electron/CEF seam.
-                 */
-                if (!url_has_known_scheme(requested_url) &&
-                    strchr(requested_url, ':') != NULL)
-                {
-                    static const char file_prefix[] = "file:///";
-
-                    for (i = 0; file_prefix[i] != '\0'; ++i)
-                        command_url[i] = (unsigned char)file_prefix[i];
-                    output_offset = i;
-                }
-                for (i = 0; requested_url[i] != '\0' &&
-                    output_offset + i + 1 < (sizeof(command_url) /
-                        sizeof(command_url[0])); ++i)
-                    command_url[output_offset + i] =
-                        (unsigned char)requested_url[i];
-                command_url[output_offset + i] = 0;
-                browser_url = command_url;
-                browser_url_length = output_offset + i;
-                KPrintF("[ELECTRON-CONTEXT] BrowserWindow requested URL "
-                    "'%s' routed through CEF file URL length=%lu\n",
-                    requested_url, (unsigned long)browser_url_length);
-            }
+                shell_set_window_url(window, requested_url + 1);
+            if (window->browser == NULL && !window->creating)
+                window->create_requested = 1;
+            else
+                shell_navigate_window(window);
         }
-        else if (handle_window_geometry_request(method, payload))
+        else if (window != NULL &&
+            handle_window_geometry_request(window, method, payload))
             ;
         else if (strcmp(method, "browser-window.close") == 0)
-        {
-            if (browser != NULL)
-                request_browser_close();
-        }
+            shell_request_window_close(window);
         else if (strcmp(method, "app.exit") == 0)
         {
+            /* Phase 1 of JOB-0099: app.exit from any app ends the process,
+               every app in it included; per-app exit is the next step. */
             requested_exit_code = strtol(payload, NULL, 10);
             exit_requested = 1;
-            KPrintF("[ELECTRON-CONTEXT] app.exit requested code=%ld\n",
-                requested_exit_code);
-            if (browser != NULL)
-                request_browser_close();
+            KPrintF("[ELECTRON-CONTEXT] app.exit requested by slot %ld "
+                "code=%ld\n", slot, requested_exit_code);
+            if (shell_live_window_count() > 0)
+                shell_request_all_windows_close();
             else
                 browser_closed = 1;
         }
     }
 
-    if (create_requested && browser == NULL)
     {
-        cef_string_t url;
-        LONG x, y, width, height;
-        int has_position;
+        int i;
 
-        /* Everything queued before creation shapes the window CEF opens. */
-        shell_resolve_bounds(NULL, &x, &y, &width, &height, &has_position);
-        if (has_position)
+        for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
         {
-            window_info->bounds.x = x;
-            window_info->bounds.y = y;
+            struct ShellWindow *window = &shell_windows[i];
+
+            if (window->in_use && window->create_requested)
+            {
+                window->create_requested = 0;
+                if (window->browser == NULL && !window->creating)
+                    shell_create_window(window, window_info,
+                        browser_settings, browser_url, browser_url_length);
+            }
         }
-        window_info->bounds.width = width;
-        window_info->bounds.height = height;
-        window_geometry.bounds_dirty = 0;
-        KPrintF("[ELECTRON-CONTEXT] BrowserWindow initial bounds %ld,%ld "
-            "%ldx%ld (maximized=%ld)\n", (LONG)window_info->bounds.x,
-            (LONG)window_info->bounds.y, width, height,
-            (LONG)window_geometry.maximized);
-        memset(&url, 0, sizeof(url));
-        set_static_cef_string(&url, browser_url, browser_url_length);
-        rc = ElectronCreateCEFBrowser(window_info, &client, &url,
-            browser_settings, NULL, NULL);
-        KPrintF("[ELECTRON-CONTEXT] BrowserWindow create rc=%ld\n", rc);
-        if (rc != 0)
-            browser_closed = 0;
     }
-    shell_sync_window_geometry();
+    shell_sync_all_window_geometry();
 }
 
 static void pump_node_on_main_task(void)
@@ -1207,6 +1457,18 @@ static void CEF_CALLBACK on_load_end(cef_load_handler_t *self,
      * sub-frame finishing does not mean the document is ready. */
     if (is_main)
     {
+#ifdef ELECTRON_SHELL_WINDOWED
+        struct ShellWindow *window = shell_find_window_by_browser(cef_browser);
+
+        if (window != NULL)
+        {
+            ElectronPostAppWindowEvent(window->slot, window->id,
+                "did-finish-load", "");
+            ElectronPostAppWindowEvent(window->slot, window->id,
+                "did-stop-loading", "");
+            return;
+        }
+#endif
         ElectronPostWindowEvent("did-finish-load", "");
         ElectronPostWindowEvent("did-stop-loading", "");
     }
@@ -1266,35 +1528,96 @@ static void CEF_CALLBACK on_after_created(cef_life_span_handler_t *self,
     browser = created_browser;
     KPrintF("[ELECTRON-CONTEXT] browser created=%p\n", browser);
 #ifdef ELECTRON_SHELL_WINDOWED
-    ElectronSetActiveBrowser(created_browser);
-    first_paint = 1;
-    first_paint_tick = pump_tick;
-    KPrintF("[ELECTRON-CONTEXT] visible browser ready tick=%lu\n",
-        first_paint_tick);
-    /* Title/limits/activation queued before creation apply to the window
-       now that it exists. */
-    shell_sync_window_geometry();
+    {
+        /* The oldest window still waiting for its browser is the one this
+           is; the callback's reference becomes the record's. */
+        struct ShellWindow *window = NULL;
+        int i;
+
+        for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+            if (shell_windows[i].in_use && shell_windows[i].creating &&
+                (window == NULL ||
+                    shell_windows[i].create_order < window->create_order))
+                window = &shell_windows[i];
+        if (window != NULL)
+        {
+            window->creating = 0;
+            window->browser = created_browser;
+            window->browser_identifier =
+                created_browser->get_identifier(created_browser);
+            ElectronBindWindowBrowser(window->slot, window->id,
+                created_browser);
+            KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu bound to "
+                "browser %p identifier=%ld\n", window->slot, window->id,
+                created_browser, (LONG)window->browser_identifier);
+        }
+        else
+        {
+            KPrintF("[ELECTRON-CONTEXT] browser %p belongs to no "
+                "BrowserWindow record\n", created_browser);
+            ElectronSetActiveBrowser(created_browser);
+        }
+        browser_closed = 0;
+        first_paint = 1;
+        first_paint_tick = pump_tick;
+        KPrintF("[ELECTRON-CONTEXT] visible browser ready tick=%lu\n",
+            first_paint_tick);
+        /* Title/limits/activation queued before creation apply to the
+           window now that it exists. */
+        if (window != NULL)
+            shell_sync_window_geometry(window);
+    }
 #endif
 }
 
 static void CEF_CALLBACK on_before_close(cef_life_span_handler_t *self,
     cef_browser_t *closing_browser)
 {
-    (void)self;
 #ifdef ELECTRON_SHELL_WINDOWED
-    ElectronSetActiveBrowser(NULL);
-#endif
+    struct ShellWindow *window = shell_find_window_by_browser(closing_browser);
+    LONG slot = 0;
+    ULONG id = 0;
+    int windows_left;
+
+    (void)self;
+    if (window != NULL)
+    {
+        slot = window->slot;
+        id = window->id;
+        ElectronBindWindowBrowser(slot, id, NULL);
+        release_browser_reference(window->browser);
+        if (browser == window->browser)
+            browser = NULL;
+        window->browser = NULL;
+        window->in_use = 0;
+    }
+    else
+    {
+        ElectronSetActiveBrowser(NULL);
+        release_browser_reference(browser);
+        browser = NULL;
+    }
+    release_browser_reference(closing_browser);
+    windows_left = shell_live_window_count();
+    KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu closed, %ld left\n",
+        slot, id, (LONG)windows_left);
+    if (windows_left == 0)
+    {
+        browser_closed = 1;
+        browser_closed_tick = pump_tick;
+    }
+    /* The script's BrowserWindow learns it is gone from here ('closed',
+       then 'window-all-closed' on the app once no window is left). */
+    if (app_mode)
+        ElectronPostAppWindowEvent(slot, id, "closed", "");
+#else
+    (void)self;
     release_browser_reference(closing_browser);
     release_browser_reference(browser);
     browser = NULL;
     browser_closed = 1;
     browser_closed_tick = pump_tick;
     KPrintF("[ELECTRON-CONTEXT] browser closed\n");
-#ifdef ELECTRON_SHELL_WINDOWED
-    /* The script's BrowserWindow learns it is gone from here ('closed',
-       then 'window-all-closed' on the app once no window is left). */
-    if (app_mode)
-        ElectronPostWindowEvent("closed", "");
 #endif
 }
 
@@ -1820,10 +2143,6 @@ int main(int argc, char **argv)
 #ifdef ELECTRON_SHELL_WINDOWED
     set_static_cef_string(&window_info.window_name, window_title,
         (sizeof(window_title) / sizeof(window_title[0])) - 1);
-    /* Electron's BrowserWindow default until the script says otherwise. */
-    memset(&window_geometry, 0, sizeof(window_geometry));
-    window_geometry.width = 800;
-    window_geometry.height = 600;
 #else
     window_info.windowless_rendering_enabled = 1;
 #endif
@@ -1964,8 +2283,13 @@ int main(int argc, char **argv)
         Delay(1);
     }
 
+#ifdef ELECTRON_SHELL_WINDOWED
+    if (!browser_closed)
+        shell_request_all_windows_close();
+#else
     if (!browser_closed)
         request_browser_close();
+#endif
     for (close_ticks = 0;
         close_ticks < CLOSE_TIMEOUT_TICKS &&
             (!browser_closed || !node_detached);
