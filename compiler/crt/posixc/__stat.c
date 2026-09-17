@@ -36,13 +36,30 @@ static void __fill_stat64buffer(
     int                  fallback_to_defaults,
     BPTR                 lock);
 
+/*
+ * NIL: is the handle dos gives out with fh_Type == BNULL (rom/dos/nil.c).
+ * Its packet handler answers every action it does not know with success
+ * and an untouched FileInfoBlock, and it has no parent, so NameFromFH()
+ * fails with IoErr() 0. Left to the generic path that made fstat() return
+ * -1 with errno 0 on every ">NIL:" / "<NIL:" stream - node's PlatformInit
+ * ABORT()s on exactly that, so C:Node from a `Run >NIL: <NIL:` script died
+ * before its first line of output (JOB-0033, 2026-09-17). Treat it as the
+ * character device /dev/null is: no name, no size, no date.
+ */
+static BOOL __stat_isnil(BPTR fh)
+{
+    struct FileHandle *handle = BADDR(fh);
+
+    return handle != NULL && handle->fh_Type == BNULL;
+}
+
 int __stat(BPTR lock, struct stat *sb, BOOL filehandle)
 {
     struct FileInfoBlock64 *fib;
     UBYTE *buffer;
     int buffersize = 256;
     int fallback_to_defaults = 0;
-    BOOL Examined;
+    BOOL Examined, nilfh;
 
     fib = AllocVec(sizeof(struct FileInfoBlock64), MEMF_PUBLIC | MEMF_CLEAR);
 
@@ -53,12 +70,14 @@ int __stat(BPTR lock, struct stat *sb, BOOL filehandle)
         return -1;
     }
 
-    Examined = filehandle
+    nilfh = filehandle && __stat_isnil(lock);
+    Examined = nilfh ? FALSE : (filehandle
              ? __dos64_examine(lock, fib, __DOS64_EXAMINE_FH)
-             : __dos64_examine(lock, fib, __DOS64_EXAMINE);
+             : __dos64_examine(lock, fib, __DOS64_EXAMINE));
     if (!Examined)
     {
-        if(IoErr() == ERROR_NOT_IMPLEMENTED ||
+        if(nilfh ||
+           IoErr() == ERROR_NOT_IMPLEMENTED ||
            IoErr() == ERROR_ACTION_NOT_KNOWN)
         {
             fallback_to_defaults = 1;
@@ -84,19 +103,25 @@ int __stat(BPTR lock, struct stat *sb, BOOL filehandle)
             return -1;
         }
 
-        GotName = filehandle
+        GotName = nilfh ? FALSE : (filehandle
                 ? NameFromFH(lock, buffer, buffersize)
-                : NameFromLock(lock, buffer, buffersize);
+                : NameFromLock(lock, buffer, buffersize));
         if(GotName)
             break;
-        else if(   IoErr() == ERROR_OBJECT_IN_USE
+        else if(   nilfh
+                || IoErr() == 0
+                || IoErr() == ERROR_OBJECT_IN_USE
                 || IoErr() == ERROR_NOT_IMPLEMENTED
                 || IoErr() == ERROR_ACTION_NOT_KNOWN
                 || (IoErr() == ERROR_OBJECT_NOT_FOUND && fib->fib_EntryType == ST_PIPEFILE))
         {
             /* We can't retrieve name because lock is an exclusive lock
                or Examine is not implemented in this handler
-               or the lock refers to an XPIPE: file having always empty name */
+               or the lock refers to an XPIPE: file having always empty name
+               or the handler simply has no name for the object (NIL:, or a
+               handle whose ACTION_PARENT_FH yields no lock) and reports no
+               error either - failing with errno 0 would be a lie. The name
+               only seeds st_ino; an unnamed object stats fine without it. */
             buffer[0] = '\0';
             break;
         }
@@ -137,7 +162,7 @@ int __stat64(BPTR lock, struct stat64 *sb, BOOL filehandle)
     UBYTE *buffer;
     int buffersize = 256;
     int fallback_to_defaults = 0;
-    BOOL Examined;
+    BOOL Examined, nilfh;
 
     fib = AllocVec(sizeof(struct FileInfoBlock64), MEMF_PUBLIC | MEMF_CLEAR);
 
@@ -148,12 +173,14 @@ int __stat64(BPTR lock, struct stat64 *sb, BOOL filehandle)
         return -1;
     }
 
-    Examined = filehandle
+    nilfh = filehandle && __stat_isnil(lock);
+    Examined = nilfh ? FALSE : (filehandle
              ? __dos64_examine(lock, fib, __DOS64_EXAMINE_FH)
-             : __dos64_examine(lock, fib, __DOS64_EXAMINE);
+             : __dos64_examine(lock, fib, __DOS64_EXAMINE));
     if (!Examined)
     {
-        if(IoErr() == ERROR_NOT_IMPLEMENTED ||
+        if(nilfh ||
+           IoErr() == ERROR_NOT_IMPLEMENTED ||
            IoErr() == ERROR_ACTION_NOT_KNOWN)
         {
             fallback_to_defaults = 1;
@@ -179,19 +206,25 @@ int __stat64(BPTR lock, struct stat64 *sb, BOOL filehandle)
             return -1;
         }
 
-        GotName = filehandle
+        GotName = nilfh ? FALSE : (filehandle
                 ? NameFromFH(lock, buffer, buffersize)
-                : NameFromLock(lock, buffer, buffersize);
+                : NameFromLock(lock, buffer, buffersize));
         if(GotName)
             break;
-        else if(   IoErr() == ERROR_OBJECT_IN_USE
+        else if(   nilfh
+                || IoErr() == 0
+                || IoErr() == ERROR_OBJECT_IN_USE
                 || IoErr() == ERROR_NOT_IMPLEMENTED
                 || IoErr() == ERROR_ACTION_NOT_KNOWN
                 || (IoErr() == ERROR_OBJECT_NOT_FOUND && fib->fib_EntryType == ST_PIPEFILE))
         {
             /* We can't retrieve name because lock is an exclusive lock
                or Examine is not implemented in this handler
-               or the lock refers to an XPIPE: file having always empty name */
+               or the lock refers to an XPIPE: file having always empty name
+               or the handler simply has no name for the object (NIL:, or a
+               handle whose ACTION_PARENT_FH yields no lock) and reports no
+               error either - failing with errno 0 would be a lie. The name
+               only seeds st_ino; an unnamed object stats fine without it. */
             buffer[0] = '\0';
             break;
         }
