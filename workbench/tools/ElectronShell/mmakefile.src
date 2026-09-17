@@ -35,6 +35,6 @@ CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/includes
 # that exercise one lifecycle each, installed where RunBoth-style scripts
 # can reach them.
 %copy_files_q mmake=workbench-tools-electronshell-tests \
-    files="exit-after.js RunExitProbe two-windows.js" src=tests dst=$(AROS_DEVELOPER)/ElectronShell
+    files="exit-after.js RunExitProbe RunBoth two-windows.js" src=tests dst=$(AROS_DEVELOPER)/ElectronShell
 
 %common
