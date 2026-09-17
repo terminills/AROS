@@ -2063,7 +2063,60 @@ static int make_node_main_script(const char *path, LONG slot, int argc,
 }
 #endif
 
+static int real_main(int argc, char **argv);
+
+/*
+ * Chromium's browser main, Node's bootstrap and V8's parser/compiler all
+ * recurse on the calling task's stack, and a Shell hands a command
+ * AROS_STACKSIZE (40 KiB) of it.  On pc-x86_64 the overrun landed in the
+ * hunk allocated just below the stack - ElectronShell's own shell_windows[]
+ * (.lbss) - and the next window service pass called through the V8 frames
+ * it found there ("Illegal instruction at 0x10003", fix16, 2026-09-17).
+ * Run everything on a stack of our own unless the caller already gave us a
+ * big one, the way CrashReporter does.
+ */
+#define SHELL_STACK_MIN  (8 * 1024 * 1024)
+#define SHELL_STACK_SIZE (16 * 1024 * 1024)
+
+struct shell_main_args { int argc; char **argv; };
+
+static IPTR shell_stack_entry(struct shell_main_args *a)
+{
+    return (IPTR)real_main(a->argc, a->argv);
+}
+
 int main(int argc, char **argv)
+{
+    struct Task *me = FindTask(NULL);
+    IPTR have = (IPTR)me->tc_SPUpper - (IPTR)me->tc_SPLower;
+    struct StackSwapStruct sss;
+    struct StackSwapArgs args;
+    struct shell_main_args a = { argc, argv };
+    APTR stack;
+    int rc;
+
+    if (have >= SHELL_STACK_MIN)
+        return real_main(argc, argv);
+
+    stack = AllocMem(SHELL_STACK_SIZE, MEMF_ANY);
+    if (stack == NULL)
+    {
+        KPrintF("[ELECTRON-CONTEXT] no %lu KiB stack, running on the "
+            "caller's %lu KiB\n", (ULONG)(SHELL_STACK_SIZE / 1024),
+            (ULONG)(have / 1024));
+        return real_main(argc, argv);
+    }
+
+    args.Args[0] = (IPTR)&a;
+    sss.stk_Lower   = stack;
+    sss.stk_Upper   = (APTR)((IPTR)stack + SHELL_STACK_SIZE);
+    sss.stk_Pointer = sss.stk_Upper;
+    rc = (int)NewStackSwap(&sss, (APTR)shell_stack_entry, &args);
+    FreeMem(stack, SHELL_STACK_SIZE);
+    return rc;
+}
+
+static int real_main(int argc, char **argv)
 {
     /*
      * Preserve every native child-process switch and leave room for the two
