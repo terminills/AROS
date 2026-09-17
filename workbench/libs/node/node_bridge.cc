@@ -177,6 +177,26 @@ extern "C" void __node_aros_bind_callback_task_base(void)
     __aros_setoffsettable(NodeCallbackTaskBase);
 }
 
+/*
+ * The same lend, reached from genmodule's per-task base lookup instead of
+ * from a call site.
+ *
+ * The explicit calls above cover the paths node knows about (its own thread
+ * wrappers, V8's entropy source, threadpool work).  A Blink thread can enter
+ * node.library through paths node never sees - a "ServiceWorker thread"
+ * faulted in __malloc_StdCBase_relwrapper+0x1D with its own slot AND its
+ * creator's slot empty (alpha9, VS Code + GitHub Desktop, 2026-09-17, the
+ * fault that surfaced once uv1.library stopped faulting first).  Answering
+ * the lookup's last resort covers every such path at once, with the same
+ * reasoning that justifies the call sites: a thread with no base of its own
+ * is not running a Node runtime, and what it can reach is the stateless end
+ * of the C runtime, for which any valid base answers identically.
+ */
+extern "C" char *__aros_borrow_offsettable(void)
+{
+  return (char *)NodeCallbackTaskBase;
+}
+
 static inline void NodeBindTaskBase(LIBBASETYPEPTR lh)
 {
   if (__aros_getoffsettable() == nullptr)
