@@ -731,6 +731,31 @@ static void NodeTraceOpenUvHandle(uv_handle_t *handle, void *arg)
           uv_is_closing(handle));
 }
 
+/*
+ * node::Start() runs V8's parser/compiler and the bootstrap on the calling
+ * task's stack, and V8 sizes its own stack limit from the entry sp assuming
+ * the megabytes a Linux main thread has.  A Shell hands a command
+ * AROS_STACKSIZE (40 KiB) of it, and a posixc exec'd child inherits the
+ * CLI's cli_DefaultStack, so C:Node started without a `Stack` line overruns
+ * the hunk allocated below its stack - the same class as ElectronShell's
+ * shell_windows[] smash (JOB-0099, fix16, 2026-09-17).  Run node on a stack
+ * of our own unless the caller already provided a big one.
+ */
+#define NODE_STACK_MIN  (8 * 1024 * 1024)
+#define NODE_STACK_SIZE (16 * 1024 * 1024)
+
+struct NodeStartArgs {
+  LONG argc;
+  STRPTR *argv;
+};
+
+static LONG NodeStartOnStack(struct NodeStartArgs *args);
+
+static IPTR NodeStartStackEntry(struct NodeStartArgs *args)
+{
+  return static_cast<IPTR>(NodeStartOnStack(args));
+}
+
 extern "C" {
 
 AROS_LH2(LONG, NodeStart,
@@ -740,6 +765,44 @@ AROS_LH2(LONG, NodeStart,
 {
   AROS_LIBFUNC_INIT
   NodeBindTaskBase(LIBBASE);
+
+  struct Task *me = FindTask(nullptr);
+  IPTR have = reinterpret_cast<IPTR>(me->tc_SPUpper) -
+      reinterpret_cast<IPTR>(me->tc_SPLower);
+  struct NodeStartArgs args = { argc, argv };
+
+  if (have >= NODE_STACK_MIN)
+    return NodeStartOnStack(&args);
+
+  APTR stack = AllocMem(NODE_STACK_SIZE, MEMF_ANY);
+  if (stack == nullptr) {
+    NodeBridgeLog("[NodeLibrary] no %lu KiB stack, running on the caller's "
+            "%lu KiB\n",
+            static_cast<unsigned long>(NODE_STACK_SIZE / 1024),
+            static_cast<unsigned long>(have / 1024));
+    return NodeStartOnStack(&args);
+  }
+
+  struct StackSwapStruct sss;
+  struct StackSwapArgs swap_args;
+  swap_args.Args[0] = reinterpret_cast<IPTR>(&args);
+  sss.stk_Lower = stack;
+  sss.stk_Upper = reinterpret_cast<APTR>(
+      reinterpret_cast<IPTR>(stack) + NODE_STACK_SIZE);
+  sss.stk_Pointer = sss.stk_Upper;
+  LONG rc = static_cast<LONG>(NewStackSwap(&sss,
+      reinterpret_cast<APTR>(NodeStartStackEntry), &swap_args));
+  FreeMem(stack, NODE_STACK_SIZE);
+  return rc;
+  AROS_LIBFUNC_EXIT
+}
+
+}  /* extern "C" */
+
+static LONG NodeStartOnStack(struct NodeStartArgs *args)
+{
+  LONG argc = args->argc;
+  STRPTR *argv = args->argv;
   bool close_socket_base = false;
 
   /*
@@ -778,8 +841,9 @@ AROS_LH2(LONG, NodeStart,
     SocketBase = nullptr;
   }
   return static_cast<LONG>(rc);
-  AROS_LIBFUNC_EXIT
 }
+
+extern "C" {
 
 AROS_LH0(CONST_STRPTR, NodeVersion,
     LIBBASETYPEPTR, LIBBASE, 6, Node)
