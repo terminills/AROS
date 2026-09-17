@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2013, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc:
 */
@@ -69,6 +69,7 @@
   struct Region * newshape, * oldshape, r, rtmp, cutnewshape;
   struct Region *clipregion, *olddamage = NULL;
   struct Rectangle rectw, recth;
+  BOOL family_visible = FALSE;
 
   InitRegion(&r);
   InitRegion(&rtmp);
@@ -191,46 +192,55 @@
     if (IS_VISIBLE(_l))
     {
       SetRegion(_l->VisibleRegion, &r);
+      family_visible = TRUE;
       break;
     }
-    
+
     if (l == _l)
       break;
-      
+
     _l = _l->back;
   }
 //kprintf("%s called for layer %p, first = %p!\n",__FUNCTION__,l,first);
-  
+
   /*
    * First back up parts of layers that are behind the layer
    * family. Only need to do this if layer is moving or
    * getting bigger in size. Only need to visit those layers
    * that overlap with the new shape of the layer.
+   *
+   * A hidden family (a window opened with WA_Hidden and moved or sized
+   * before it is shown) covers nothing: the layers behind it keep their
+   * visible regions. Rebuilding them from r, which is empty in that case,
+   * left every layer behind with an empty VisibleRegion until something
+   * else rebuilt them.
    */
 
-        
-  lparent = l->parent;
-  _l = l->back;
+  if (family_visible)
+  {
+    lparent = l->parent;
+    _l = l->back;
 
 #if 0
 kprintf("\t\t%s: Backing up parts of layers that are behind the layer!\n",
         __FUNCTION__);
 #endif
-  while (1)
-  {
-    if (IS_VISIBLE(_l) && DO_OVERLAP(&cutnewshape.bounds, &_l->shape->bounds))
-      _BackupPartsOfLayer(_l, &cutnewshape, 0, FALSE, LayersBase);
-    else
-      ClearRegionRegion(&cutnewshape, _l->VisibleRegion);
-
-    if (_l == lparent)
+    while (1)
     {
-      if (IS_VISIBLE(_l) || (NULL == lparent->parent))
-        break;
+      if (IS_VISIBLE(_l) && DO_OVERLAP(&cutnewshape.bounds, &_l->shape->bounds))
+        _BackupPartsOfLayer(_l, &cutnewshape, 0, FALSE, LayersBase);
       else
-        lparent = lparent->parent;
+        ClearRegionRegion(&cutnewshape, _l->VisibleRegion);
+
+      if (_l == lparent)
+      {
+        if (IS_VISIBLE(_l) || (NULL == lparent->parent))
+          break;
+        else
+          lparent = lparent->parent;
+      }
+      _l = _l->back;
     }
-    _l = _l->back;
   }
 
    SetRegion(&cutnewshape, l->visibleshape);
@@ -335,63 +345,67 @@ kprintf("\t\t%s: SHOWING parts of THE LAYER TO BE MOVED (children)!\n",
 
   /*
    * Now make those parts of the layers after l up to and including
-   * its parent visible.
+   * its parent visible. Nothing to do for a hidden family: the layers
+   * behind it were not touched above.
    */
-  SetRegion(l->VisibleRegion, &r);
-  ClearRegionRegion(l->visibleshape, &r);
-  _l = l->back;
-  lparent = l->parent;
-    
-  while (1)
+  if (family_visible)
   {
+    SetRegion(l->VisibleRegion, &r);
+    ClearRegionRegion(l->visibleshape, &r);
+    _l = l->back;
+    lparent = l->parent;
+
+    while (1)
+    {
 #if 0
 kprintf("\t\t%s: SHOWING parts of the layers behind the layer to be moved!\n",
         __FUNCTION__);
 #endif
-    if (IS_VISIBLE(_l) &&
-       (  DO_OVERLAP(&l->visibleshape->bounds, &_l->shape->bounds) ||
-          DO_OVERLAP(   &oldshape->bounds, &_l->shape->bounds) ))
-    {
-      ClearRegion(_l->VisibleRegion);
-      _ShowPartsOfLayer(_l, &r, LayersBase);
-    }
-    else
-      SetRegion(&r, _l->VisibleRegion);
+      if (IS_VISIBLE(_l) &&
+         (  DO_OVERLAP(&l->visibleshape->bounds, &_l->shape->bounds) ||
+            DO_OVERLAP(   &oldshape->bounds, &_l->shape->bounds) ))
+      {
+        ClearRegion(_l->VisibleRegion);
+        _ShowPartsOfLayer(_l, &r, LayersBase);
+      }
+      else
+        SetRegion(&r, _l->VisibleRegion);
 
-    if (IS_VISIBLE(_l) || IS_ROOTLAYER(_l))
-      AndRegionRegion(_l->VisibleRegion, oldshape);
+      if (IS_VISIBLE(_l) || IS_ROOTLAYER(_l))
+        AndRegionRegion(_l->VisibleRegion, oldshape);
 
 #if 0
-    if (IS_ROOTLAYER(_l))
-      kprintf("root reached! %p\n",_l);
+      if (IS_ROOTLAYER(_l))
+        kprintf("root reached! %p\n",_l);
 #endif
-      
-    if (_l == lparent)
-    {
-      if (IS_VISIBLE(_l) || (NULL == lparent->parent))
-        break;
-      else
-        lparent = lparent->parent;
-    }
-      
-    if (IS_VISIBLE(_l))
-      ClearRegionRegion(_l->visibleshape, &r);
 
-    _l = _l->back;
+      if (_l == lparent)
+      {
+        if (IS_VISIBLE(_l) || (NULL == lparent->parent))
+          break;
+        else
+          lparent = lparent->parent;
+      }
+
+      if (IS_VISIBLE(_l))
+        ClearRegionRegion(_l->visibleshape, &r);
+
+      _l = _l->back;
+    }
+
+    /*
+     * Now I need to clear the old layer at its previous place..
+     * But I may only clear those parts where no layer has become
+     * visible in the meantime.
+     */
+    if (!IS_EMPTYREGION(oldshape))
+    {
+      if (lparent && IS_ROOTLAYER(lparent))
+        _BackFillRegion(l->parent, oldshape, TRUE, LayersBase);
+    }
   }
 
   ClearRegion(&rtmp);
-    
-  /*
-   * Now I need to clear the old layer at its previous place..
-   * But I may only clear those parts where no layer has become
-   * visible in the meantime.
-   */
-  if (!IS_EMPTYREGION(oldshape))
-  {
-    if (lparent && IS_ROOTLAYER(lparent))
-      _BackFillRegion(l->parent, oldshape, TRUE, LayersBase);
-  }
 
   DisposeRegion(oldshape);
 
