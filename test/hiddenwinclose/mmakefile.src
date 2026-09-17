@@ -1,0 +1,7 @@
+include $(SRCDIR)/config/aros.cfg
+
+#MM test-hiddenwinclose : includes linklibs
+
+%build_prog mmake=test-hiddenwinclose \
+    progname=hiddenwinclose files=hiddenwinclose \
+    targetdir=$(AROS_TESTS)
