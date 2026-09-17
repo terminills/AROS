@@ -360,6 +360,12 @@ static void writedecl(FILE *out, struct config *cfg)
         fprintf(
             out,
             "static LONG __GM_BaseSlot;\n"
+            "/* Optional, module-provided last resort for a task whose whole\n"
+            " * creation chain is foreign (Chromium creates the thread, it never\n"
+            " * opened us and neither did its creator): the module lends a base\n"
+            " * it knows is valid.  Weak, so a module that does not define it\n"
+            " * keeps exactly the own-slot/parent-slot behaviour. */\n"
+            "extern char *__aros_borrow_offsettable(void) __attribute__((weak));\n"
             "__attribute__((visibility(\"hidden\"))) char *__aros_getoffsettable(void)\n"
             "{\n"
             "    /* A task that never opened this library (a pthread worker\n"
@@ -371,7 +377,10 @@ static void writedecl(FILE *out, struct config *cfg)
             "     * CR2 = offset of StdCBase in the base). */\n"
             "    char *__t = (char *)GetTaskStorageSlot(__GM_BaseSlot);\n"
             "    if (__t == (char *)0)\n"
+            "    {\n"
             "        __t = (char *)GetParentTaskStorageSlot(__GM_BaseSlot);\n"
+            "%s"
+            "    }\n"
             "    return __t;\n"
             "}\n"
             "__attribute__((visibility(\"hidden\"))) void __aros_setoffsettable(void *base)\n"
@@ -382,6 +391,22 @@ static void writedecl(FILE *out, struct config *cfg)
             "{\n"
             "    return (%s)__aros_getoffsettable();\n"
             "}\n",
+            /* A pertaskbase module is one base per task of one process, so a
+             * thread may keep the creator's base: remember it in this task's
+             * own slot, which is what makes the borrow TRANSITIVE.
+             * GetParentTaskStorageSlot() reads one et_Parent level only, so
+             * without this a thread created BY a borrowing thread found both
+             * slots empty and faulted in its first relwrapper (uv1.library on
+             * a Blink "ServiceWorker thread" two creations from the opener:
+             * __clock_gettime_PosixCBase_relwrapper, 2026-09-17, alpha9
+             * VS Code + GitHub Desktop).  Not done for peropenerbase, where a
+             * base belongs to one OpenLibrary() call, not to a task tree. */
+            (cfg->options & OPTION_PERTASKBASE)
+                ? "        if (__t == (char *)0 && __aros_borrow_offsettable != 0)\n"
+                  "            __t = __aros_borrow_offsettable();\n"
+                  "        if (__t != (char *)0)\n"
+                  "            SetTaskStorageSlot(__GM_BaseSlot, (IPTR)__t);\n"
+                : "",
             cfg->libbasetypeptrextern, cfg->libbase,
             cfg->libbasetypeptrextern
         );

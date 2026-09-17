@@ -122,8 +122,53 @@ static void uv_aros_reclaim_default_loop(struct UV1IntBase *base)
     base->default_loop_ptr = NULL;
 }
 
+/*
+ * A base to lend to a task whose entire creation chain is foreign.
+ *
+ * genmodule's per-task lookup checks the task's own slot, then its creator's,
+ * then this (weak) hook.  Both slots are empty for a thread Chromium created
+ * from another Chromium thread - a Blink "ServiceWorker thread" is two or
+ * more creations from the Process that opened us, and nothing in between ever
+ * called uv1, so there is no slot anywhere on the chain to inherit.  Such a
+ * thread still reaches uv1 through the LVO (Blink asks for the time), and its
+ * first relwrapper faulted resolving PosixCBase inside a NULL base:
+ *   Program failed: ServiceWorker thread, 0x80000003 illegal address access,
+ *   __clock_gettime_PosixCBase_relwrapper+0x1D  (alpha9, VS Code + GitHub
+ *   Desktop, 2026-09-17)
+ * the same shape node.library lends its base for
+ * (__node_aros_bind_callback_task_base, 2026-09-15/16).
+ *
+ * What is lent is the base of the most recent per-task OPEN.  A task with no
+ * base of its own cannot be running a loop (uv_aros_default_loop_* hands
+ * those the orphan pair), so what it can reach is the leaf, stateless end of
+ * the API - clock_gettime, hrtime, the string/memory calls uv1 makes through
+ * stdc - for which any valid base answers identically.  A borrow is never an
+ * identity: a task that later opens uv1 for real gets its own base, and the
+ * value stays valid because a process that opened uv1 keeps it open for its
+ * whole life.  Guest-wide, not per-process: with TWO uv1-using processes
+ * alive, such a thread may borrow the other one's base, which is why this is
+ * the LAST resort and not a substitute for opening the library.
+ */
+static char *uv_aros_borrow_base;
+
+char *__aros_borrow_offsettable(void)
+{
+    return uv_aros_borrow_base;
+}
+
+static int uv_aros_open_record_base(struct Library *lh)
+{
+    uv_aros_borrow_base = (char *)lh;
+    return 1;
+}
+
 static int uv_aros_close_last(struct Library *lh)
 {
+    /* Stop lending a base that is about to be freed; a later opener installs
+       its own. The root base is never handed out here: only per-task dup
+       bases reach the hooks. */
+    if (uv_aros_borrow_base == (char *)lh)
+        uv_aros_borrow_base = NULL;
     uv_aros_reclaim_default_loop((struct UV1IntBase *)lh);
     /* The closing task's bsdsocket base and socket registry (aros-net.c
        keeps them per task); exec calls only, like everything here. */
@@ -141,5 +186,6 @@ static int uv_aros_expunge_prepare(struct Library *lh)
     return closer != 0 && closer == GetETaskID(FindTask(NULL));
 }
 
+ADD2OPENLIB(uv_aros_open_record_base, 0)
 ADD2CLOSELIB(uv_aros_close_last, 0)
 ADD2EXPUNGELIB(uv_aros_expunge_prepare, 0)
