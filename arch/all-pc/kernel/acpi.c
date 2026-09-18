@@ -1,10 +1,11 @@
 /*
-    Copyright (C) 2017-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <aros/asmcall.h>
 #include <proto/exec.h>
 #include <proto/acpica.h>
+#include <proto/arossupport.h>          /* LibFindTagItem() for the maxcpus= arg */
 #define __KERNEL_NOLIBBASE__
 #include <proto/kernel.h>
 
@@ -252,6 +253,64 @@ void acpi_Init(struct PlatformData *pdata)
                     bug(", %d usable", pdata->kb_APIC->apic_count);
                 }
                 bug("\n");
+
+                /*
+                 * "maxcpus=N" caps the logical CPUs the system uses, counting the
+                 * BSP: maxcpus=1 is uniprocessor, maxcpus=16 halves this 32-thread
+                 * box. Previously the ONLY way to vary core count was the BIOS SMT
+                 * switch - someone physically at the machine, and it can only
+                 * express "half". As an argument it becomes a variable we can sweep
+                 * from the GRUB command line, which is what bisecting an SMP
+                 * scaling defect or a Chromium thread-count regression needs.
+                 *
+                 * The cap is applied to apic_count ITSELF, here, right after MADT
+                 * enumeration and before any consumer runs - NOT to smp_Wake()'s
+                 * loop bound. apic_count is the system-wide "how many CPUs exist"
+                 * answer: KrnGetCPUCount() reports it, alloccpumask.c sizes masks
+                 * by it, and kernel_ipi.c broadcasts over 0..apic_count and then
+                 * spins until every one of those CPUs acknowledges. Capping only
+                 * the wake loop would leave the kernel believing in CPUs that were
+                 * never started, and the first IPI broadcast would wait forever on
+                 * a core that is still parked. AROS has no offline-CPU concept, so
+                 * lowering the count is the honest model: the CPUs above the cap
+                 * simply do not exist as far as the kernel is concerned.
+                 */
+                if (pdata->kb_APIC)
+                {
+                    struct TagItem *cmdTags = LibFindTagItem(KRN_CmdLine, BootMsg);
+                    const char *arg = (cmdTags && cmdTags->ti_Data) ?
+                        strstr((const char *)cmdTags->ti_Data, "maxcpus=") : NULL;
+
+                    if (arg)
+                    {
+                        const char *digits = arg + 8;    /* strlen("maxcpus=") */
+                        ULONG requested = 0;
+
+                        /*
+                         * Parsed by hand: this is the freestanding kernel, which
+                         * links no libc, and strtoul()/atoi() appear nowhere else
+                         * in it. Stops at the first non-digit, so "maxcpus=4 quiet"
+                         * parses as 4.
+                         */
+                        while (*digits >= '0' && *digits <= '9')
+                            requested = (requested * 10) + (ULONG)(*digits++ - '0');
+
+                        /* Clamp: 0 would drop the BSP, > count would overrun cores[]. */
+                        if (requested < 1)
+                            requested = 1;
+                        if (requested < pdata->kb_APIC->apic_count)
+                        {
+                            bug("[Kernel:ACPI] maxcpus=%u - limiting %d CPUs to %u\n",
+                                requested, pdata->kb_APIC->apic_count, requested);
+                            pdata->kb_APIC->apic_count = requested;
+                        }
+                        else
+                        {
+                            bug("[Kernel:ACPI] maxcpus=%u >= %d available - ignored\n",
+                                requested, pdata->kb_APIC->apic_count);
+                        }
+                    }
+                }
             }
 
             /* Initialize legacy 8259A PIC if present. */

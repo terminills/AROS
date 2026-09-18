@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #define __KERNEL_NOLIBBASE__
@@ -230,7 +230,12 @@ static int smp_Wake(struct KernelBase *KernelBase)
     apicReadyLocks = AllocMem(sizeof(spinlock_t) * apicData->apic_count, MEMF_CLEAR|MEMF_ANY);
     D(bug("[Kernel:SMP] %s: %d Ready spinlocks starting at 0x%p\n", __func__, apicData->apic_count, apicReadyLocks));
 
-    /* Core number 0 is our bootstrap core, so we start from No 1 */
+    /*
+     * Core number 0 is our bootstrap core, so we start from No 1.
+     * apic_count is already capped by "maxcpus=N" in acpi.c, so no limit is
+     * applied here - see the comment there for why the cap belongs to the count
+     * itself and not to this loop.
+     */
     for (cpuNo = 1; cpuNo < apicData->apic_count; cpuNo++)
     {
         struct APICCPUWake_Data apicWake =
