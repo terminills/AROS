@@ -1,0 +1,287 @@
+# Chromium on multiple cores: where we actually are, and the order to fix it
+
+Written 2026-09-18 for terminills ("we need to document and roadmap chromium
+using multiple cores"). Every claim below is cited to `file:line` and was read
+out of the tree, not recalled. Where something could not be established by
+reading code it is marked **UNVERIFIED** and says what would settle it.
+
+Trees referenced:
+- `aros-adt-src` (branch `chromium-clean`) — the OS
+- `chromium-aros/src` — the browser port
+- `chromium-aros-build` — build ledger and docs
+
+---
+
+## 1. The one-sentence answer
+
+Chromium already creates the right number of threads, and AROS already runs a
+real SMP scheduler on all 32 CPUs — but **every thread Chromium creates is
+pinned to the CPU that created it**, which is CPU 0, so the other 31 cores run
+nothing but their own idle task. The bottleneck is not Chromium's thread count
+and not the scheduler; it is a *default affinity mask* set in three lines of
+`rom/exec/exec_util.c`.
+
+---
+
+## 2. What is already right (do not "fix" these)
+
+**Chromium sizes its pools from the real core count.** `NumberOfProcessors()`
+on AROS calls `KrnGetCPUCount()`, not a hardcoded 1
+(`base/system/sys_info_posix.cc:176-181`). The sizing math is unpatched:
+`max(3, NumberOfProcessors() - 1)` foreground workers
+(`base/task/thread_pool/thread_pool_instance.cc:187-189`). Same
+`KrnGetCPUCount` approach in V8's monolith (`v8/src/base/sys-info.cc:50-54`),
+WebRTC (`third_party/webrtc/system_wrappers/source/cpu_info.cc:55`), gemmlowp
+and perfetto. So on the DUT Chromium asks for ~31 foreground workers and gets
+them.
+
+**The threads are real Exec processes.** `PlatformThread` uses pthreads
+(`base/threading/platform_thread_aros.cc:7,96`), and `pthread_create` creates a
+process via `CreateNewProcTags()`
+(`compiler/pthread/pthread_create.c:264-277`).
+
+**Blink's compositor and worker threads are created, not disabled.** The AROS
+patches in `third_party/blink/renderer/platform/scheduler/common/thread.cc:76-89`
+and `third_party/blink/renderer/core/workers/worker_thread.cc:811-817` are a
+re-entrancy relaxation and a shutdown-ordering fix respectively. The `[AROS_BMF]`
+blocks in `cc/trees/proxy_main.cc` and `proxy_impl.cc` are `VLOG` probes only.
+
+**AROS SMP is genuinely compiled in for this target.** `__AROSEXEC_SMP__` is
+gated on `--enable-target-variant=smp` (`configure.in:1667-1670`), and that is
+how the shipping SMP build is configured (`scripts/gimmearos-ext.sh:465-467`).
+APs really do enter the scheduler: after `RemTask()` of its bootstrap task
+(`arch/all-pc/kernel/smp.c:143`) each AP lands in `cpu_Dispatch`'s
+`while (!(task = core_Dispatch())) { sti; hlt; cli; }`
+(`arch/x86_64-pc/kernel/kernel_cpu.c:90-97`) and walks the same shared ready
+list CPU 0 walks.
+
+---
+
+## 3. The actual blocker, in three lines
+
+Every new task's ETask gets an affinity mask containing exactly one CPU — the
+one its creator happened to be running on:
+
+```c
+/* rom/exec/exec_util.c:126-136, Exec_InitETask() */
+cpunum = KrnGetCPUNumber();
+if (PrivExecBase(SysBase)->IntFlags & EXECF_CPUAffinity)
+{
+    IntETask(et)->iet_CpuAffinity = KrnAllocCPUMask();
+    KrnGetCPUMask(cpunum, IntETask(et)->iet_CpuAffinity);
+}
+```
+
+`KrnGetCPUMask` **assigns one bit, it does not OR** —
+`apicMask[idlong] = (1 << idbit);` (`arch/all-pc/kernel/apic.c:131`). So the
+mask is precisely one CPU.
+
+The dispatcher honours it. `core_Dispatch()` walks the single global
+`SysBase->TaskReady` list and skips any task whose mask excludes this CPU
+(`arch/all-pc/kernel/kernel_scheduler.c:308-319`, the filter at `:311`).
+
+The same CPU-0-only default is applied retroactively to every task that already
+exists when SMP comes up: `cpu_PrepareExec()` sets the current task's and every
+`TaskReady`/`TaskWait` node's affinity with a hardcoded `KrnGetCPUMask(0, ...)`
+and only then sets `EXECF_CPUAffinity`
+(`arch/all-pc/kernel/smp_exec.c:37-60`).
+
+**Nothing in the Chromium path ever widens the mask.** `pthread_create` passes
+no affinity tag (`compiler/pthread/pthread_create.c:264-277`);
+`CreateNewProc` finishes with `AddTask()` and a `NULL` taglist
+(`rom/dos/createnewproc.c:507-516`, `rom/exec/addtask.c:86`), so
+`PrepareContext`'s `TASKTAG_AFFINITY` case
+(`arch/x86_64-all/exec/preparecontext.c:46-52`) is never reached. The opt-out
+exists — `TASKAFFINITY_ANY` (`compiler/include/exec/tasks.h:229-232`) — and is
+used by exactly **two** tasks in the whole OS: the Exec housekeeper
+(`rom/exec/exec_init.c:313`) and the ACPI button class
+(`rom/hidds/acpi/button/acpibutton_class.c:218`).
+
+There is also **no way to re-pin a running task**: no `KrnSetCPUAffinity`, no
+`setcpuaffinity*` anywhere in the tree. Affinity is creation-time only.
+
+**Consequence:** the AP scheduler loop works perfectly and finds nothing it is
+allowed to run except its own priority -128 idle task, which was created with
+that AP's own mask (`arch/all-pc/exec/platform_init.c:363-396`). The cores are
+idle *by consequence of the default*, not because anything parks them.
+
+The scheduler source says as much itself, at `rom/exec/signal.c:191`:
+
+> `/* Task is not running now, find first cpu suitable to run this task. Use CPU balancing some day... */`
+
+---
+
+## 4. The sequencing trap — read this before widening anything
+
+**Today's CPU-0 pinning is accidentally acting as a global lock.** Widening
+affinity makes AROS genuinely concurrent for the first time under a real
+workload, and it does so for *all* of Chromium's ~31 threads at once. Two
+documented hazard classes stop being theoretical the moment that happens:
+
+1. **`Forbid()`/`Disable()` do not serialise across CPUs.** The port states it
+   plainly in `base/allocator/partition_allocator/src/partition_alloc/page_allocator_internals_aros.h:219-220`:
+   *"Forbid() does not stop the other CPUs on an SMP kernel, so the whole block
+   is briefly free to every other task."* That comment is a post-mortem: the
+   `Forbid(); FreeMem(); AllocAbs()` idiom produced a corrupted free-list link
+   on the native `pc-x86_64-smp` guest (`free_node.next = 0x20`, fault at
+   `tlsf_allocabs+0x99`, alert `0x80000003`) and the machine froze with no
+   output because the alert path deadlocked against the MemHeader spinlock it
+   was already holding (TRIG-1005/1006). **PartitionAlloc no longer uses that
+   idiom** — the slack now stays with the block — so this specific instance is
+   closed. The *class* is not: any AROS code that reaches for Forbid/Disable as
+   mutual exclusion is wrong on SMP, and has been getting away with it.
+2. **A boot-time SMP hang already exists.** `chromium-aros-build/docs/KNOWN-SITE-ISSUES.md:82`
+   records boots stalling roughly 1 in 3 inside `KrnSpinLock`, explicitly
+   tagged *"Kernel/SMP lane, not a Chromium defect — needs an owner outside the
+   browser work."*
+
+So the order below deliberately puts **measurement** before **widening**, and
+widening in a **narrow, reversible** form before anything global.
+
+---
+
+## 5. Roadmap
+
+### Phase 0 — Measure. Prove the claim on hardware before changing behaviour.
+
+Nothing here changes runtime behaviour.
+
+- `maxcpus=N` boot argument — **DONE**, `aros-adt-src 8cf530ee`. Caps
+  `apicData->apic_count` in `arch/all-pc/kernel/acpi.c` right after MADT
+  enumeration. Deliberately not the `smp_Wake()` loop bound: `apic_count` is
+  what `KrnGetCPUCount()` reports, what `alloccpumask.c` sizes masks by, and
+  what `kernel_ipi.c` broadcasts over before spinning for every CPU's
+  acknowledgement — capping only the wake loop would hang the first IPI on a
+  core still parked in the trampoline.
+- Add a per-CPU dispatch counter and a way to dump it (`core_Dispatch()`,
+  `arch/all-pc/kernel/kernel_scheduler.c:308`). This is the instrument that
+  turns "all threads are on CPU 0" from an inference into a measurement, and
+  it is the same instrument that proves any later phase worked.
+- Exit criterion: a run showing ~100% of dispatches on CPU 0 while Chromium is
+  loading a page, and `maxcpus=4` visibly changing `KrnGetCPUCount()` and hence
+  Chromium's worker count.
+
+### Phase 1 — Widen affinity for Chromium's threads only.
+
+The minimal, reversible change: pass `TASKTAG_AFFINITY, TASKAFFINITY_ANY` on
+the threads Chromium creates, leaving every other task in the system pinned
+exactly as it is today.
+
+- The plumbing already exists and is honoured:
+  `arch/x86_64-all/exec/preparecontext.c:46-52` consumes the tag;
+  `core_APIC_CPUInMask` treats `TASKAFFINITY_ANY` as "always true"
+  (`arch/all-pc/kernel/apic.c:150-154`).
+- The gap is the path: `CreateNewProc` has no `NP_` tag for affinity, and
+  `AddTask` passes a `NULL` taglist. So Phase 1 is really two pieces — an
+  `NP_Affinity` (or equivalent) passthrough in
+  `rom/dos/createnewproc.c`, and `pthread_create` electing it.
+- Scope it to pthreads first. That is exactly the set of threads Chromium and
+  V8 create, and it leaves Intuition, graphics.library, input and the handlers
+  untouched — which matters, because
+  `base/threading/platform_thread_aros.cc:37-44` records that compositing was
+  deliberately left at nice 0 to avoid starving `graphics.library`/Intuition.
+- **Expect this phase to surface bugs rather than speed.** Real concurrency
+  will find the Forbid/Disable assumptions in §4. That is the point of doing it
+  behind a boot argument: `maxcpus=1` is the instant A/B.
+
+### Phase 2 — Make the exposed paths actually SMP-safe.
+
+Driven by what Phase 1 breaks. Known candidates, in likelihood order:
+
+- Audit every `Forbid()`/`Disable()` used as mutual exclusion on data another
+  CPU can touch. Memory note `aros-smp-disable-forbid-per-cpu` and the
+  PartitionAlloc post-mortem above are the map.
+- The `KrnSpinLock` boot stall (`KNOWN-SITE-ISSUES.md:82`) — it is already a
+  1-in-3 event at 32 CPUs with *nothing* running concurrently. It will get
+  worse, and `maxcpus=N` is now the tool to bisect it.
+- `PrivExecBase->CPUMask` is clobbered rather than accumulated: each AP calls
+  `KrnGetCPUMask(cpuNo, PrivExecBase(SysBase)->CPUMask)`
+  (`arch/all-pc/kernel/smp_exec.c:221`) and `core_APIC_GetMask` **assigns**
+  (`apic.c:131`), so the field ends up holding only the last AP to boot rather
+  than the set of online CPUs. **UNVERIFIED:** no consumer of that field was
+  found in the scheduling path, so the downstream effect is unknown — but the
+  value is wrong either way and anything added later that reads it will be
+  wrong too.
+
+### Phase 3 — Stop lying about the core count, and re-enable Node/V8 parallelism.
+
+These are independent of Phases 1-2 and can proceed in parallel, but they are
+pointless before Phase 1 — extra threads with a CPU-0 mask only add contention.
+
+- `uv_cpu_info()` hardcodes `*count = 1`
+  (`workbench/libs/uv/src-aros/aros-stubs.c:334-351`). This is what feeds
+  Node's `os.cpus()` and `availableParallelism()`, so every JS-side
+  parallelism decision — including VS Code's — currently sees a uniprocessor.
+- `AROSPlatform::GetNumberOfProcessors()` returns a hardcoded 1 with a
+  `// TODO: Check AROS SMP capabilities`
+  (`workbench/libs/v8/engine/platform-aros.cc:255-260`). It is compiled in
+  unconditionally (`workbench/libs/v8/mmakefile.src:125-131`) while the V8
+  monolith carries its own `KrnGetCPUCount` version.
+  **UNVERIFIED — settle this first:** which implementation actually services
+  V8's queries at runtime. A one-line probe print in each, on one boot,
+  answers it. Do not "fix" the shim before knowing whether it is live.
+- `NodePlatform` on AROS is foreground-only: the constructor returns *before*
+  constructing `WorkerThreadsTaskRunner`, so there are **zero** Node worker
+  threads (`workbench/libs/node/node-v22.23.1-aros.diff:3620-3628`), and V8 is
+  started with `--single-threaded` (`:2646-2648`). The port's stated reason
+  (`:2633-2645`) is that every background job V8 posts — wasm tier-up,
+  concurrent recompilation, concurrent marking/sweeping — otherwise executes
+  synchronously at the post point. Re-enabling this is the single largest
+  available win for JS-heavy workloads (VS Code, Electron), and it is
+  meaningless until threads can leave CPU 0.
+
+### Phase 4 — Multi-process. Later, and not required for multicore.
+
+Chromium is forced single-process on AROS:
+`ApplyArosProcessModelDefaults()` appends `--single-process`, `--no-sandbox`
+and (absent `--use-gl`) `--disable-gpu`, called unconditionally from
+`content/app/content_main.cc:316-318`
+(definition `:143-156`). It is a default, not a lock — it only appends when the
+switch is absent, and children of an explicit `--type=` launch are left alone.
+
+A child launcher **does** exist and is AmigaDOS-native, not fork/exec:
+`LoadSeg()` + `CreateNewProc()` with IPC endpoints passed by command-line
+rendezvous (`base/process/launch_aros.cc:204,233-253`;
+`content/browser/child_process_launcher_helper_aros.cc:34-38,74`).
+
+The structural blocker is that AROS processes share one address space
+(`content/app/content_main.cc:100-103`), so per-process singletons have to be
+re-keyed by process identity — which the port already does with
+`CommandLine*`-keyed registries for the thread pool
+(`base/task/thread_pool/thread_pool_instance.cc:33-60`) and content
+initialisation (`content/app/content_main.cc:104-135`). The practical blocker
+is memory: each child reserves its own PartitionAlloc pools and the attempt
+dies with ENOMEM (`tests/aros-hosted-run.sh:77-81`), against a recorded 6 GB
+minimum for even single-process 4-core runs
+(`chromium-aros-build/BUILD-LEDGER.md:23`).
+
+**UNVERIFIED:** whether the `CreateNewProc` child path has ever succeeded. The
+code is complete; no passing evidence set was found.
+
+**Phase 4 is not on the critical path for using multiple cores.** Threads in
+one process are enough, and are what Phases 1-3 deliver.
+
+---
+
+## 6. What would change the plan
+
+- If Phase 0 measurement shows dispatches already spread across CPUs, §3 is
+  wrong and this whole document needs rewriting. That is precisely why Phase 0
+  exists and comes first.
+- If Phase 1 immediately reproduces the `KrnSpinLock` boot stall at a much
+  higher rate, Phase 2 moves ahead of Phase 1 and the widening gets reverted
+  until the lock is fixed.
+- The scheduler has **one global ready list under one spinlock**
+  (`compiler/include/exec/execbase.inc:75`,
+  `rom/exec/exec_intern.h:121`). Once 32 CPUs are genuinely pulling from it,
+  that lock becomes the next bottleneck, and per-CPU run queues become a real
+  piece of work rather than a micro-optimisation. Do not start there — measure
+  first — but expect it.
+
+## 7. Related records
+
+Memory: `aros-smp-disable-forbid-per-cpu`, `aros-smp-32core-stall`,
+`aros-smp-idle-gp-under-load`, `aros-tls-on-workers-gap`,
+`adt-is-ahead-of-opal-on-smp`, `aros-optimization-roadmap`.
+Relay: JOB-0101 (DUT bring-up, where `maxcpus=N` came from), TRIG-1005/1006
+(the PartitionAlloc SMP freeze).
