@@ -153,6 +153,20 @@ Nothing here changes runtime behaviour.
   what `kernel_ipi.c` broadcasts over before spinning for every CPU's
   acknowledgement — capping only the wake loop would hang the first IPI on a
   core still parked in the trampoline.
+- `--aros-cpu-limit=N` browser argument — **WRITTEN, NOT YET BUILT**. Caps what
+  `SysInfo::NumberOfProcessors()` reports
+  (`base/system/sys_info_posix.cc`, switch in `base/base_switches.{h,cc}`).
+  That one function is the chokepoint every pool size derives from, so capping
+  it is equivalent to capping the thread pool, V8, WebRTC, gemmlowp and
+  perfetto at once, and cannot drift out of sync with them. Clamps downward
+  only — a limit at or above the real count, or an unparseable one, is ignored,
+  so it can never invent cores.
+
+  The two limits answer different questions and are both worth having:
+  `maxcpus=N` changes what the **machine** has (and so what
+  `KrnGetCPUCount()` returns), while `--aros-cpu-limit=N` changes what the
+  **browser thinks** it has on an unchanged machine. Running 32 real cores with
+  `--aros-cpu-limit=4` isolates Chromium's own scaling from the kernel's.
 - Add a per-CPU dispatch counter and a way to dump it (`core_Dispatch()`,
   `arch/all-pc/kernel/kernel_scheduler.c:308`). This is the instrument that
   turns "all threads are on CPU 0" from an inference into a measurement, and
