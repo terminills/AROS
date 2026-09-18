@@ -4042,7 +4042,32 @@ AROS_UFH0(void, GM_UNIQUENAME(nRemovableTask))
                                 ncm->ncm_HasMounted = TRUE;
 
                                 // find and mount partitions
-                                if(!CheckPartitions(ncm) && ncm->ncm_CUC->cuc_AutoMountFAT)
+                                BOOL foundParts = CheckPartitions(ncm);
+
+                                /*
+                                 * Report the inputs to the mount decision below.
+                                 * Unconditional (not behind KPRINTF) and one line
+                                 * per medium, because "Waiting for bootable media"
+                                 * is indistinguishable at the screen from a USB
+                                 * enumeration failure, and the two have completely
+                                 * different fixes. These four values separate them
+                                 * in one boot: a real optical drive reports
+                                 * BlockSize=2048 DeviceType=5(CDROM), while NanoKVM
+                                 * virtual media and a USB stick written with our
+                                 * hybrid ISO both report BlockSize=512 DeviceType=0
+                                 * - in which case the CD branch below is skipped,
+                                 * CheckPartitions() has already mounted the hybrid
+                                 * ISO's FAT ESP, and ISO9660 is never attempted.
+                                 * Matches the OPAL tree's CDDBG line so logs from
+                                 * the two trees can be compared directly.
+                                 */
+                                KPrintF("[massstorage] CDDBG gate: BlockSize=%lu DeviceType=%lu(CDROM=%ld) "
+                                        "foundParts=%lu AutoMountCD=%lu\n",
+                                        (ULONG)ncm->ncm_BlockSize, (ULONG)ncm->ncm_DeviceType,
+                                        (LONG)(ncm->ncm_DeviceType == PDT_CDROM),
+                                        (ULONG)foundParts, (ULONG)ncm->ncm_CUC->cuc_AutoMountCD);
+
+                                if(!foundParts && ncm->ncm_CUC->cuc_AutoMountFAT)
                                 {
                                     // check for FAT volume with no partition table
                                     CheckFATPartition(ncm, 0);
@@ -4050,6 +4075,7 @@ AROS_UFH0(void, GM_UNIQUENAME(nRemovableTask))
                                 if((ncm->ncm_BlockSize == 2048) &&
                                    ((ncm->ncm_DeviceType == PDT_WORM) || (ncm->ncm_DeviceType == PDT_CDROM)))
                                 {
+                                    KPrintF("[massstorage] CDDBG -> CheckISO9660 (CD path taken)\n");
                                     if(ncm->ncm_CUC->cuc_AutoMountCD)
                                     {
                                         CheckISO9660(ncm);
