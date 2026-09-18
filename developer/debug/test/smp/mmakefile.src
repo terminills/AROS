@@ -2,14 +2,18 @@
 #MM- test : test-smp
 #MM- test-quick : test-smp-quick
 #
-#MM- test-smp : test-smp-stress test-smp-trace test-smp-smp test-smp-smp-smallpt test-smp-preempt test-smp-sigrace test-smp-sem test-smp-sched test-smp-doio test-smp-lists
-#MM- test-smp-quick : test-smp-stress-quick test-smp-trace-quick test-smp-smp-quick test-smp-smp-smallpt-quick test-smp-preempt-quick test-smp-sigrace-quick test-smp-sem-quick test-smp-sched-quick test-smp-doio-quick test-smp-lists-quick
+#MM- test-smp : test-smp-latency test-smp-stress test-smp-trace test-smp-smp test-smp-smp-smallpt test-smp-preempt test-smp-sigrace test-smp-sem test-smp-sched test-smp-doio test-smp-lists
+#MM- test-smp-quick : test-smp-latency-quick test-smp-stress-quick test-smp-trace-quick test-smp-smp-quick test-smp-smp-smallpt-quick test-smp-preempt-quick test-smp-sigrace-quick test-smp-sem-quick test-smp-sched-quick test-smp-doio-quick test-smp-lists-quick
 
 include $(SRCDIR)/config/aros.cfg
 
 EXEDIR := $(AROS_TESTS)/smp
 
 USER_CFLAGS := $(PARANOIA_CFLAGS)
+
+%build_prog mmake=test-smp-latency \
+    files=smplatency targetdir=$(EXEDIR) \
+    progname=SMP-Latency
 
 %build_prog mmake=test-smp-stress \
     files=smpstress targetdir=$(EXEDIR) \
