@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <asm/cpu.h>
@@ -10,6 +10,7 @@
 
 
 #include "kernel_base.h"
+#include "kernel_globals.h"     /* getKernelBase() for the claim/commit API */
 #include "kernel_intern.h"
 #include "kernel_debug.h"
 
@@ -89,6 +90,185 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
     }
 }
 
+/*
+ * Take an IPIHook off the free list, spinning until one is available.
+ *
+ * Factored out of core_DoCallIPI() so the claim/commit path below reuses the
+ * exact same loop rather than carrying a second copy: the ordering here
+ * (Disable() before the list spinlock, and never holding Free and Busy at
+ * once) is load-bearing, and two copies would drift.
+ */
+static struct IPIHook *core_IPIHookAlloc(struct KernelBase *KernelBase)
+{
+    struct PlatformData *pdata = KernelBase->kb_PlatformData;
+    struct APICData *apicPrivate = pdata->kb_APIC;
+    struct IPIHook *ipi = NULL, *n = NULL;
+    D(int cpunum = KrnGetCPUNumber();)
+
+    do
+    {
+        Disable();
+        KrnSpinLock(&pdata->kb_FreeIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+        ipi = (struct IPIHook *)REMHEAD(&pdata->kb_FreeIPIHooks);
+        KrnSpinUnLock(&pdata->kb_FreeIPIHooksLock);
+        Enable();
+        if (ipi == NULL)
+        {
+            D(bug("[Kernel:IPI.CPU.%03u] %s: Failed to allocate IPIHook entry\n", cpunum, __func__));
+            Disable();
+            KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+            ForeachNodeSafe(&pdata->kb_BusyIPIHooks, ipi, n)
+            {
+                if (!memcmp(ipi->ih_CPUDone, ipi->ih_CPURequested, sizeof(ULONG) * ((31 + apicPrivate->apic_count)/32)))
+                {
+                    D(bug("[Kernel:IPI.CPU.%03u] %s: Busy IPI @ %p appears to be finished?\n", cpunum, __func__, ipi));
+                }
+                else
+                {
+                    D(bug("[Kernel:IPI.CPU.%03u] %s: Busy IPI @ %p\n", cpunum, __func__, ipi));
+                }
+            }
+            KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
+            Enable();
+            ipi = NULL;
+            /* Tell the CPU we are idling around a lock... */
+            asm volatile("pause");
+        }
+    } while (ipi == NULL);
+
+    return ipi;
+}
+
+/*
+ * Claim an entry without publishing it. The caller commits or aborts it.
+ *
+ * Claiming can spin (the free list may be empty), so exec calls this BEFORE
+ * taking the target task's tc_SpinLock - see the comment in rom/exec/signal.c.
+ * A claimed entry is on no list, so a concurrent core_CancelCallIPIs() cannot
+ * see it; that is the point of the split, since the commit then happens under
+ * tc_SpinLock after tc_State has been re-checked.
+ */
+struct CallIPIEntry *core_ClaimCallIPI(int cpu)
+{
+    (void)cpu;
+    return (struct CallIPIEntry *)core_IPIHookAlloc(getKernelBase());
+}
+
+/* Give a claimed entry back unused - the target died before we committed. */
+void core_AbortCallIPI(struct CallIPIEntry *cie, int cpu)
+{
+    struct KernelBase *KernelBase = getKernelBase();
+    struct PlatformData *pdata = KernelBase->kb_PlatformData;
+    struct IPIHook *ipi = (struct IPIHook *)cie;
+
+    (void)cpu;
+    if (!ipi)
+        return;
+
+    Disable();
+    KrnSpinLock(&pdata->kb_FreeIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+    ADDTAIL(&pdata->kb_FreeIPIHooks, ipi);
+    KrnSpinUnLock(&pdata->kb_FreeIPIHooksLock);
+    Enable();
+}
+
+/*
+ * Publish a claimed entry to exactly one CPU and poke it.
+ *
+ * Always asynchronous: the only caller is Signal(), which may run from an
+ * interrupt and must not wait for the target to drain.
+ */
+void core_CommitCallIPI(struct CallIPIEntry *cie, int cpu, struct Hook *hook,
+                        int nargs, IPTR *args)
+{
+    struct KernelBase *KernelBase = getKernelBase();
+    struct PlatformData *pdata = KernelBase->kb_PlatformData;
+    struct APICData *apicPrivate = pdata->kb_APIC;
+    struct IPIHook *ipi = (struct IPIHook *)cie;
+    /* Stack mask: Signal() may run in an interrupt, so KrnAllocCPUMask()
+     * (which allocates) is not available here. 8 longs = 256 CPUs. */
+    ULONG mask[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    int i;
+
+    if (!ipi)
+        return;
+
+    if (nargs > IPI_CALL_HOOK_MAX_ARGS)
+        nargs = IPI_CALL_HOOK_MAX_ARGS;
+
+    ipi->ih_Hook.h_Entry = hook->h_Entry;
+    ipi->ih_Hook.h_SubEntry = hook->h_SubEntry;
+    ipi->ih_Hook.h_Data = hook->h_Data;
+
+    for (i = 0; i < nargs; i++)
+        ipi->ih_Args[i] = args[i];
+
+    ipi->ih_Async = 1;
+
+    bzero(ipi->ih_CPUDone, sizeof(ULONG) * ((31 + apicPrivate->apic_count) / 32));
+    bzero(ipi->ih_CPURequested, sizeof(ULONG) * ((31 + apicPrivate->apic_count) / 32));
+    bit_test_and_set_long(ipi->ih_CPURequested, cpu);
+
+    bit_test_and_set_long(mask, cpu);
+
+    Disable();
+    KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+    ADDTAIL(&pdata->kb_BusyIPIHooks, ipi);
+    KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
+    Enable();
+
+    core_DoIPI(IPI_CALL_HOOK, mask, KernelBase);
+}
+
+/*
+ * Drop every queued call matching (hookEntry, args[1]) and make sure none is
+ * still executing anywhere once we return. Called from RemTask() via
+ * Exec_CancelSignalIPIs() once the task is terminal, before its memory is
+ * freed.
+ *
+ * Why no separate "wait for the executing call" loop, unlike arm-native: on pc
+ * core_IPICallHookHandle() holds kb_BusyIPIHooksLock ACROSS the CALLHOOKPKT(),
+ * so a core that is mid-hook still owns this lock. Acquiring it therefore
+ * already waits that core out, and once we hold it no core can start a new
+ * hook. The lock IS the barrier.
+ *
+ * An entry we unlink here was allocated by core_ClaimCallIPI() and never ran,
+ * so returning it straight to the free list is the same bookkeeping the drain
+ * would have done, minus the CPUDone/SyncLock steps which only apply to a call
+ * that actually executed. Async-only by construction: sync callers block in
+ * core_DoCallIPI() until completion, so a sync entry cannot outlive its caller
+ * and can never be one of ours.
+ */
+void core_CancelCallIPIs(APTR hookEntry, IPTR matchArg)
+{
+    struct KernelBase *KernelBase = getKernelBase();
+    struct PlatformData *pdata;
+    struct IPIHook *ipi, *n;
+
+    if (!KernelBase)
+        return;
+    pdata = KernelBase->kb_PlatformData;
+    if (!pdata || !pdata->kb_APIC)
+        return;
+
+    Disable();
+    KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+    ForeachNodeSafe(&pdata->kb_BusyIPIHooks, ipi, n)
+    {
+        if ((APTR)ipi->ih_Hook.h_Entry == hookEntry &&
+            ipi->ih_Async &&
+            ipi->ih_Args[1] == matchArg)
+        {
+            REMOVE(ipi);
+            KrnSpinLock(&pdata->kb_FreeIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+            ADDTAIL(&pdata->kb_FreeIPIHooks, ipi);
+            KrnSpinUnLock(&pdata->kb_FreeIPIHooksLock);
+        }
+    }
+    KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
+    Enable();
+}
+
 int core_DoCallIPI(struct Hook *hook, void *cpu_mask, int async, int nargs, IPTR *args, APTR _KB)
 {
     struct KernelBase *KernelBase = _KB;
@@ -113,36 +293,7 @@ int core_DoCallIPI(struct Hook *hook, void *cpu_mask, int async, int nargs, IPTR
 
             If the FreeIPIHooks list is empty, just do busyloop wait - other cores shall free the hook sooner or later
         */
-        do
-        {
-            Disable();
-            KrnSpinLock(&pdata->kb_FreeIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
-            ipi = (struct IPIHook *)REMHEAD(&pdata->kb_FreeIPIHooks);
-            KrnSpinUnLock(&pdata->kb_FreeIPIHooksLock);
-            Enable();
-            if (ipi == NULL)
-            {
-                (bug("[Kernel:IPI.CPU.%03u] %s: Failed to allocate IPIHook entry\n", cpunum, __func__));
-                Disable();
-                KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
-                ForeachNodeSafe(&pdata->kb_BusyIPIHooks, ipi, n)
-                {
-                    if (!memcmp(ipi->ih_CPUDone, ipi->ih_CPURequested, sizeof(ULONG) * ((31 + apicPrivate->apic_count)/32)))
-                    {
-                        D(bug("[Kernel:IPI.CPU.%03u] %s: Busy IPI @ %p appears to be finished?\n", cpunum, __func__, ipi));
-                    }
-                    else
-                    {
-                        D(bug("[Kernel:IPI.CPU.%03u] %s: Busy IPI @ %p\n", cpunum, __func__, ipi));
-                    }
-                }
-                KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
-                Enable();
-                ipi = NULL;
-                // Tell CPU we are idling aroud a lock...
-                asm volatile("pause");
-            }
-        } while(ipi == NULL);
+        ipi = core_IPIHookAlloc(KernelBase);
 
         D(bug("[Kernel:IPI.CPU.%03u] %s: Allocated IPIHook %p\n", cpunum, __func__, ipi));
     

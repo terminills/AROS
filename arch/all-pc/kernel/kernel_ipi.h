@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #ifndef __KERNEL_IPI_H_
@@ -23,6 +23,36 @@
 int core_IPIHandle(struct ExceptionContext *regs, void *data1, struct KernelBase *KernelBase);
 void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBase);
 int core_DoCallIPI(struct Hook *hook, void *cpu_mask, int async, int nargs, IPTR *args, APTR _KB);
+
+/*
+ * Split claim/commit API plus cancellation, so exec can validate the target
+ * task's lifetime atomically with the enqueue (rom/exec/signal.c) and flush
+ * stale calls at task teardown (rom/exec/remtask.c).
+ *
+ * KERNEL_IPI_CALL_CANCELABLE is the per-architecture opt-in: exec's
+ * lifetime-safe path is keyed off this define and platforms that do not
+ * provide these four entry points fall back to plain core_DoCallIPI. Nothing
+ * outside arch/ needs to change to adopt it, and defining it here cannot
+ * affect any other architecture.
+ *
+ * Without it, Exec_CancelSignalIPIs() compiles to an empty function: RemTask()
+ * then frees a task while a Signal-IPI naming that task may still be queued
+ * for another core, which drains it against freed memory. That is the failure
+ * developer/debug/test/smp/smpsigrace.c reports as "CPU wedged draining a
+ * stale Signal-IPI after the task was freed".
+ *
+ * struct CallIPIEntry is deliberately opaque to exec; on pc it is a
+ * struct IPIHook taken from the platform's free list.
+ */
+struct CallIPIEntry;
+
+extern struct CallIPIEntry *core_ClaimCallIPI(int cpu);
+extern void core_CommitCallIPI(struct CallIPIEntry *cie, int cpu,
+                               struct Hook *hook, int nargs, IPTR *args);
+extern void core_AbortCallIPI(struct CallIPIEntry *cie, int cpu);
+extern void core_CancelCallIPIs(APTR hookEntry, IPTR matchArg);
+
+#define KERNEL_IPI_CALL_CANCELABLE
 
 #define IPI_CALL_HOOK_MAX_ARGS  5
 
