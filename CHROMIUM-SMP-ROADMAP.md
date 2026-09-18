@@ -17,9 +17,62 @@ Trees referenced:
 Chromium already creates the right number of threads, and AROS already runs a
 real SMP scheduler on all 32 CPUs — but **every thread Chromium creates is
 pinned to the CPU that created it**, which is CPU 0, so the other 31 cores run
-nothing but their own idle task. The bottleneck is not Chromium's thread count
-and not the scheduler; it is a *default affinity mask* set in three lines of
-`rom/exec/exec_util.c`.
+nothing but their own idle task. Chromium never opts in to the mechanism AROS
+provides for spreading work, because that mechanism is explicit placement, not
+automatic balancing.
+
+## 1a. AROS SMP is master/child. Read this before proposing anything.
+
+**AROS does not automatically balance tasks across cores, and this is by
+design, not an omission.** There is no balancer and no work stealing; a task
+runs where it was placed. `rom/exec/signal.c:191` says so in the source:
+*"find first cpu suitable to run this task. Use CPU balancing some day..."*
+
+The intended pattern is implemented twice in-tree, identically, and those two
+programs are the specification:
+`developer/debug/test/smp/smp-test/` and
+`developer/debug/test/smp/smp-smallpt/`.
+
+1. **Take a core budget as an argument, clamped to the real count.**
+   `ARG_TEMPLATE "MAXCPU/N,MAXITER/N,OVERSAMPLE/N,BUDDHA/S"`
+   (`smp-test/smpt_main.c:32`), defaulted to `coreCount` (`:78`) and clamped
+   with `if (max_cpus > coreCount) max_cpus = coreCount;` (`:110-111`).
+   smallpt has the same `MAXCPU/N` (`smp-smallpt/main.c:85-86`).
+2. **One master, floating, slightly lower priority.**
+   `NewCreateTask(TASKTAG_NAME, "SMP-Test Master", TASKTAG_AFFINITY,
+   TASKAFFINITY_ANY, TASKTAG_PRI, -1, ...)` (`smpt_main.c:287-290`;
+   `smp-smallpt/main.c:242-243`).
+3. **One worker per core, each PINNED to exactly that core.**
+   ```c
+   for (core = 0; core < max_cpus; core++) {
+       void *coreAffinity = KrnAllocCPUMask();
+       KrnGetCPUMask(core, coreAffinity);
+       ...
+       NewCreateTask(TASKTAG_NAME, name,
+                     TASKTAG_AFFINITY, coreAffinity,
+                     TASKTAG_PRI, 0, TASKTAG_PC, SMPTestWorker, ...);
+   }
+   ```
+   (`smpt_main.c:143-183`; `smp-smallpt/renderer.c:149-156`)
+4. **Work flows master → worker over MsgPorts**, one unit at a time:
+   `PutMsg(coreWorker->smpw_MsgPort, workMsg)` (`smp-test/master.c:67`)
+   against `WaitPort` / `GetMsg` in the worker (`smp-test/worker.c:194-196`).
+   Shared state is held under a Semaphore, not Forbid/Disable
+   (`smpt_main.c:141`).
+
+**This reframes `KrnGetCPUMask` setting a single bit
+(`arch/all-pc/kernel/apic.c:131`).** It is not a wart to be fixed — it is the
+primitive "give me the mask for core N", and the per-core loop above is its
+intended use. Likewise the per-task default in `Exec_InitETask` is the
+conservative, locality-preserving choice for a system with no balancer.
+
+The in-tree production consumer follows the same shape: NVMe allocates one
+queue per CPU and asks for one MSI-X vector per CPU
+(`rom/devs/nvme/nvme_controllerclass.c:282`,
+`rom/devs/nvme/nvme_busclass.c:275`).
+
+**Therefore: the goal is not to make AROS balance Chromium's threads. It is to
+make Chromium place its workers the way smp-test does.**
 
 ---
 
@@ -171,32 +224,69 @@ Nothing here changes runtime behaviour.
   `arch/all-pc/kernel/kernel_scheduler.c:308`). This is the instrument that
   turns "all threads are on CPU 0" from an inference into a measurement, and
   it is the same instrument that proves any later phase worked.
-- Exit criterion: a run showing ~100% of dispatches on CPU 0 while Chromium is
-  loading a page, and `maxcpus=4` visibly changing `KrnGetCPUCount()` and hence
-  Chromium's worker count.
+- **Run the in-tree SMP tests in QEMU first, before touching Chromium.**
+  `developer/debug/test/smp/` builds SMP-Stress, SMP-Trace, SMP-Test,
+  SMP-Smallpt, SMP-Preempt, SMP-SigRace, SMP-Sem, SMP-Sched, SMP-DoIO and
+  SMP-Lists (`mmakefile.src`, targets `test-smp` / `test-smp-quick`). These are
+  Nick's own programs written to this design, they already take `MAXCPU/N`, and
+  they exercise the exact primitives Phase 1 depends on — per-core task
+  placement, MsgPort handover, semaphores under contention. They are the
+  acceptance harness: if SMP-Test does not scale in QEMU at `-smp 4`, nothing
+  we do to Chromium will either, and we would be debugging the browser for an
+  OS defect. Cheap, reproducible, no hardware needed.
+- Exit criterion: (a) SMP-Test and SMP-Smallpt run clean in QEMU at `-smp 1`,
+  `2` and `4` with wall-clock falling as cores rise; (b) a dispatch-counter run
+  showing ~100% of dispatches on CPU 0 while Chromium loads a page; (c)
+  `maxcpus=4` visibly changing `KrnGetCPUCount()` and hence Chromium's worker
+  count.
 
-### Phase 1 — Widen affinity for Chromium's threads only.
+Context: Deadwood asked for SMP to be prioritised, and the iteration target is
+Alpha 10, in QEMU. The hardware findings that produced `maxcpus=N` are JOB-0101;
+they are not a prerequisite for any of this.
 
-The minimal, reversible change: pass `TASKTAG_AFFINITY, TASKAFFINITY_ANY` on
-the threads Chromium creates, leaving every other task in the system pinned
-exactly as it is today.
+### Phase 1 — Give Chromium's pool workers explicit per-core placement.
 
-- The plumbing already exists and is honoured:
-  `arch/x86_64-all/exec/preparecontext.c:46-52` consumes the tag;
-  `core_APIC_CPUInMask` treats `TASKAFFINITY_ANY` as "always true"
-  (`arch/all-pc/kernel/apic.c:150-154`).
-- The gap is the path: `CreateNewProc` has no `NP_` tag for affinity, and
-  `AddTask` passes a `NULL` taglist. So Phase 1 is really two pieces — an
-  `NP_Affinity` (or equivalent) passthrough in
-  `rom/dos/createnewproc.c`, and `pthread_create` electing it.
-- Scope it to pthreads first. That is exactly the set of threads Chromium and
-  V8 create, and it leaves Intuition, graphics.library, input and the handlers
-  untouched — which matters, because
-  `base/threading/platform_thread_aros.cc:37-44` records that compositing was
+**Corrected 2026-09-18.** An earlier draft of this document proposed giving
+Chromium's threads `TASKAFFINITY_ANY` and letting the scheduler sort it out.
+That is wrong and it is recorded here so nobody re-proposes it: AROS has no
+balancer (§1a), so "floating" threads do not get distributed — they get handed
+to whichever CPU wins the race for the single global `TaskReady` spinlock, with
+no locality, maximum contention on that one lock, and no reproducibility
+between runs. `TASKAFFINITY_ANY` is for the *master*, which is one mostly-idle
+task, not for N workers.
+
+The design-following change is to make Chromium's thread pool do what
+`smp-test` does — pin worker *i* to core *i*:
+
+- Chromium already creates the right number of workers, sized from
+  `NumberOfProcessors()`
+  (`base/task/thread_pool/thread_pool_instance.cc:187-189`). So the count is
+  right and only the *placement* is missing. This is a smaller change than the
+  rejected one, not a larger one.
+- The seam is `pthread_create`, which currently passes no affinity tag
+  (`compiler/pthread/pthread_create.c:264-277`). Add the affinity to
+  `pthread_attr_t` behind the glibc-compatible spelling
+  (`pthread_attr_setaffinity_np`), so the AROS-specific part stays inside the
+  pthread implementation and Chromium's side is ordinary POSIX.
+- That still needs the DOS gap closed: `CreateNewProc` has no `NP_` tag for
+  affinity and `AddTask` passes a `NULL` taglist
+  (`rom/dos/createnewproc.c:507-516`, `rom/exec/addtask.c:86`), so
+  `PrepareContext`'s `TASKTAG_AFFINITY` case
+  (`arch/x86_64-all/exec/preparecontext.c:46-52`) is unreachable from there.
+  Either add an `NP_Affinity` passthrough, or have pthread_create use
+  `NewCreateTask` directly as the SMP tests do.
+- Assign cores round-robin over the worker index, skipping core 0 where
+  possible: CPU 0 is where Intuition, input and the handlers live, and
+  `base/threading/platform_thread_aros.cc:37-44` records compositing being
   deliberately left at nice 0 to avoid starving `graphics.library`/Intuition.
+- Leave the browser main thread, the IO pump and Blink's main thread alone.
+  They are latency-sensitive, not throughput-bound, and the IO pump already
+  carries a priority workaround (`kIoPumpMinimumPriority = 1`,
+  `platform_thread_aros.cc:59,71-75`).
 - **Expect this phase to surface bugs rather than speed.** Real concurrency
-  will find the Forbid/Disable assumptions in §4. That is the point of doing it
-  behind a boot argument: `maxcpus=1` is the instant A/B.
+  will find the Forbid/Disable assumptions in §4. Which is why it goes in
+  behind two independent switches: `maxcpus=1` (kernel) and
+  `--aros-cpu-limit=1` (browser) are both instant A/Bs.
 
 ### Phase 2 — Make the exposed paths actually SMP-safe.
 
