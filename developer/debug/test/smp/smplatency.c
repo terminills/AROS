@@ -93,6 +93,16 @@ struct LatWorker
      * with the port's queue EMPTY. The instrument was measuring the contention
      * it created rather than work-arrival latency.
      */
+    /*
+     * COUNT of units this worker has finished - not the last round number.
+     * It was the round number, compared by the master as lw_Seen == u, and
+     * since the struct is zero-initialised ROUND 0 WAS ALREADY SATISFIED
+     * before the worker ran. The master then raced ahead and re-PutMsg'd a
+     * WorkMsg that was still queued; AddTail on a node already in a list
+     * corrupts it, and the worker saw the same message over and over - 51224
+     * deliveries for 20 sends, which the report's own cross-check caught.
+     * A monotonic count compared against u+1 has no pre-satisfied state.
+     */
     volatile ULONG      lw_Seen;
     UQUAD              *lw_Samples;     /* for the median */
     char                lw_Name[24];
@@ -102,7 +112,8 @@ static struct LatWorker g_Workers[MAX_CORES];
 static ULONG            g_NumCores = 1;
 static ULONG            g_Units    = DEF_UNITS;
 static UQUAD            g_StallTicks;
-static UQUAD            g_EFreq    = 1;
+static UQUAD            g_EFreq    = 1;     /* EClock rate (calibration only) */
+static UQUAD            g_TickHz   = 1;     /* rate of whatever NOW() returns */
 
 /* Open a private timer.device unit for this task (one per task on SMP). */
 static struct timerequest *open_timer(struct MsgPort **portp)
@@ -141,6 +152,77 @@ static UQUAD eclock_now(struct Device *TimerBase, struct EClockVal *ev)
     ReadEClock(ev);
     return (((UQUAD)ev->ev_hi) << 32) | (UQUAD)ev->ev_lo;
 }
+
+/*
+ * TIMESTAMPS COME FROM THE TSC, NOT timer.device, and that is not an
+ * optimisation - ReadEClock() is unusable as a per-unit clock on a many-core
+ * guest, three ways over:
+ *
+ *  1. IT IS PORT I/O. EClockUpdate() latches the 8254 with
+ *     outb(CH0|ACCESS_LATCH, PIT_CONTROL) (arch/all-pc/timer/ticks.c:105).
+ *     Every read is a VM exit under QEMU. Our own eclock rate prints as
+ *     1193180 Hz, which is the 8254, so this is the path being taken.
+ *  2. IT SHARES A CACHE LINE. It updates TimerBase->tb_ticks_total, one
+ *     structure for the whole system, so N cores timestamping is N cores
+ *     writing the same line - the identical mistake as the shared reply port
+ *     this test already had to remove.
+ *  3. IT IS NOT SMP-SAFE FOR THIS USE. ReadEClock() guards itself with
+ *     Disable(), which is PER-CPU on SMP and serialises nothing against
+ *     another core doing the same update.
+ *
+ * With two reads per work unit, the clock was plausibly a large part of what
+ * the 1-CPU baseline measured (median 21us for a MsgPort round trip).
+ *
+ * RDTSC is ~20 cycles, needs no lock and no exit, and is a per-core register,
+ * so it adds no contention at any core count. The kernel already relies on
+ * invariant TSC (the boot log calibrates APs with "TSC freq inherited from BSP
+ * ... [invariant TSC]"), so the rate is stable and equal across cores. HPET
+ * would also beat the PIT - it is memory-mapped and the guest reports 2 units -
+ * but it is still a shared device read, so TSC is the better answer here.
+ *
+ * LIMITATION, stated because it bounds what these numbers mean: send and
+ * receive stamps are taken on DIFFERENT cores, so any cross-core TSC skew lands
+ * directly in the measurement. On KVM with invariant TSC the cores are kept in
+ * sync and the skew is far below the millisecond stalls being hunted, but a
+ * sub-microsecond figure from this test should not be trusted on hardware whose
+ * TSC sync is unknown.
+ */
+#if defined(__x86_64__) || defined(__i386__)
+#define HAVE_TSC 1
+static inline UQUAD tsc_now(void)
+{
+    ULONG lo, hi;
+    /* lfence first: rdtsc is not ordered against earlier loads on its own. */
+    asm volatile("lfence; rdtsc" : "=a"(lo), "=d"(hi));
+    return (((UQUAD)hi) << 32) | (UQUAD)lo;
+}
+
+/* One-time, single-threaded, before any worker exists - so the PIT reads here
+ * cost nothing anyone else is waiting on. */
+static UQUAD calibrate_tsc_hz(struct Device *TimerBase, UQUAD eclock_hz)
+{
+    struct EClockVal ev;
+    UQUAD e0, e1, t0, t1;
+
+    e0 = eclock_now(TimerBase, &ev);
+    t0 = tsc_now();
+    do {
+        e1 = eclock_now(TimerBase, &ev);
+    } while ((e1 - e0) < (eclock_hz / 20));      /* ~50 ms */
+    t1 = tsc_now();
+
+    if (e1 == e0)
+        return 0;
+    return ((t1 - t0) * eclock_hz) / (e1 - e0);
+}
+#endif
+
+/* Hot-path clock: TSC where we have it, EClock otherwise. */
+#if defined(HAVE_TSC)
+#define NOW(tb, ev)   tsc_now()
+#else
+#define NOW(tb, ev)   eclock_now((tb), (ev))
+#endif
 
 /*
  * Worker: pinned to one core. Creates its OWN MsgPort, because a MsgPort
@@ -194,7 +276,7 @@ static void LatencyWorker(void)
                 Wait(0);
             }
 
-            now = eclock_now(TimerBase, &ev);
+            now = NOW(TimerBase, &ev);
             delta = (now > wm->wm_SentAt) ? (now - wm->wm_SentAt) : 0;
 
             if (delta < w->lw_Min) w->lw_Min = delta;
@@ -221,7 +303,7 @@ static void LatencyWorker(void)
              * owned. See lw_Seen for why the reply port had to go.
              */
             __sync_synchronize();
-            w->lw_Seen = wm->wm_Seq;
+            w->lw_Seen++;
         }
     }
 }
@@ -248,9 +330,9 @@ static void sort_samples(UQUAD *v, ULONG n)
 
 static ULONG ticks_to_us(UQUAD ticks)
 {
-    if (!g_EFreq)
+    if (!g_TickHz)
         return 0;
-    return (ULONG)((ticks * 1000000ULL) / g_EFreq);
+    return (ULONG)((ticks * 1000000ULL) / g_TickHz);
 }
 
 int main(void)
@@ -296,15 +378,31 @@ int main(void)
     g_EFreq = (UQUAD)ReadEClock(&ev);
     if (!g_EFreq)
         g_EFreq = 1;
-    g_StallTicks = (g_EFreq * (UQUAD)stallms) / 1000ULL;
+    g_TickHz = g_EFreq;
+#if defined(HAVE_TSC)
+    {
+        UQUAD hz = calibrate_tsc_hz(TimerBase, g_EFreq);
+
+        /* Sanity-bound the calibration: a wild value would silently scale every
+         * figure in the report. Anything outside 100 MHz..100 GHz means the
+         * calibration itself went wrong, so fall back to EClock and say so. */
+        if (hz > 100000000ULL && hz < 100000000000ULL)
+            g_TickHz = hz;
+        else
+            bug("[smplatency] TSC calibration implausible (%lu Hz) - using EClock\n",
+                (unsigned long)hz);
+    }
+#endif
+    g_StallTicks = (g_TickHz * (UQUAD)stallms) / 1000ULL;
     /* A round's deadline is 10x the per-unit stall threshold: long enough
      * that an ordinary slow core is measured rather than accused, short
      * enough that a wedged core does not consume the capture window. */
     roundTicks = g_StallTicks * 10ULL;
 
-    bug("[smplatency] start: cpus=%lu (of %lu), units=%lu/core, stall>=%lums, eclock=%lu Hz\n",
+    bug("[smplatency] start: cpus=%lu (of %lu), units=%lu/core, stall>=%lums, clock=%lu Hz (%s)\n",
         (unsigned long)maxCpus, (unsigned long)coreCount,
-        (unsigned long)g_Units, (unsigned long)stallms, (unsigned long)g_EFreq);
+        (unsigned long)g_Units, (unsigned long)stallms, (unsigned long)g_TickHz,
+        (g_TickHz == g_EFreq) ? "EClock/PIT" : "TSC");
 
     /*
      * Deliberately NOT skipped at one CPU. A single-core run is the
@@ -383,6 +481,18 @@ int main(void)
                 (unsigned long)i, (unsigned long)g_Workers[i].lw_Ready, (unsigned long)spins);
     }
     progressEvery = (g_Units > 20) ? 25 : 1;   /* short runs: every round */
+
+    /*
+     * Drop the master to priority -1, as smp-test's master runs. This is not
+     * cosmetic: the master POLLS (it must not Delay(), which would sleep on the
+     * scheduler under test), so at equal priority it holds whatever core it is
+     * on until its quantum expires and any worker sharing that core waits the
+     * full slice. Measured before this line existed: a 1-CPU run reported
+     * min 7044us / median 20037us - i.e. the scheduler quantum, not
+     * work-arrival latency. At -1 any runnable worker preempts the master
+     * immediately and the figure means what it claims again.
+     */
+    SetTaskPri(FindTask(NULL), -1);
     bug("[smplatency] readiness wait done; starting %lu rounds\n", (unsigned long)g_Units);
 
     /*
@@ -415,7 +525,7 @@ int main(void)
             wm->wm_Msg.mn_ReplyPort = masterPort;
             wm->wm_Worker = w;
             wm->wm_Seq = u;
-            wm->wm_SentAt = eclock_now(TimerBase, &ev);
+            wm->wm_SentAt = NOW(TimerBase, &ev);
             PutMsg(w->lw_Port, (struct Message *)wm);
             outstanding++;
         }
@@ -438,7 +548,7 @@ int main(void)
          * the run continues, so one bad core cannot hide the other ninety-five.
          */
         {
-            UQUAD deadline = eclock_now(TimerBase, &ev) + roundTicks;
+            UQUAD deadline = NOW(TimerBase, &ev) + roundTicks;
 
             for (i = 0; i < maxCpus; i++)
                 g_Workers[i].lw_Replied = 0;
@@ -463,14 +573,14 @@ int main(void)
 
                     if (!w->lw_Task || w->lw_Ready != 1 || !w->lw_Port)
                         continue;
-                    if (w->lw_Seen == u)
+                    if (w->lw_Seen > u)
                         w->lw_Replied = 1;
                     else
                         outstanding++;
                 }
                 if (!outstanding)
                     break;
-                if (eclock_now(TimerBase, &ev) > deadline)
+                if (NOW(TimerBase, &ev) > deadline)
                 {
                     for (i = 0; i < maxCpus; i++)
                     {
@@ -519,10 +629,10 @@ int main(void)
          * the wedged one, blocking here would throw away the entire report.
          */
         {
-            UQUAD dl = eclock_now(TimerBase, &ev) + roundTicks;
+            UQUAD dl = NOW(TimerBase, &ev) + roundTicks;
             while (!w->lw_Done)
             {
-                if (eclock_now(TimerBase, &ev) > dl)
+                if (NOW(TimerBase, &ev) > dl)
                     break;
                 __sync_synchronize();
             }
@@ -536,6 +646,7 @@ int main(void)
     {
         struct LatWorker *w = &g_Workers[i];
         UQUAD med = 0;
+        ULONG nsamp;
 
         if (!w->lw_Count)
         {
@@ -544,10 +655,24 @@ int main(void)
             failed++;
             continue;
         }
-        if (w->lw_Samples)
+        /*
+         * CLAMP before sorting. lw_Count is written by another core and counts
+         * every unit that core processed; lw_Samples only ever holds g_Units of
+         * them (the store is guarded). sort_samples() WRITES as it shifts, so
+         * passing the raw count sorted far past the end of the array - a
+         * 45732-element sort over a 20-element buffer, which smashed the heap
+         * and took the task's stack with it ("went out of stack limits", with a
+         * valid task name, i.e. a real overflow rather than the corruption
+         * signature). An index derived from another core's counter must be
+         * bounded at the point of use, not where it is produced.
+         */
+        nsamp = w->lw_Count;
+        if (nsamp > g_Units)
+            nsamp = g_Units;
+        if (w->lw_Samples && nsamp)
         {
-            sort_samples(w->lw_Samples, w->lw_Count);
-            med = w->lw_Samples[w->lw_Count / 2];
+            sort_samples(w->lw_Samples, nsamp);
+            med = w->lw_Samples[nsamp / 2];
         }
         bug("[smplatency]  %03lu  %6lu  %7lu  %7lu  %7lu  %7lu  %7lu%s\n",
             (unsigned long)i,
@@ -558,6 +683,10 @@ int main(void)
             (unsigned long)w->lw_Stalls,
             (unsigned long)w->lw_Timeouts,
             w->lw_RanOnWrongCpu ? "  AFFINITY NOT HONOURED" : "");
+        if (w->lw_Count > g_Units)
+            bug("[smplatency]  %03lu  WARNING: processed %lu units but only %lu were sent -"
+                " duplicate delivery or counter corruption\n",
+                (unsigned long)i, (unsigned long)w->lw_Count, (unsigned long)g_Units);
         if (w->lw_Stalls || w->lw_Timeouts)
             stalled++;
     }
