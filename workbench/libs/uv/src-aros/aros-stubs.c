@@ -24,6 +24,18 @@
 #include <exec/memory.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
+/*
+ * <aros/kernel.h> (pulled in by proto/kernel.h) declares
+ *     typedef enum { SCHED_RR = 1 } KRN_SchedType;
+ * and POSIX <sched.h>, which libuv has already included here, defines SCHED_RR
+ * as a MACRO. The enum member then expands to a numeric constant and the header
+ * fails with "expected identifier before numeric constant". Same guard
+ * Chromium's base/system/sys_info_posix.cc uses for the same reason.
+ */
+#pragma push_macro("SCHED_RR")
+#undef SCHED_RR
+#include <proto/kernel.h>
+#pragma pop_macro("SCHED_RR")
 #include <utility/hooks.h>
 
 #include <netdb.h>
@@ -331,21 +343,53 @@ void uv_loadavg(double average[3]) {
     average[0] = average[1] = average[2] = 0.0;
 }
 
+/*
+ * Report the REAL core count, not 1.
+ *
+ * This is what feeds Node's os.cpus() and os.availableParallelism(), so every
+ * JS-side parallelism decision in Node, Electron and VS Code was being made by
+ * something told it had a uniprocessor. Chromium's C++ side already asks the
+ * kernel directly (base/system/sys_info_posix.cc uses KrnGetCPUCount), so this
+ * stub was the one place still claiming otherwise.
+ *
+ * kernel.resource is opened per call rather than cached: OpenResource() is a
+ * cheap list lookup, uv_cpu_info() is not a hot path (callers query it once and
+ * cache), and a static here would be one more piece of shared state on a
+ * many-core system for no gain. If the resource is unavailable we fall back to
+ * one CPU, which is the old behaviour.
+ */
 int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
   uv_cpu_info_t* info;
+  APTR KernelBase;
+  int ncpu = 1;
+  int i;
+
   if (cpu_infos == NULL || count == NULL)
     return UV_EINVAL;
 
-  info = calloc(1, sizeof(*info));
+  KernelBase = OpenResource("kernel.resource");
+  if (KernelBase != NULL) {
+    ncpu = (int)KrnGetCPUCount();
+    if (ncpu < 1)
+      ncpu = 1;
+  }
+
+  info = calloc(ncpu, sizeof(*info));
   if (info == NULL)
     return UV_ENOMEM;
-  info->model = strdup("AROS CPU");
-  if (info->model == NULL) {
-    free(info);
-    return UV_ENOMEM;
+
+  for (i = 0; i < ncpu; i++) {
+    info[i].model = strdup("AROS CPU");
+    if (info[i].model == NULL) {
+      while (--i >= 0)
+        free(info[i].model);
+      free(info);
+      return UV_ENOMEM;
+    }
   }
+
   *cpu_infos = info;
-  *count = 1;
+  *count = ncpu;
   return 0;
 }
 
