@@ -269,6 +269,15 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
 #else
         (inf->attr.stackaddr == NULL && inf->attr.stacksize > 0) ? NP_StackSize : TAG_IGNORE, inf->attr.stacksize,
 #endif
+        /*
+         * Place the thread if the caller asked for it. Without this every
+         * thread lands on the creating CPU, because AROS gives a new task an
+         * affinity mask containing only its creator's core and never migrates
+         * it (rom/exec/exec_util.c, Exec_InitETask). See
+         * pthread_attr_setaffinity_np(). The mask is handed to exec, which owns
+         * and frees it with the task.
+         */
+        inf->attr.cpuaffinity ? NP_Affinity : TAG_IGNORE, (IPTR)inf->attr.cpuaffinity,
 #if defined(__AMIGA__) && !defined(__MORPHOS__)
         NP_Input, (IPTR)inf,
 #else

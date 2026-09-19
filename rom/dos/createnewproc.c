@@ -102,6 +102,8 @@ void internal_ChildFree(APTR tid, struct DosLibrary * DOSBase);
 
 #define TAGDATA_NOT_SPECIFIED ~0ul
 
+    struct TagItem affinityTags[2];
+
     struct TagItem defaults[]=
     {
     /* 0 */    { NP_Seglist       , 0                           },
@@ -129,6 +131,7 @@ void internal_ChildFree(APTR tid, struct DosLibrary * DOSBase);
     /*22 */    { NP_Path          , TAGDATA_NOT_SPECIFIED       }, /* Default: copy path from parent */
     /*23 */    { NP_NotifyOnDeath , (IPTR)FALSE                 },
     /*24 */    { NP_ConsoleTask   , TAGDATA_NOT_SPECIFIED       },
+    /*25 */    { NP_Affinity      , (IPTR)NULL                  },
                { TAG_END          , 0                           }
     };
 
@@ -513,7 +516,27 @@ void internal_ChildFree(APTR tid, struct DosLibrary * DOSBase);
      * the new process gets to run, so hold Forbid() across AddTask().
      */
     Forbid();
-    if (AddTask(&process->pr_Task, DosEntry, NULL))
+    /*
+     * AddTask() is used deliberately (see above), so the NP_Affinity path is a
+     * DIVERSION rather than a replacement: only a caller that actually asked to
+     * be pinned takes NewAddTask(), and everyone else keeps the exact call the
+     * Blizzard SetFunction() trick depends on.
+     *
+     * NewAddTask() is what carries a taglist through to PrepareContext(), which
+     * is the only place TASKTAG_AFFINITY is consumed; AddTask() passes NULL, so
+     * there is no way to place a process from here without this.
+     */
+    /* Named local, not a compound literal: NewAddTask() is a library-stub
+     * MACRO, so the preprocessor splits an inline { ... , ... } on its commas
+     * and reports "passed 7 arguments, but takes just 4". */
+    affinityTags[0].ti_Tag  = TASKTAG_AFFINITY;
+    affinityTags[0].ti_Data = defaults[25].ti_Data;
+    affinityTags[1].ti_Tag  = TAG_DONE;
+    affinityTags[1].ti_Data = 0;
+
+    if (defaults[25].ti_Data
+        ? NewAddTask(&process->pr_Task, DosEntry, NULL, affinityTags)
+        : AddTask(&process->pr_Task, DosEntry, NULL))
     {
         if (SECURITY_ACTIVE && segList)
             secSetTaskOwnerFromSegment(&process->pr_Task, segList);

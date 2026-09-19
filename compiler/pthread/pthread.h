@@ -112,9 +112,37 @@ struct pthread_attr
     struct sched_param param;
     int inheritsched;
     int contentionscope;
+    /*
+     * CPU set for the new thread, as an AROS cpumask_t from KrnAllocCPUMask().
+     * NULL means "inherit exec's default", which on SMP is a mask containing
+     * only the CPU that created the thread - see the note on
+     * pthread_attr_setaffinity_np().
+     */
+    void *cpuaffinity;
 };
 
 typedef struct pthread_attr pthread_attr_t;
+
+/*
+ * Affinity, spelled the way glibc spells it so callers stay ordinary POSIX.
+ *
+ * AROS SMP does not balance tasks: a new task inherits an affinity mask holding
+ * only its creator's CPU (rom/exec/exec_util.c, Exec_InitETask) and nothing
+ * migrates it later. Work is placed explicitly - see
+ * developer/debug/test/smp/smp-test, the reference for the master/child model.
+ * Without this call every thread a threading layer creates lands on the
+ * creating core, however many cores the machine has.
+ *
+ * cpusetsize is accepted for source compatibility and ignored; cpuset is an
+ * AROS cpumask_t (KrnAllocCPUMask/KrnGetCPUMask), or TASKAFFINITY_ANY to let
+ * the thread run anywhere.
+ *
+ * OWNERSHIP: a mask handed to pthread_create() is passed to exec, which frees
+ * it when the thread dies (CleanupETask). Allocate one mask per thread; do not
+ * free it yourself and do not share one between threads.
+ */
+int pthread_attr_setaffinity_np(pthread_attr_t *attr, size_t cpusetsize, const void *cpuset);
+int pthread_attr_getaffinity_np(const pthread_attr_t *attr, size_t cpusetsize, void *cpuset);
 
 #define PTHREAD_CANCELED              ((void *)-1)
 

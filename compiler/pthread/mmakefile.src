@@ -24,6 +24,7 @@ PTHREADFUNCS :=  \
     pthread_attr_destroy \
     pthread_attr_init \
     pthread_attr_setstacksize \
+    pthread_attr_affinity \
     pthread_cond_destroy \
     pthread_cond_init \
     pthread_cond_signal \

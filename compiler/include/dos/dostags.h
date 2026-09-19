@@ -2,7 +2,7 @@
 #define DOS_DOSTAGS_H
 
 /*
-    Copyright © 1995-2020, The AROS Development Team. All rights reserved.
+    Copyright ï¿½ 1995-2020, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: Tags for DOS routines
@@ -88,6 +88,24 @@
   /* (IPTR) User dependant data. Do with it, what you want to. (Default: NULL)
   */
 #define NP_UserData	(NP_Dummy + 26)
+
+  /* (cpumask_t *) Pin the new process to a set of CPUs, as returned by
+     KrnAllocCPUMask()/KrnGetCPUMask(). TASKAFFINITY_ANY lets it run anywhere.
+     (Default: NULL - inherit exec's per-task default, i.e. the creating CPU.)
+
+     AROS SMP places tasks explicitly rather than balancing them: a new task
+     inherits an affinity mask containing only the CPU that created it
+     (rom/exec/exec_util.c, Exec_InitETask), and nothing moves it afterwards.
+     That is by design - see developer/debug/test/smp/smp-test, which is the
+     reference for the master/child model - but it left CreateNewProc() callers
+     with no way to opt in, so every process spawned by a threading layer landed
+     on its creator's core. This tag is that opt-in.
+
+     The mask is handed to exec, which takes ownership of it: PrepareContext()
+     stores the pointer raw and CleanupETask() frees it when the task dies. Do
+     not free it yourself and do not reuse one mask for two processes.
+  */
+#define NP_Affinity	(NP_Dummy + 27)
 
 
 /* Tags for SystemTagList(). Additionally you may use all the tags for
