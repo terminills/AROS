@@ -83,6 +83,17 @@ struct LatWorker
     ULONG               lw_RanOnWrongCpu;
     ULONG               lw_Timeouts;        /* rounds this core missed the deadline */
     volatile ULONG      lw_Replied;         /* replied in the current round */
+    /*
+     * Round number this worker has finished. Written ONLY by its own core and
+     * read by the master - one writer per cache line, so polling it costs no
+     * cross-core ownership transfer. This replaces a shared reply MsgPort: with
+     * 96 workers every ReplyMsg() was a PutMsg() to the SAME port, i.e. 96 cores
+     * serialising on one mp_SpinLock in InternalPutMsg(). Measured in a frozen
+     * guest: up to 21 cores at once inside `lock cmpxchg` on that single lock,
+     * with the port's queue EMPTY. The instrument was measuring the contention
+     * it created rather than work-arrival latency.
+     */
+    volatile ULONG      lw_Seen;
     UQUAD              *lw_Samples;     /* for the median */
     char                lw_Name[24];
 };
@@ -176,8 +187,7 @@ static void LatencyWorker(void)
 
             if (wm->wm_Seq == (ULONG)~0)
             {
-                /* Shutdown unit. Reply so the master can account for it. */
-                ReplyMsg((struct Message *)wm);
+                /* Shutdown unit - same slot protocol, no reply port. */
                 w->lw_Done = 1;
                 __sync_synchronize();
                 close_timer(tr, tport);
@@ -204,7 +214,14 @@ static void LatencyWorker(void)
             if (KernelBase && (ULONG)KrnGetCPUNumber() != w->lw_Cpu)
                 w->lw_RanOnWrongCpu++;
 
-            ReplyMsg((struct Message *)wm);
+            /*
+             * No ReplyMsg: publish completion in our own slot instead. Both
+             * ends of this protocol are ours, and the master does not reuse the
+             * WorkMsg until it has seen this store, so the message is safely
+             * owned. See lw_Seen for why the reply port had to go.
+             */
+            __sync_synchronize();
+            w->lw_Seen = wm->wm_Seq;
         }
     }
 }
@@ -426,15 +443,30 @@ int main(void)
             for (i = 0; i < maxCpus; i++)
                 g_Workers[i].lw_Replied = 0;
 
+            /*
+             * Poll each worker's own completion slot. No shared port, so this
+             * loop creates no cross-core contention of its own - which is the
+             * entire point: the previous version had all N workers ReplyMsg to
+             * one master port and then measured the convoy that produced.
+             *
+             * Spin rather than Delay(): Delay() sleeps on timer.device, i.e.
+             * waits for the scheduler to wake us, which is the thing under
+             * test. A deadline that can only fire if the scheduler is healthy
+             * is no deadline at all.
+             */
             while (outstanding)
             {
-                struct WorkMsg *rm;
-
-                while ((rm = (struct WorkMsg *)GetMsg(masterPort)))
+                outstanding = 0;
+                for (i = 0; i < maxCpus; i++)
                 {
-                    if (rm->wm_Worker)
-                        rm->wm_Worker->lw_Replied = 1;
-                    outstanding--;
+                    struct LatWorker *w = &g_Workers[i];
+
+                    if (!w->lw_Task || w->lw_Ready != 1 || !w->lw_Port)
+                        continue;
+                    if (w->lw_Seen == u)
+                        w->lw_Replied = 1;
+                    else
+                        outstanding++;
                 }
                 if (!outstanding)
                     break;
@@ -446,14 +478,7 @@ int main(void)
                         if (w->lw_Task && w->lw_Ready == 1 && w->lw_Port && !w->lw_Replied)
                             w->lw_Timeouts++;
                     }
-                    /*
-                     * The un-replied messages are still queued on their
-                     * workers' ports. Reusing those WorkMsg slots next round
-                     * would corrupt the queue, so stop here: the per-core
-                     * table below still reports everything gathered so far,
-                     * and lw_Timeouts names the culprits.
-                     */
-                    bug("[smplatency] round %lu: DEADLINE - %lu core(s) did not reply within %lums\n",
+                    bug("[smplatency] round %lu: DEADLINE - %lu core(s) did not finish within %lums\n",
                         (unsigned long)u, (unsigned long)outstanding, (unsigned long)(stallms * 10));
                     for (i = 0; i < maxCpus; i++)
                     {
@@ -461,19 +486,9 @@ int main(void)
                         if (w->lw_Task && w->lw_Ready == 1 && w->lw_Port && !w->lw_Replied)
                             bug("[smplatency]   CPU #%03lu silent\n", (unsigned long)i);
                     }
-                    u = g_Units;    /* stop the outer loop */
+                    u = g_Units;
                     break;
                 }
-                /*
-                 * Spin, do NOT Delay(). Delay() sleeps on timer.device, which
-                 * means waiting for the scheduler to wake this task - the very
-                 * thing under suspicion. The first deadline version used
-                 * Delay(1) and never fired at 96 cores: the master was parked
-                 * inside Delay and never reached its own deadline check, so a
-                 * stall detector was disabled by the stall. Burning one core in
-                 * a test is a cheap price for a measurement that cannot be
-                 * silenced by its subject.
-                 */
                 __sync_synchronize();
             }
         }
@@ -505,11 +520,11 @@ int main(void)
          */
         {
             UQUAD dl = eclock_now(TimerBase, &ev) + roundTicks;
-            while (!GetMsg(masterPort))
+            while (!w->lw_Done)
             {
                 if (eclock_now(TimerBase, &ev) > dl)
                     break;
-                Delay(1);
+                __sync_synchronize();
             }
         }
     }
