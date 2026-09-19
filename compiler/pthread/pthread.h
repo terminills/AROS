@@ -141,9 +141,6 @@ typedef struct pthread_attr pthread_attr_t;
  * it when the thread dies (CleanupETask). Allocate one mask per thread; do not
  * free it yourself and do not share one between threads.
  */
-int pthread_attr_setaffinity_np(pthread_attr_t *attr, size_t cpusetsize, const void *cpuset);
-int pthread_attr_getaffinity_np(const pthread_attr_t *attr, size_t cpusetsize, void *cpuset);
-
 #define PTHREAD_CANCELED              ((void *)-1)
 
 //
@@ -281,6 +278,14 @@ typedef int pthread_spinlock_t;
 #ifdef  __cplusplus
 extern "C" {
 #endif
+
+/* Declared INSIDE extern "C": these were first placed above this block, so a
+ * C++ caller mangled the names and the link failed with an undefined
+ * pthread_attr_setaffinity_np(pthread_attr*, unsigned long, void const*)
+ * against the C-compiled definition. Everything else in this header lives
+ * below this line for the same reason. */
+int pthread_attr_setaffinity_np(pthread_attr_t *attr, size_t cpusetsize, const void *cpuset);
+int pthread_attr_getaffinity_np(const pthread_attr_t *attr, size_t cpusetsize, void *cpuset);
 
 //
 // Thread attribute functions
