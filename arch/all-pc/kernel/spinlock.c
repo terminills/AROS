@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <asm/cpu.h>
@@ -59,11 +59,26 @@ AROS_LH3(spinlock_t *, KrnSpinLock,
             }
             D(bug("[Kernel] %s: my name is %s\n", __func__, Kernel_13_KrnIsSuper() ? "--supervisor code--" : me->tc_Node.ln_Name));
             D(bug("[Kernel] %s: spinning on held lock (val=%08x, s_Owner=%p)...\n", __func__, tmp, t));
-            if (me && t && (me->tc_Node.ln_Pri > t->tc_Node.ln_Pri))
+            /*
+             * Priority inheritance: if the owner has a lower priority than
+             * ours and we preempted it on this CPU, we would spin forever, so
+             * lower ourselves to let it run. That only helps while we can be
+             * preempted, and it is fatal while we cannot: exec takes every
+             * task-list lock under Disable() with the caller's own
+             * tc_SpinLock already held (Wait, SetTaskPri, Signal ...), and
+             * SetTaskPri(me) re-takes that non-recursive lock - one CPU then
+             * spins on itself with IF=0 while the rest idle (Chromium with
+             * threads pinned across cores, 2026-09-20). IDNESTCOUNT_GET is
+             * -1 with interrupts enabled and >= 0 inside Disable(); no
+             * scheduler data reads as 0 and also skips the lowering.
+             * Lower at most once: a second owner would overwrite old_pri
+             * with the already-lowered value and the restore below would
+             * leave us at the wrong priority.
+             */
+            if (me && t && !priority_changed && IDNESTCOUNT_GET < 0
+                && (me->tc_Node.ln_Pri > t->tc_Node.ln_Pri))
             {
                 D(bug("[Kernel] %s: spinlock owner (%s) has pri %d, lowering ours...\n", __func__, t ? (t->tc_Node.ln_Name) : "--supervisor--", t ? t->tc_Node.ln_Pri : 999));
-                // If lock is spinning and the owner of lock has lower priority than ours, we need to reduce
-                // tasks priority too, otherwise it might happen that waiting task spins forever
                 priority_changed = 1;
                 old_pri = SetTaskPri(me, t->tc_Node.ln_Pri);
             }
