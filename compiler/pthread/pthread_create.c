@@ -110,7 +110,26 @@ static void StarterFunc(void)
     inf = (ThreadInfo *)FindTask(NULL)->tc_UserData;
 #endif
 
-    Wait(SIGF_SINGLE);
+    // Publish our identity ourselves. The creator stores the same values
+    // once CreateNewProc() returns, but on SMP we may already be running on
+    // another core before it does, and pthread_self() needs inf->task.
+    //
+    // This used to be a Wait(SIGF_SINGLE) handshake, with the creator
+    // Signal()ing us after it filled in inf->task. SIGF_SINGLE is exec's
+    // private wait bit: a contended ObtainSemaphore() clears it before it
+    // sleeps, and DosEntry() opens dos.library (LibList semaphore) before
+    // it reaches us. On SMP the creator's signal could land before that
+    // clear and vanish - the thread then slept here forever with the
+    // creator gone on to join it (Chromium with pinned threads at -smp 4,
+    // 2026-09-21) - or land while we sat in the semaphore's own
+    // Wait(SIGF_SINGLE) and wake us as a false owner. Nothing the creator
+    // writes after CreateNewProc() is needed here, so no handshake at all.
+#ifdef __AROS__
+    inf->task = FindTask(NULL);
+    inf->taskid = GetETaskID(inf->task);
+#else
+    inf->task = FindTask(NULL);
+#endif
 
     // trim the name
     //inf->task->tc_Node.ln_Name[inf->oldlen];
@@ -301,7 +320,8 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
         return EAGAIN;
     }
 
-    Signal(inf->task, SIGF_SINGLE);
+    // no start handshake: StarterFunc() publishes inf->task/taskid itself,
+    // see the note there
 
     *thread = threadnew;
 
