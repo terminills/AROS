@@ -59,9 +59,11 @@ struct StdCIntBase
     struct tm                   tmbuffer;
     struct DateStamp            starttime;
 
-    /* __stdc_startup.c */
+    /* __stdc_startup.c: exit_jmpbuf is a frame on exit_task's stack - only
+       that Task may longjmp to it (see __stdc_jmp2exit). */
     int                         *startup_errorptr;
     jmp_buf                     exit_jmpbuf;
+    struct Task                 *exit_task;
 
     /* atexit.c */
     struct MinList              atexit_list;

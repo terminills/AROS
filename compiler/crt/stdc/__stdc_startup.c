@@ -1,7 +1,8 @@
 /*
-    Copyright (C) 2009-2020, The AROS Development Team. All rights reserved.
+    Copyright (C) 2009-2026, The AROS Development Team. All rights reserved.
 */
 #include <dos/stdio.h>
+#include <dos/dos.h>
 #include <exec/alerts.h>
 #include <proto/exec.h>
 
@@ -60,6 +61,7 @@
 
     StdCBase->startup_errorptr = errorptr;
     *StdCBase->exit_jmpbuf = *exitjmp;
+    StdCBase->exit_task = FindTask(NULL);
 }
 
 /*****************************************************************************
@@ -222,6 +224,7 @@
    
     *previousjmp = *StdCBase->exit_jmpbuf;
     *StdCBase->exit_jmpbuf = *exitjmp;
+    StdCBase->exit_task = FindTask(NULL);
 }
 
 /*****************************************************************************
@@ -251,6 +254,15 @@
         a module that opened stdc.library.
         Be sure to capture this situation.
 
+        The exit jmp_buf is a frame on the stack of the Task that ran
+        __stdc_program_startup() (or __stdc_set_exitjmp()). stdc.library is
+        per-opener, so every Task a program creates (pthreads, ...) shares
+        that jmp_buf. A longjmp from any other Task would switch it onto the
+        owner's stack and run the program teardown under the wrong Task
+        identity while the owner is still live on the same stack. Such a
+        caller instead records the return code, asks the owner to exit
+        (SIGBREAKF_CTRL_C) and sleeps forever.
+
     EXAMPLE
 
     BUGS
@@ -276,6 +288,20 @@
         StdCBase->flags |= ABNORMAL_EXIT;
 
     *StdCBase->startup_errorptr = retcode;
+
+    if (StdCBase->exit_task && StdCBase->exit_task != FindTask(NULL))
+    {
+        struct Task *me = FindTask(NULL);
+
+        kprintf("[%s] %s: Task 0x%p '%s' exiting program owned by Task 0x%p '%s'"
+                " (normal=%d retcode=%d): not unwinding a foreign stack\n",
+                STDCNAME, __func__, me, me->tc_Node.ln_Name,
+                StdCBase->exit_task, StdCBase->exit_task->tc_Node.ln_Name,
+                normal, retcode);
+        Signal(StdCBase->exit_task, SIGBREAKF_CTRL_C);
+        for (;;)
+            Wait(0);
+    }
 
     longjmp(StdCBase->exit_jmpbuf, 1);
 
