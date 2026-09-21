@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2017-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <exec/alerts.h>
@@ -169,6 +169,9 @@ void core_Switch(void)
     struct Task *task;
     ULONG showAlert = 0;
     BOOL doSwitch = TRUE;
+#if defined(__AROSEXEC_SMP__)
+    BOOL parkedByWait = FALSE;
+#endif
     struct ETask * taskEtask = NULL;
 
     DSCHED(bug("[Kernel]" DEBUGFUNCCOLOR_SET " %s()" DEBUGCOLOR_RESET "\n", __func__);)
@@ -203,16 +206,33 @@ void core_Switch(void)
     )
 
 #if defined(__AROSEXEC_SMP__)
-    KrnSpinLock(&PrivExecBase(SysBase)->TaskRunningSpinLock, NULL,
-                SPINLOCK_MODE_WRITE);
+    /*
+     * A task that reaches us in TS_WAIT was moved from TaskRunning to
+     * TaskWait by Wait() itself, under its tc_SpinLock, before the
+     * KrnSwitch (rom/exec/wait.c). It is not ours to relink: removing it
+     * here would unlink it from TaskWait under the *running* list lock,
+     * racing Signal()'s Remove()/Enqueue() on that list, and the Enqueue
+     * below would splice the node into TaskWait a second time - one node
+     * on two lists, and TaskReady ends up headed by a TS_WAIT task that
+     * core_Dispatch()/core_Switch() then bounce between forever
+     * (Chromium with pinned threads at -smp 4, 2026-09-21: 428 nested
+     * core_Dispatch frames ate the BSP TLS). Leave the lists alone and
+     * only do the bookkeeping that is still ours (stack check, IDNestCnt).
+     */
+    if (task->tc_State == TS_WAIT)
+        parkedByWait = TRUE;
+    else
+    {
+        KrnSpinLock(&PrivExecBase(SysBase)->TaskRunningSpinLock, NULL,
+                    SPINLOCK_MODE_WRITE);
+        REMOVE(&task->tc_Node);
+        KrnSpinUnLock(&PrivExecBase(SysBase)->TaskRunningSpinLock);
+        if (task->tc_State == TS_REMOVED)
+            task->tc_State = TS_TOMBSTONED;
+    }
 #else
     if (task->tc_State != TS_RUN && task->tc_State != TS_REMOVED)
-#endif
     REMOVE(&task->tc_Node);
-#if defined(__AROSEXEC_SMP__)
-    KrnSpinUnLock(&PrivExecBase(SysBase)->TaskRunningSpinLock);
-    if (task->tc_State == TS_REMOVED)
-        task->tc_State = TS_TOMBSTONED;
 #endif
 
     DSCHED(bug("[Kernel:%03u]" DEBUGCOLOR_SET " %s: Task removed from list, state = %08X" DEBUGCOLOR_RESET "\n", cpuNo, __func__, task->tc_State);)
@@ -272,6 +292,7 @@ void core_Switch(void)
 #endif
     else if(
 #if defined(__AROSEXEC_SMP__)
+        (!parkedByWait) &&              /* already on TaskWait, see above */
         (task->tc_State != TS_TOMBSTONED) &&
 #endif
         (task->tc_State != TS_REMOVED))

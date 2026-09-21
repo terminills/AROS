@@ -363,16 +363,29 @@ SAVE_XMM_AND_CHECK
     /*
      * Wait() carries tc_SpinLock across KrnSwitch so no other CPU can
      * observe (TS_WAIT, on-TaskWait) and dispatch this task before its
-     * context is saved. The context is stored by now - release the lock
-     * (see rom/exec/wait.c, and the matching release in the ARM port).
-     * Without this the task stays in TS_WAIT holding its own lock, and
-     * the first Signal() aimed at it spins forever.
+     * context is saved. Decide now whether we hold it: core_Switch()
+     * may itself put a TS_RUN task into TS_WAIT (stack overrun) and
+     * that one never took the lock.
      */
-    if (task && (task->tc_State == TS_WAIT))
-        KrnSpinUnLock(&task->tc_SpinLock);
+    BOOL lockedByWait = (task && (task->tc_State == TS_WAIT));
 #endif
 
     core_Switch();
+
+#if defined(__AROSEXEC_SMP__)
+    /*
+     * The context is stored and core_Switch() has finished its
+     * bookkeeping (tc_IDNestCnt, stack check) - release the lock (see
+     * rom/exec/wait.c, and the matching release in the ARM port).
+     * Without this the task stays in TS_WAIT holding its own lock, and
+     * the first Signal() aimed at it spins forever. It must stay held
+     * across core_Switch(): released before it, a Signal() from another
+     * core could re-dispatch the task while this core still writes into
+     * the Task structure.
+     */
+    if (lockedByWait)
+        KrnSpinUnLock(&task->tc_SpinLock);
+#endif
 }
 
 /* x86_64 CPU frequency control */
