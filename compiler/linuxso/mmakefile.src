@@ -5,7 +5,13 @@
 
 include $(SRCDIR)/config/aros.cfg
 
-#MM- core-linklibs : linklibs-linuxso
+# x86-64 only: the objects it loads are x86-64 code and lso_syscall_tramp.S
+# is 64-bit assembly, so it cannot be built for any other CPU (the i386
+# regression build failed on it, 2026-09-21). It must not sit under
+# core-linklibs, which every module build depends on; hang it off the
+# per-CPU linklibs metatarget instead (cf. arch/arm-all/arm-aeabi). Users
+# such as cef-blink name it in uselibs and pull linklibs-linuxso directly.
+#MM- linklibs-x86_64 : linklibs-linuxso
 #MM linklibs-linuxso : includes linuxso-includes-copy
 
 #MM- includes-copy : linuxso-includes-copy
