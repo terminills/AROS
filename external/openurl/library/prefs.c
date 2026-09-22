@@ -191,9 +191,11 @@ void setDefaultPrefs(struct URL_Prefs *p)
   // start reads them from the icon, a command-line start - this one - does
   // not (chrome_exe_main_aura.cc only consults the icon when argc == 0), so
   // without them a URL handed to OpenURL got a browser presenting itself as
-  // "AROS" to sites that gate on the platform, with every thread on CPU 0.
-  // Keep the two lists the same.
-  addBrowser(p, 0, "Chromium", "SYS:Applications/Internet/Chromium/Chromium --ozone-platform=aros --no-first-run --no-default-browser-check --aros-spoof-platform=linux --aros-pin-workers \"%u\"", "CHROMIUM", "SHOW", "TOFRONT", "OPENURL \"%u\"", "NEWWINDOW \"%u\"");
+  // "AROS" to sites that gate on the platform. Keep the two lists the same.
+  // (--aros-pin-workers is deliberately not here: the icon carries it as an
+  // opt-in tooltype, because spreading the workers off CPU 0 measured slower
+  // at 8 vCPUs - see chromium-aros c051da0a48.)
+  addBrowser(p, 0, "Chromium", "SYS:Applications/Internet/Chromium/Chromium --ozone-platform=aros --no-first-run --no-default-browser-check --aros-spoof-platform=linux \"%u\"", "CHROMIUM", "SHOW", "TOFRONT", "OPENURL \"%u\"", "NEWWINDOW \"%u\"");
 
   // Browsers: OWB
   addBrowser(p, UNF_DISABLED, "OWB", "OWB \"%u\"", "OWB", "", "SCREENTOFRONT", "OPENURL \"%u\"", "OPENURL \"%u\"");
