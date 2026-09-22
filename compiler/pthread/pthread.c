@@ -229,6 +229,7 @@ BOOL ReapAbnormalThread(ThreadInfo *inf)
 {
 #ifdef __AROS__
     ULONG taskid;
+    struct Task *task;
     BOOL reaped = FALSE;
 
     if (inf == NULL)
@@ -241,14 +242,40 @@ BOOL ReapAbnormalThread(ThreadInfo *inf)
         return FALSE;
     }
     taskid = inf->taskid;
+    task = inf->task;
     ReleaseSemaphore(&thread_sem);
 
-    /* Do not retain or dereference this pointer: it is only a liveness test. */
+    /* Found on a task list: certainly alive. */
     if (FindTaskByPID(taskid) != NULL)
         return FALSE;
 
+    /*
+     * Not found is not proof of death on SMP. FindTaskByPID() walks
+     * TaskRunning, TaskSpinning, TaskReady and TaskWait under four separate
+     * locks, and the scheduler moves a task between two of them by REMOVE
+     * under one lock and Enqueue under the next - a live thread that is in
+     * that gap on another core is on no list at all. Treating one miss as
+     * death let pthread_join() return while the thread still ran, and the
+     * memset below then wiped a live thread's ThreadInfo (Chromium
+     * Chrome_ChildIOThread, -smp 4, 2026-09-21).
+     *
+     * Confirm with what RemTask() leaves behind and a live task can never
+     * show: tc_State goes TS_REMOVED (TS_TOMBSTONED once the scheduler has
+     * detached it, TS_INVALID when it removed itself) before the structure
+     * is freed, and any reuse of that memory for another task replaces
+     * tc_UserData - exec hands the task our ThreadInfo as NP_UserData and
+     * never touches it while the task lives. Task structures come from
+     * exec memory that is never unmapped, so these reads of a possibly
+     * freed structure are safe; GetThreadId() already relies on the same
+     * identity witness.
+     */
+    if (task->tc_UserData == inf &&
+        task->tc_State != TS_REMOVED && task->tc_State != TS_TOMBSTONED &&
+        task->tc_State != TS_INVALID)
+        return FALSE;
+
     ObtainSemaphore(&thread_sem);
-    if (inf->parent != NULL && !inf->finished && inf->task != NULL && inf->taskid == taskid)
+    if (inf->parent != NULL && !inf->finished && inf->task == task && inf->taskid == taskid)
     {
         if (inf->detached)
             memset(inf, 0, sizeof(ThreadInfo));
