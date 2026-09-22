@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: Timer startup and device commands
 */
@@ -119,6 +119,14 @@ static int hw_Init(struct TimerBase *LIBBASE)
     {
         LIBBASE->tb_ExecLockBase = ExecLockBase;
         LIBBASE->tb_ListLock = AllocLock();
+        /*
+         * PIT + tick-counter lock, see timer_platform.h. Taken with
+         * LOCKF_DISABLE by EClockUpdate()/EClockSet()/Timer0Setup(), so
+         * it is safe from TimerInt() as well as from task context.
+         */
+        LIBBASE->tb_Platform.tb_ClockLock = AllocLock();
+        if (!LIBBASE->tb_Platform.tb_ClockLock)
+            return FALSE;
     }
 #endif
 
@@ -216,6 +224,15 @@ static int hw_Expunge(struct TimerBase *LIBBASE)
 
     KrnRemIRQHandler(LIBBASE->tb_TimerIRQHandle);
     RemResetCallback(&LIBBASE->tb_ResetHandler);
+
+#if defined(__AROSEXEC_SMP__)
+    if (LIBBASE->tb_ExecLockBase && LIBBASE->tb_Platform.tb_ClockLock)
+    {
+        struct ExecLockBase *ExecLockBase = LIBBASE->tb_ExecLockBase;
+        FreeLock(LIBBASE->tb_Platform.tb_ClockLock);
+        LIBBASE->tb_Platform.tb_ClockLock = NULL;
+    }
+#endif
 
     return TRUE;
 }

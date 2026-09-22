@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2022, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: Hardware management routines for IBM PC-AT timer
 */
@@ -75,8 +75,50 @@ static inline const ULONG usec2tick(const ULONG usec)
 }
 
 /*
+ * PIT latch/read/reload and the tb_prev_tick / tb_ticks_* / tb_CurrentTime /
+ * tb_Elapsed update form one critical section. The rom/timer callers wrap us
+ * in Disable(), which on SMP only holds off this CPU: GetSysTime() from two
+ * CPUs, or from one CPU while TimerInt() reloads the counter on another,
+ * both read the same PIT interval and both add it (and a read that lands
+ * after the other side's reload sees the counter jump up and charges a
+ * bogus 0xFFFF rollover). Measured with Chromium sampling the clock from
+ * four CPUs: tb_Elapsed advanced 79 s per 10 s of wall time.
+ *
+ * The lock is a leaf: nothing under it touches tb_Lists/tb_ListLock, so it
+ * can be taken by code already holding tb_ListLock (VERTB servers run from
+ * handleMicroHZ() and may call GetSysTime()). LOCKF_DISABLE keeps this CPU's
+ * TimerInt() out while a task holds it; Enable() does not sti in supervisor
+ * mode, so the IRQ handler can take it too.
+ */
+static inline void *ClockLockObtain(struct TimerBase *TimerBase)
+{
+#if defined(__AROSEXEC_SMP__)
+    struct ExecLockBase *ExecLockBase = TimerBase->tb_ExecLockBase;
+    void *lock = ExecLockBase ? TimerBase->tb_Platform.tb_ClockLock : NULL;
+
+    if (lock)
+        ObtainLock(lock, SPINLOCK_MODE_WRITE, LOCKF_DISABLE);
+    return lock;
+#else
+    return NULL;
+#endif
+}
+
+static inline void ClockLockRelease(struct TimerBase *TimerBase, void *lock)
+{
+#if defined(__AROSEXEC_SMP__)
+    if (lock)
+    {
+        struct ExecLockBase *ExecLockBase = TimerBase->tb_ExecLockBase;
+        ReleaseLock(lock, LOCKF_DISABLE);
+    }
+#endif
+}
+
+/*
  * Calculate difference and add it to our current EClock value.
  * PIT counters actually count backwards. This is why everything here looks reversed.
+ * Caller holds the clock lock.
  */
 static void EClockAdd(UWORD time, struct TimerBase *TimerBase)
 {
@@ -99,8 +141,11 @@ static void EClockAdd(UWORD time, struct TimerBase *TimerBase)
 void EClockUpdate(struct TimerBase *TimerBase)
 {
     UWORD time;
+    void *lock;
 
     D(bug("[Timer] %s(0x%p)\n", __func__, TimerBase));
+
+    lock = ClockLockObtain(TimerBase);
 
     outb(CH0|ACCESS_LATCH, PIT_CONTROL);        /* Latch the current time value */
     time = ch_read(PIT_CH0);                    /* Read out current 16-bit time */
@@ -110,18 +155,25 @@ void EClockUpdate(struct TimerBase *TimerBase)
     EClockAdd(time, TimerBase);                 /* Increment our time counters  */
     TimerBase->tb_prev_tick = time;             /* Remember last counter value as start of new interval */
     D(bug("[Timer] %s:      new = %04x\n", __func__, TimerBase->tb_prev_tick));
+
+    ClockLockRelease(TimerBase, lock);
 }
 
 void EClockSet(struct TimerBase *TimerBase)
 {
+    void *lock;
 
     D(bug("[Timer] %s(0x%p)\n", __func__, TimerBase));
+
+    lock = ClockLockObtain(TimerBase);
 
     TimerBase->tb_ticks_sec   = usec2tick(TimerBase->tb_CurrentTime.tv_micro);
     TimerBase->tb_ticks_total = TimerBase->tb_ticks_sec + (UQUAD)TimerBase->tb_CurrentTime.tv_secs * TimerBase->tb_eclock_rate;
 
     outb(CH0|ACCESS_LATCH, PIT_CONTROL);        /* Latch the current time value */
     TimerBase->tb_prev_tick = ch_read(PIT_CH0); /* Read out current 16-bit time */
+
+    ClockLockRelease(TimerBase, lock);
 }
 
 void Timer0Setup(struct TimerBase *TimerBase)
@@ -133,6 +185,7 @@ void Timer0Setup(struct TimerBase *TimerBase)
     UWORD current_tick;
     struct timerequest *tr;
     struct timeval time;
+    void *lock;
 
     D(bug("[Timer] %s(0x%p)\n", __func__, TimerBase));
 
@@ -174,7 +227,10 @@ void Timer0Setup(struct TimerBase *TimerBase)
     /*
      * We are going to reload the counter. By this moment, some time has passed after the last EClockUpdate()pdate.
      * In order to keep up with the precision, we pick up this time here.
+     * tb_ListLock is already released, so this never nests the two locks.
      */
+    lock = ClockLockObtain(TimerBase);
+
     outb(CH0|ACCESS_LATCH, PIT_CONTROL);        /* Latch the current time value */
     current_tick = ch_read(PIT_CH0);	    	/* Read out current 16-bit time */
 
@@ -188,4 +244,6 @@ void Timer0Setup(struct TimerBase *TimerBase)
     EClockAdd(current_tick, TimerBase);
     /* tb_prev_tick is used by EClockAdd(), so restore it now */
     TimerBase->tb_prev_tick = delay;
+
+    ClockLockRelease(TimerBase, lock);
 }
