@@ -2,7 +2,7 @@
 #define INLINE_EXECLOCK_H
 
 /*
-    Copyright © 2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 /*
@@ -72,7 +72,7 @@ static inline void __inline_ExecLock_FreeLock(APTR __arg1, APTR __ExecLockBase)
         struct Library *, (__ExecLockBase), 4, ExecLock    );
 }
 
-#define FreeLock(arg1, arg2) \
+#define FreeLock(arg1) \
     __inline_ExecLock_FreeLock((arg1), __aros_getbase_ExecLockBase())
 
 #endif /* !defined(__EXECLOCK_LIBAPI__) || (36 <= __EXECLOCK_LIBAPI__) */
