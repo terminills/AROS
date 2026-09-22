@@ -23,6 +23,42 @@
 
 #define D(x)
 
+/*
+ * The local APIC has ONE interrupt command register per CPU and a send is two
+ * MMIO stores: the destination into ICRH, then the command into ICRL, which
+ * is the write that actually fires it. Nothing in the APIC ties the two
+ * together. Any interrupt taken on this CPU between them whose handler also
+ * sends an IPI - Signal() from an interrupt server or a nested signal_hook,
+ * KrnScheduleCPU() from a scheduler tick - overwrites ICRH with ITS
+ * destination, and when the interrupted sender resumes its ICRL store fires
+ * OUR interrupt at THAT core. The intended target never gets an interrupt,
+ * so the IPIHook queued for it by core_DoCallIPI() stays on kb_BusyIPIHooks
+ * until some unrelated IPI happens to reach that core and its drain loop
+ * finds the entry. Nothing is corrupted and nothing is lost, only delayed
+ * by "whenever the next IPI lands there" - which on a core running one
+ * pinned, idle-in-Wait thread is seconds to minutes.
+ *
+ * That was the multi-core Chromium stall of 2026-09-21/22 (JOB-0104): every
+ * thread TS_WAIT, tc_SigRecvd empty, kernel idle, and walk-ipihooks.py showed
+ * signal_hook entries for CPU 2 pending 8, 41 and 50 seconds with that
+ * LAPIC's IRR/ISR empty. Signal()'s cross-CPU path calls this with interrupts
+ * enabled (core_DoCallIPI Enable()s before the send), so the window is open
+ * on every cross-core wakeup. It bites harder the fewer threads share a core:
+ * pinned over 4 cores the stragglers are freed within a frame or two by the
+ * neighbours' traffic, over 8 there is nobody to do it.
+ *
+ * The busy-wait on ICR_DS and both stores are one transaction, and the whole
+ * sequence runs with interrupts off. Per destination, not around the loop:
+ * an IPI to a 64-core mask must not hold interrupts off for 64 sends.
+ * __save_flags/__cli/__restore_flags rather than Disable()/Enable() because
+ * this is reached from interrupt context with interrupts already off and
+ * must leave them exactly as found.
+ */
+#define IPI_ICR_BEGIN(flags)    do { __save_flags(flags); __cli();                                 \
+                                     while (APIC_REG(__APICBase, APIC_ICRL) & ICR_DS) asm volatile("pause"); \
+                                } while (0)
+#define IPI_ICR_END(flags)      __restore_flags(flags)
+
 void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBase)
 {
     int cpunum = KrnGetCPUNumber();
@@ -30,9 +66,10 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
     struct PlatformData *kernPlatD = (struct PlatformData *)KernelBase->kb_PlatformData;
     struct APICData *apicPrivate = kernPlatD->kb_APIC;
     IPTR __APICBase = apicPrivate->lapicBase;
+    unsigned long flags;
 
     D(bug("[Kernel:IPI] Sending IPI %02d from CPU.%03u to target mask @ 0x%p\n", ipi_number, cpunum, cpu_mask));
-    
+
     asm volatile("sfence");
 
     if ((cmd & 0xff) <= APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_IPI_CAUSE))
@@ -44,9 +81,10 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
             cmd |= ICR_DSH_ALL;
 
             D(bug("[Kernel:IPI] waiting for DS bit to be clear\n"));
-            while (APIC_REG(__APICBase, APIC_ICRL) & ICR_DS) asm volatile("pause");
+            IPI_ICR_BEGIN(flags);
             D(bug("[Kernel:IPI] sending IPI cmd %08x\n", cmd));
             APIC_REG(__APICBase, APIC_ICRL) = cmd;
+            IPI_ICR_END(flags);
         }
         else if ((IPTR)cpu_mask == TASKAFFINITY_ALL_BUT_SELF)
         {
@@ -54,9 +92,10 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
             cmd |= ICR_DSH_ALLBUTSELF;
 
             D(bug("[Kernel:IPI] waiting for DS bit to be clear\n"));
-            while (APIC_REG(__APICBase, APIC_ICRL) & ICR_DS) asm volatile("pause");
+            IPI_ICR_BEGIN(flags);
             D(bug("[Kernel:IPI] sending IPI cmd %08x\n", cmd));
             APIC_REG(__APICBase, APIC_ICRL) = cmd;
+            IPI_ICR_END(flags);
         }
         else
         {
@@ -68,7 +107,7 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
                 if (KrnCPUInMask(i, cpu_mask))
                 {
                     D(bug("[Kernel:IPI] waiting for DS bit to be clear\n"));
-                    while (APIC_REG(__APICBase, APIC_ICRL) & ICR_DS) asm volatile("pause");
+                    IPI_ICR_BEGIN(flags);
                     if (cpunum == i)
                     {
                         D(bug("[Kernel:IPI] sending IPI cmd %08x to destination %08x (self-ipi)\n", cmd, (apicPrivate->cores[i].cpu_LocalID << 24)));
@@ -80,6 +119,7 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
                         APIC_REG(__APICBase, APIC_ICRH) = (apicPrivate->cores[i].cpu_LocalID << 24);
                         APIC_REG(__APICBase, APIC_ICRL) = cmd;
                     }
+                    IPI_ICR_END(flags);
                 }
             }
         }
