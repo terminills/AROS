@@ -283,6 +283,20 @@ static void section_registers(struct TextBuf *tb, const struct CrashRecord *rec)
     if (rec->rec_Flags & CRF_ERRORCODE)
         tb_printf(tb, "error=%016lx\n", (unsigned long)rec->rec_ErrorCode);
     tb_printf(tb, "\n");
+#elif defined(__i386__)
+    const struct ExceptionContext *c = &rec->rec_Ctx;
+    tb_printf(tb, "[Registers]\n");
+    tb_printf(tb, "eip=%08lx esp=%08lx ebp=%08lx eflags=%08lx\n",
+              (unsigned long)c->eip, (unsigned long)c->esp, (unsigned long)c->ebp, (unsigned long)c->eflags);
+    tb_printf(tb, "eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx\n",
+              (unsigned long)c->eax, (unsigned long)c->ebx, (unsigned long)c->ecx, (unsigned long)c->edx);
+    tb_printf(tb, "esi=%08lx edi=%08lx cs=%04lx ss=%04lx\n",
+              (unsigned long)c->esi, (unsigned long)c->edi, (unsigned long)c->cs, (unsigned long)c->ss);
+    if (rec->rec_Flags & CRF_FAULTADDR)
+        tb_printf(tb, "cr2=%08lx\n", (unsigned long)(IPTR)rec->rec_FaultAddress);
+    if (rec->rec_Flags & CRF_ERRORCODE)
+        tb_printf(tb, "error=%08lx\n", (unsigned long)rec->rec_ErrorCode);
+    tb_printf(tb, "\n");
 #else
     (void)tb; (void)rec;
 #endif

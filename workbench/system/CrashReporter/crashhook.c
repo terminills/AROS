@@ -57,6 +57,21 @@
 static const UBYTE trap_vectors[] = { 0, 1, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 16, 17, 18, 19 };
 #define NVECTORS (sizeof trap_vectors / sizeof trap_vectors[0])
 
+/* the only fields read from the copied ExceptionContext: program counter,
+   frame pointer, and the FPU-area pointers the kernel owns (cleared so the
+   daemon never follows them). Names differ per CPU. */
+#if defined(__x86_64__)
+#define CR_CTX_PC(c)        ((APTR)(c)->rip)
+#define CR_CTX_FP(c)        ((APTR)(c)->rbp)
+#define CR_CTX_DROP_FPU(c)  do { (c)->FXSData = NULL; } while (0)   /* union with XSData */
+#elif defined(__i386__)
+#define CR_CTX_PC(c)        ((APTR)(IPTR)(c)->eip)
+#define CR_CTX_FP(c)        ((APTR)(IPTR)(c)->ebp)
+#define CR_CTX_DROP_FPU(c)  do { (c)->FPData = NULL; (c)->FXData = NULL; } while (0)
+#else
+#error CrashReporter: no ExceptionContext accessors for this CPU
+#endif
+
 static struct CrashRing *cr_ring;
 static APTR  cr_exc_handle[NVECTORS];
 APTR  cr_orig_alert;                  /* referenced from the asm thunk       */
@@ -207,7 +222,7 @@ static int cr_trap_observer(void *ctx, void *data, void *data2)
     if (ctx)
     {
         cr_copy(&rec->rec_Ctx, ctx, sizeof rec->rec_Ctx);
-        rec->rec_Ctx.FXSData = NULL;                /* not ours to keep     */
+        CR_CTX_DROP_FPU(&rec->rec_Ctx);             /* not ours to keep     */
         rec->rec_Flags |= CRF_CONTEXT;
     }
 #if defined(__x86_64__) || defined(__i386__)
@@ -294,8 +309,8 @@ void cr_alert_record(ULONG alertNum, struct ExecBase *SysBaseArg, APTR caller, A
     {
         if (rec->rec_Flags & CRF_CONTEXT)
         {
-            rec->rec_PCs[0] = (APTR)rec->rec_Ctx.rip;
-            rec->rec_Depth  = 1 + KrnBacktraceFromFrame((APTR)rec->rec_Ctx.rbp,
+            rec->rec_PCs[0] = CR_CTX_PC(&rec->rec_Ctx);
+            rec->rec_Depth  = 1 + KrnBacktraceFromFrame(CR_CTX_FP(&rec->rec_Ctx),
                                                         &rec->rec_PCs[1], CR_MAX_FRAMES - 1);
         }
         else
@@ -306,7 +321,7 @@ void cr_alert_record(ULONG alertNum, struct ExecBase *SysBaseArg, APTR caller, A
     }
     else
     {
-        rec->rec_PCs[0] = (rec->rec_Flags & CRF_CONTEXT) ? (APTR)rec->rec_Ctx.rip : caller;
+        rec->rec_PCs[0] = (rec->rec_Flags & CRF_CONTEXT) ? CR_CTX_PC(&rec->rec_Ctx) : caller;
         rec->rec_Depth  = 1;
     }
 
