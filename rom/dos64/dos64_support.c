@@ -19,7 +19,7 @@
 QUAD dos64_Seek(struct Dos64Base *DOS64Base, struct FileHandle *fh,
                 QUAD position, LONG mode)
 {
-    SIPTR err = 0;
+    SIPTR err = 0, seekerr = 0;
     QUAD  ret, old;
 
 #if (__WORDSIZE == 64)
@@ -28,6 +28,7 @@ QUAD dos64_Seek(struct Dos64Base *DOS64Base, struct FileHandle *fh,
                         fh->fh_Arg1, position, mode, 0, 0, &err);
     if (!dos64_UnsupportedPkt(ret, err))
         return ret;
+    seekerr = err;
 
     /* OS4 style pair: query the old position, then reposition */
     old = dos64_SendPkt(DOS64Base, fh->fh_Type, ACTION_GET_FILE_POSITION64,
@@ -48,6 +49,8 @@ QUAD dos64_Seek(struct Dos64Base *DOS64Base, struct FileHandle *fh,
          */
         if (ret || !dos64_UnsupportedAction(err))
             return ret ? old : -1;
+        if (!seekerr)
+            seekerr = err;
     }
 #else
     old = dos64_SendPkt64OS4(DOS64Base, fh->fh_Type, ACTION_GET_FILE_POSITION64,
@@ -65,7 +68,20 @@ QUAD dos64_Seek(struct Dos64Base *DOS64Base, struct FileHandle *fh,
     /* 32-bit delegation */
     if (position > 0x7FFFFFFFLL || position < -0x80000000LL)
     {
-        SetIoErr(ERROR_OBJECT_TOO_LARGE);
+        /*
+         * No 32-bit packet can carry this offset, so the 64-bit answer is
+         * the only verdict there is. dos64_UnsupportedPkt() deliberately
+         * fell back on any error, since a handler may refuse a packet in
+         * its own terms; but a handler that understood ACTION_SEEK64 and
+         * failed it for a real reason (emul.handler: -1/ERROR_SEEK_ERROR
+         * past EOF at 4 GiB) must have that reason reach the caller -
+         * posixc parks a past-EOF offset on ERROR_SEEK_ERROR and grows
+         * the file on the next write, which ERROR_OBJECT_TOO_LARGE
+         * silently defeats. Only a genuine "don't know this packet"
+         * answer keeps the too-large diagnosis.
+         */
+        SetIoErr((seekerr && !dos64_UnsupportedAction(seekerr))
+                 ? seekerr : ERROR_OBJECT_TOO_LARGE);
         return -1;
     }
     return dos64_SendPkt(DOS64Base, fh->fh_Type, ACTION_SEEK,
@@ -165,7 +181,7 @@ QUAD dos64_GetFileSize(struct Dos64Base *DOS64Base, struct FileHandle *fh)
 QUAD dos64_SetFileSize(struct Dos64Base *DOS64Base, struct FileHandle *fh,
                        QUAD offset, LONG mode, BOOL wantsize)
 {
-    SIPTR err = 0;
+    SIPTR err = 0, sizeerr = 0;
     QUAD  ret;
 
 #if (__WORDSIZE == 64)
@@ -174,6 +190,7 @@ QUAD dos64_SetFileSize(struct Dos64Base *DOS64Base, struct FileHandle *fh,
                         fh->fh_Arg1, offset, mode, 0, 0, &err);
     if (!dos64_UnsupportedPkt(ret, err))
         return ret;
+    sizeerr = err;
 
     ret = dos64_SendPkt(DOS64Base, fh->fh_Type, ACTION_CHANGE_FILE_SIZE64,
                         fh->fh_Arg1, offset, mode, 0, 0, &err);
@@ -191,7 +208,11 @@ QUAD dos64_SetFileSize(struct Dos64Base *DOS64Base, struct FileHandle *fh,
     /* 32-bit delegation */
     if (offset > 0x7FFFFFFFLL || offset < -0x80000000LL)
     {
-        SetIoErr(ERROR_OBJECT_TOO_LARGE);
+        /* As in dos64_Seek(): the 64-bit refusal is the only verdict */
+        if (!sizeerr || dos64_UnsupportedAction(sizeerr))
+            sizeerr = err;
+        SetIoErr((sizeerr && !dos64_UnsupportedAction(sizeerr))
+                 ? sizeerr : ERROR_OBJECT_TOO_LARGE);
         return -1;
     }
     return dos64_SendPkt(DOS64Base, fh->fh_Type, ACTION_SET_FILE_SIZE,
