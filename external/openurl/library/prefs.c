@@ -186,7 +186,14 @@ void setDefaultPrefs(struct URL_Prefs *p)
   // usable out of the box.
   // NOTE: the launch only works because the launcher asks for a stack big
   // enough for Chromium; see NP_STACKSIZE in api.c.
-  addBrowser(p, 0, "Chromium", "SYS:Applications/Internet/Chromium/Chromium \"%u\"", "CHROMIUM", "SHOW", "TOFRONT", "OPENURL \"%u\"", "NEWWINDOW \"%u\"");
+  // The switches are the icon's CHROME_ARG tooltypes
+  // (chromium-aros chrome/app/theme/aros/Chromium.info.src): a Workbench
+  // start reads them from the icon, a command-line start - this one - does
+  // not (chrome_exe_main_aura.cc only consults the icon when argc == 0), so
+  // without them a URL handed to OpenURL got a browser presenting itself as
+  // "AROS" to sites that gate on the platform, with every thread on CPU 0.
+  // Keep the two lists the same.
+  addBrowser(p, 0, "Chromium", "SYS:Applications/Internet/Chromium/Chromium --ozone-platform=aros --no-first-run --no-default-browser-check --aros-spoof-platform=linux --aros-pin-workers \"%u\"", "CHROMIUM", "SHOW", "TOFRONT", "OPENURL \"%u\"", "NEWWINDOW \"%u\"");
 
   // Browsers: OWB
   addBrowser(p, UNF_DISABLED, "OWB", "OWB \"%u\"", "OWB", "", "SCREENTOFRONT", "OPENURL \"%u\"", "OPENURL \"%u\"");
