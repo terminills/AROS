@@ -158,6 +158,25 @@ static inline UQUAD tv_us(const struct timeval *tv)
     return (UQUAD)tv->tv_secs * 1000000ULL + (UQUAD)tv->tv_micro;
 }
 
+/* 64-bit compare-and-swap. The pc-i386 target is built -march=i486, where gcc
+ * has no 8-byte __sync builtin and the link fails on
+ * __sync_val_compare_and_swap_8 (caught by the cross-target gate,
+ * 2026-09-22). cmpxchg8b is on every i586+ and the assembler does not gate it
+ * on -march, so spell it out there; x86_64 keeps the builtin. */
+static inline UQUAD cas64(volatile UQUAD *p, UQUAD old, UQUAD new)
+{
+#if defined(__i386__)
+    UQUAD prev;
+    asm volatile("lock; cmpxchg8b %1"
+                 : "=A"(prev), "+m"(*p)
+                 : "b"((ULONG)new), "c"((ULONG)(new >> 32)), "0"(old)
+                 : "memory", "cc");
+    return prev;
+#else
+    return __sync_val_compare_and_swap(p, old, new);
+#endif
+}
+
 /* Publish 'now' as the newest reading if it is; return the newest before us. */
 static UQUAD publish_max(volatile UQUAD *slot, UQUAD now)
 {
@@ -165,7 +184,7 @@ static UQUAD publish_max(volatile UQUAD *slot, UQUAD now)
 
     while (now > seen)
     {
-        UQUAD prev = __sync_val_compare_and_swap(slot, seen, now);
+        UQUAD prev = cas64(slot, seen, now);
         if (prev == seen)
             break;
         seen = prev;
