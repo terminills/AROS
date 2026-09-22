@@ -483,6 +483,33 @@ SAVE_XMM_INTO_AREA(localarea)
         )
         if (pdata)
             pdata->kb_PDFlags &= ~PLATFORMF_INEXCPT;
+
+        /*
+         * The LAPIC heartbeat and the IPI vectors are "exceptions" and come
+         * through here, not through the device-IRQ branch below - so until
+         * now nothing on this path ever looked at the switch flag they set.
+         * APICHeartbeatServer expires the quantum into TLSSF_Quantum|Switch,
+         * signal_hook (IPI_CALL_HOOK) readies a higher-priority task and
+         * calls Reschedule(), whose KrnSchedule() is a nested int $0xff from
+         * ring 0 that core_SysCallHandler ignores (INTR_FROMUSERMODE is
+         * false). Both left the flag set and returned to the interrupted
+         * user task. On CPU 0 a device IRQ soon takes the switch; on an AP
+         * that receives no device IRQs a user-mode spinner runs until IT
+         * enters the kernel, whatever is READY behind it. Seen with 8 cores
+         * and pinned Chromium: a raster worker spinning in Skia's SkOnce on
+         * CPU 2 with ScheduleFlags=3, TDNestCnt=-1, the once-holder READY on
+         * the same core, the timer still firing - forever. Exit APIC
+         * exceptions the way device IRQs exit. The syscall vector already
+         * ends in core_SysCall; spurious and CPU traps are not scheduling
+         * points.
+         */
+        if (SysBase != NULL && INTR_FROMUSERMODE &&
+            exception_number >= APIC_EXCEPT_HEARTBEAT &&
+            exception_number < APIC_EXCEPT_SYSCALL)
+        {
+            __asm__ __volatile__("cld");
+            core_ExitInterrupt(regs);
+        }
     }
     else
     {
