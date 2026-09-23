@@ -97,6 +97,12 @@ SIPTR dopacket(SIPTR *res2, struct MsgPort *port, LONG action, SIPTR arg1, SIPTR
             me->pr_Task.tc_Node.ln_Name, port, (LONG)action);
         if (res2)
             *res2 = ERROR_OBJECT_WRONG_TYPE;
+        if (__is_process(me))
+            me->pr_Result2 = ERROR_OBJECT_WRONG_TYPE;
+        /* Read()/Write() callers take 0 as "nothing transferred, try
+           again" (InternalFlush() loops on it); an error is -1 there. */
+        if (action == ACTION_READ || action == ACTION_WRITE)
+            return -1;
         return DOSFALSE;
     }
 

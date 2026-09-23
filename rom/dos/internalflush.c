@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2002-2013, The AROS Development Team. All rights reserved.
+    Copyright (C) 2002-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <exec/types.h>
@@ -43,8 +43,10 @@ LONG InternalFlush( struct FileHandle *fh, struct DosLibrary *DOSBase )
     
         size = Write( MKBADDR(fh), BADDR(fh->fh_Buf) + position, fh->fh_Pos - position );
     
-        /* An error happened? No success. */
-        if( size < 0 )
+        /* An error happened? No success. A handler that takes nothing
+           will not take it on the next try either, so treat a zero-length
+           write the same way instead of looping on it forever. */
+        if( size <= 0 )
         {
             fh->fh_Flags &= ~(FHF_WRITE | FHF_FLUSHING);
 
