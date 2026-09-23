@@ -145,7 +145,7 @@ int main(int argc, char *argv[])
         }
         preferences.nopretend = (int)args[ARG_NOPRETEND];
         /* PRETEND/S: dry run without asking - the pretend page is skipped
-         * and nothing is written (SoftwareCenter's preview, test harnesses) */
+         * and nothing is written (a package manager's preview, test harnesses) */
         if (args[ARG_PRETEND])
         {
             preferences.pretend = TRUE;
