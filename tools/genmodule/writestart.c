@@ -204,6 +204,7 @@ static void writedecl(FILE *out, struct config *cfg)
             "#include <aros/symbolsets.h>\n"
             "#include <aros/genmodule.h>\n"
             "#include <dos/dos.h>\n"
+            "#include <dos/dosextens.h>\n"
             "\n"
     );
 
@@ -247,6 +248,34 @@ static void writedecl(FILE *out, struct config *cfg)
         fprintf(out, "%s\n", linelistit->s);
     }
 
+    /* Init and Expunge run on the process that loaded or flushed the module.
+       Everything they open or close - the rellibs, ADD2INIT/ADD2EXPUNGE
+       hooks, C++ constructors and destructors - is done on the module's
+       behalf, not the program's, so mark the process for that time: a
+       pertaskbase library opened inside the window counts the open as held
+       by a library and does not tie the base to the program that happens to
+       be running (see writeopenlib/writecloselib). */
+    fprintf(out,
+            "static inline APTR __GM_EnterLibContext(struct ExecBase *SysBase)\n"
+            "{\n"
+            "    struct Task *me = FindTask(NULL);\n"
+            "    APTR old = NULL;\n"
+            "    if (me && me->tc_Node.ln_Type == NT_PROCESS)\n"
+            "    {\n"
+            "        old = ((struct Process *)me)->pr_ReturnAddr;\n"
+            "        ((struct Process *)me)->pr_ReturnAddr = PR_RETURNADDR_NOPROGRAM;\n"
+            "    }\n"
+            "    return old;\n"
+            "}\n"
+            "static inline void __GM_LeaveLibContext(struct ExecBase *SysBase, APTR old)\n"
+            "{\n"
+            "    struct Task *me = FindTask(NULL);\n"
+            "    if (me && me->tc_Node.ln_Type == NT_PROCESS)\n"
+            "        ((struct Process *)me)->pr_ReturnAddr = old;\n"
+            "}\n"
+            "\n"
+    );
+
     /* Is there a variable for storing the segList ? */
     if (!(cfg->options & OPTION_NOEXPUNGE) && cfg->modtype!=RESOURCE && cfg->modtype != HANDLER)
     {
@@ -285,6 +314,10 @@ static void writedecl(FILE *out, struct config *cfg)
         {
             fprintf(out,
                     "    ULONG taskopencount;\n"
+                    "    /* How many of taskopencount were made by a library's\n"
+                    "       Init (pr_ReturnAddr == PR_RETURNADDR_NOPROGRAM) rather\n"
+                    "       than by the program on the task. */\n"
+                    "    ULONG libheld;\n"
                     "    struct Task *task;\n"
                     "    APTR retaddr;\n"
                     "    LIBBASETYPEPTR oldpertaskbase;\n"
@@ -1183,7 +1216,11 @@ static void writeinitlib(FILE *out, struct config *cfg)
     /* The whole open/init/rollback sequence now lives in _set_libinit(),
        driven by the descriptor emitted above. */
     fprintf(out,
-            "    ok = set_libinit(&GM_UNIQUENAME(InitSets), LIBBASE);\n"
+            "    {\n"
+            "        APTR __gm_retaddr = __GM_EnterLibContext(SysBase);\n"
+            "        ok = set_libinit(&GM_UNIQUENAME(InitSets), LIBBASE);\n"
+            "        __GM_LeaveLibContext(SysBase, __gm_retaddr);\n"
+            "    }\n"
             "\n"
             "    if (!ok)\n"
             "    {\n"
@@ -1347,6 +1384,10 @@ static void writeopenlib(FILE *out, struct config *cfg)
             if (cfg->options & OPTION_PERTASKBASE)
                 fprintf(out,
                         "    struct Task *thistask = FindTask(NULL);\n"
+                        "    /* Opened by a library's Init running on this process\n"
+                        "       (see __GM_EnterLibContext), not by its program? */\n"
+                        "    int libinit = (thistask->tc_Node.ln_Type == NT_PROCESS\n"
+                        "                   && ((struct Process *)thistask)->pr_ReturnAddr == PR_RETURNADDR_NOPROGRAM);\n"
                         "    LIBBASETYPEPTR oldpertaskbase = __GM_GetPerTaskBase();\n"
                         "    if (!oldpertaskbase)\n"
                         "       oldpertaskbase = __GM_GetParentPerTaskBase();\n"
@@ -1356,12 +1397,21 @@ static void writeopenlib(FILE *out, struct config *cfg)
                         "        struct __GM_DupBase *dupbase = (struct __GM_DupBase *)newlib;\n"
                         "        if (dupbase->task != thistask)\n"
                         "            newlib = NULL;\n"
-                        "        else if (thistask->tc_Node.ln_Type == NT_PROCESS\n"
+                        "        else if (thistask->tc_Node.ln_Type == NT_PROCESS && !libinit\n"
                         "                 && dupbase->retaddr != ((struct Process *)thistask)->pr_ReturnAddr\n"
                         "        )\n"
                         "            newlib = NULL;\n"
                         "        else\n"
+                        "        {\n"
+                        "            /* A library loaded while a program is running shares\n"
+                        "               the program's base: its constructors and the\n"
+                        "               program then see one state. The program's last\n"
+                        "               close detaches the base from the task instead of\n"
+                        "               leaving it for the next program to adopt. */\n"
                         "            dupbase->taskopencount++;\n"
+                        "            if (libinit)\n"
+                        "                dupbase->libheld++;\n"
+                        "        }\n"
                         "    }\n"
                 );
 
@@ -1401,6 +1451,7 @@ static void writeopenlib(FILE *out, struct config *cfg)
                         "             dupbase->retaddr = ((struct Process *)thistask)->pr_ReturnAddr;\n"
                         "        dupbase->oldpertaskbase = oldpertaskbase;\n"
                         "        dupbase->taskopencount = 1;\n"
+                        "        dupbase->libheld = libinit ? 1 : 0;\n"
                         "        __GM_SetPerTaskBase((LIBBASETYPEPTR)newlib);\n"
                 );
             fprintf(out,
@@ -1492,23 +1543,62 @@ static void writecloselib(FILE *out, struct config *cfg)
         fprintf(out,
                 "    LIBBASETYPEPTR rootbase = GM_ROOTBASE_FIELD(LIBBASE);\n"
                 "    struct __GM_DupBase *dupbase = (struct __GM_DupBase *)LIBBASE;\n"
+        );
+        if (cfg->options & OPTION_PERTASKBASE)
+            fprintf(out,
+                    "    struct Task *thistask = FindTask(NULL);\n"
+                    "    int libinit = (thistask->tc_Node.ln_Type == NT_PROCESS\n"
+                    "                   && ((struct Process *)thistask)->pr_ReturnAddr == PR_RETURNADDR_NOPROGRAM);\n"
+                    "    /* A library's Expunge closes on whatever process flushed it,\n"
+                    "       so this may not be the task the base belongs to: remember\n"
+                    "       that task's own slot to put it back. */\n"
+                    "    char *entryoffsettable = (char *)GetTaskStorageSlot(__GM_BaseSlot);\n"
+            );
+        fprintf(out,
                 "    __aros_setoffsettable(LIBBASE);\n"
         );
         if (cfg->options & OPTION_PERTASKBASE)
             fprintf(out,
+                    "    if (libinit && dupbase->libheld)\n"
+                    "        dupbase->libheld--;\n"
                     "    dupbase->taskopencount--;\n"
                     "    if (dupbase->taskopencount != 0)\n"
+                    "    {\n"
+                    "        if (dupbase->task != thistask)\n"
+                    "            __aros_setoffsettable(entryoffsettable);\n"
+                    "        else if (!libinit\n"
+                    "                 && dupbase->taskopencount == dupbase->libheld\n"
+                    "                 && __GM_GetPerTaskBase() == LIBBASE)\n"
+                    "        {\n"
+                    "            /* The program's last close; only libraries loaded\n"
+                    "               while it ran still hold the base. Detach it from\n"
+                    "               the task so the next program on this process gets\n"
+                    "               a base of its own; it is freed on the last library\n"
+                    "               close. */\n"
+                    "            __GM_SetPerTaskBase(dupbase->oldpertaskbase);\n"
+                    "            __aros_setoffsettable((char *)dupbase->oldbase);\n"
+                    "            dupbase->task = NULL;\n"
+                    "        }\n"
                     "        return BNULL;\n"
+                    "    }\n"
             );
         fprintf(out,
                 "\n"
                 "    set_call_libfuncs(SETNAME(CLOSELIB), -1, 0, LIBBASE);\n"
                 "    set_close_rellibraries(LIBBASE);\n"
-                "    __aros_setoffsettable((char *)dupbase->oldbase);\n"
         );
         if (cfg->options & OPTION_PERTASKBASE)
             fprintf(out,
-                    "    __GM_SetPerTaskBase(((struct __GM_DupBase *)LIBBASE)->oldpertaskbase);\n"
+                    "    if (dupbase->task == thistask)\n"
+                    "        __aros_setoffsettable((char *)dupbase->oldbase);\n"
+                    "    else\n"
+                    "        __aros_setoffsettable(entryoffsettable);\n"
+                    "    if (__GM_GetPerTaskBase() == LIBBASE)\n"
+                    "        __GM_SetPerTaskBase(dupbase->oldpertaskbase);\n"
+            );
+        else
+            fprintf(out,
+                    "    __aros_setoffsettable((char *)dupbase->oldbase);\n"
             );
         fprintf(out,
                 "    __freebase(LIBBASE);\n"
@@ -1573,9 +1663,11 @@ static void writeexpungelib(FILE *out, struct config *cfg)
                 "    if ( ((struct Library *)LIBBASE)->lib_OpenCnt == 0 )\n"
                 "    {\n"
                 "        BPTR seglist = GM_SEGLIST_FIELD(LIBBASE);\n"
+                "        APTR __gm_retaddr = __GM_EnterLibContext(SysBase);\n"
                 "\n"
                 "        if(!set_call_libfuncs(SETNAME(EXPUNGELIB), -1, 1, LIBBASE))\n"
                 "        {\n"
+                "            __GM_LeaveLibContext(SysBase, __gm_retaddr);\n"
                 "            ((struct Library *)LIBBASE)->lib_Flags |= LIBF_DELEXP;\n"
                 "            return BNULL;\n"
                 "        }\n"
@@ -1583,6 +1675,7 @@ static void writeexpungelib(FILE *out, struct config *cfg)
                 "        Remove((struct Node *)LIBBASE);\n"
                 "\n"
                 "        set_libexpunge(&GM_UNIQUENAME(InitSets), LIBBASE);\n"
+                "        __GM_LeaveLibContext(SysBase, __gm_retaddr);\n"
         );
         if (!(cfg->options & OPTION_NOAUTOLIB))
             fprintf(out, "#ifdef GM_OOPBASE_FIELD\n"

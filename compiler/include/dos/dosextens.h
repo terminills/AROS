@@ -2,7 +2,7 @@
 #define DOS_DOSEXTENS_H
 
 /*
-    Copyright © 1995-2019, The AROS Development Team. All rights reserved.
+    Copyright ï¿½ 1995-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: LibBase and some important structures
@@ -165,6 +165,9 @@ struct Process
     APTR	    pr_FileSystemTask;
       /* CLI the process is connected to. (struct CommandLineInterface *) */
     BPTR	    pr_CLI;
+      /* Stack pointer of the running program's entry frame; every command
+         RunCommand() starts in a process gets its own value. AROS uses it
+         as the identity of "the program on this process", see below. */
     APTR	    pr_ReturnAddr;
       /* Function to be called, when process waits for a packet-message. */
     APTR	    pr_PktWait;
@@ -217,6 +220,14 @@ struct Process
 #define PRF_SYNCHRONOUS (1L << PRB_SYNCHRONOUS)
 #define PRF_WAITINGFORCHILD (1L << PRB_WAITINGFORCHILD)
 #define PRF_NOTIFYONDEATH (1L << PRB_NOTIFYONDEATH)
+
+/* AROS-specific: a library's Init and Expunge run on whatever process
+   loaded or flushed it. While they run, that process' pr_ReturnAddr holds
+   this value so that a per-task library (genmodule "pertaskbase") opened
+   or closed on behalf of the library can tell the open from one made by
+   the program running on the process. The original value is restored
+   before Init/Expunge return. Never a valid stack address. */
+#define PR_RETURNADDR_NOPROGRAM ((APTR)~(IPTR)0)
 #define PRF_CLOSECLIERROR   (1L << PRB_CLOSECLIERROR)
 
 /* Structure used for CLIs and Shells. Allocate this structure with
