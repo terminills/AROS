@@ -45,6 +45,8 @@ Object *reqwnd, *helpwnd, *helptext;
 Object *reqroot, *root;
 Object *btproceed, *btabort, *btskip, *bthelp;
 Object *btback;              /* shown in place of Abort while (back) applies */
+Object *btabortpage;         /* the page group Abort and Back share */
+static int back_shown = FALSE;
 int back_pressed = FALSE;    /* the user went back from the page, see execute.c */
 Object *intermediate = NULL;
 Object *working_text = NULL; /* the TextObject inside intermediate, see update_working() */
@@ -113,8 +115,11 @@ static void show_back(struct ParameterList *pl)
 {
     int on = (pl != NULL && GetPL(pl, _BACK).used == 1);
 
-    set(btabort, MUIA_ShowMe, !on);
-    set(btback, MUIA_ShowMe, on);
+    if (on != back_shown)
+    {
+        set(btabortpage, MUIA_Group_ActivePage, on ? 1 : 0);
+        back_shown = on;
+    }
 }
 
 #define WaitCTRL(sigs)                                                        \
@@ -313,8 +318,11 @@ Object *banner = NULL;
                 Child, HGroup,
                     MUIA_Group_SameSize, TRUE,
                     Child, btproceed = CoolImageIDButton("Proceed", COOL_USEIMAGE_ID),
-                    Child, btabort   = CoolImageIDButton("Abort", COOL_CANCELIMAGE_ID),
-                    Child, btback    = CoolImageIDButton("Back", COOL_CANCELIMAGE_ID),
+                    /* a page with (back) shows Back in Abort's place */
+                    Child, btabortpage = PageGroup,
+                        Child, btabort = CoolImageIDButton("Abort", COOL_CANCELIMAGE_ID),
+                        Child, btback  = CoolImageIDButton("Back", COOL_CANCELIMAGE_ID),
+                    End,
                     Child, btskip    = CoolImageIDButton("Skip", COOL_WARNIMAGE_ID),
                     Child, bthelp    = CoolImageIDButton("Help", COOL_INFOIMAGE_ID),
                 End,
@@ -357,7 +365,6 @@ printf("Failed to intialize Zune GUI\n");
     set(btproceed,MUIA_CycleChain,1);
     set(btabort,MUIA_CycleChain,1);
     set(btback,MUIA_CycleChain,1);
-    set(btback,MUIA_ShowMe,FALSE);
     set(btskip,MUIA_CycleChain,1);
     set(bthelp,MUIA_CycleChain,1);
     DoMethod(helpwnd, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, (IPTR)app, 2,
