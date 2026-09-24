@@ -47,6 +47,8 @@ USER_LDFLAGS += \
     -Wl,--wrap=pthread_rwlock_unlock \
     -Wl,--wrap=pthread_once \
     -Wl,--wrap=pthread_getattr_np -Wl,--wrap=pthread_attr_getstack \
+    -Wl,--wrap=pthread_attr_init -Wl,--wrap=pthread_attr_destroy \
+    -Wl,--wrap=pthread_attr_setstacksize -Wl,--wrap=pthread_create \
     -Wl,--wrap=sem_init -Wl,--wrap=sem_destroy -Wl,--wrap=sem_post \
     -Wl,--wrap=sem_trywait -Wl,--wrap=sem_wait -Wl,--wrap=sem_timedwait
 

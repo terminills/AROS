@@ -23,8 +23,10 @@
  * mmakefile adds -Wl,--wrap= for every function defined here; --wrap
  * rewrites references in all link inputs (including AROS pthread
  * archive members), so every caller sees one consistent representation.
- * Thread lifecycle (pthread_create/join/self/key_*) stays with the
- * AROS linklib: those take no caller-embedded storage.
+ * Thread lifecycle (join/self/key_*) stays with the AROS linklib: those
+ * take no caller-embedded storage. pthread_create and the pthread_attr_*
+ * calls V8 makes are wrapped because pthread_attr_t IS caller storage
+ * (see V8_ATTR_SIZE below).
  *
  * ABI NOTES:
  *  - pthread_* return glibc error VALUES (ETIMEDOUT=110 etc.), because
@@ -50,6 +52,7 @@
 #include <proto/exec.h>
 
 #include <pthread.h>
+#include <stddef.h>
 #include <string.h>
 #include <time.h>
 
@@ -653,10 +656,83 @@ int __wrap_pthread_once(int *once_control, void (*init_routine)(void))
 /* ---------------------------------------------------------------- */
 /* stack bounds - V8 base::Stack calls getattr_np + attr_getstack    */
 /* on the CURRENT thread only.  Chromium's AROS V8 is compiled with  */
-/* the AROS pthread_attr_t layout, so clear exactly that type rather */
-/* than the 56-byte Linux/glibc slot used by the old playground      */
-/* build.  The field offsets remain stackaddr @0, stacksize @8.      */
+/* the AROS pthread_attr_t layout of its SDK, so clear V8's slot     */
+/* (V8_ATTR_SIZE) rather than the current type or the 56-byte glibc  */
+/* one.  The field offsets remain stackaddr @0, stacksize @8.        */
 /* ---------------------------------------------------------------- */
+
+/*
+ * pthread_attr_t as the V8 monolith sees it. V8 is compiled once against
+ * the SDK of its build and reserves exactly that many bytes on its stack;
+ * pthread_attr_t has since grown (cpuaffinity), and the AROS functions
+ * clear and read the whole current type. Clearing 40 bytes of V8's 32-byte
+ * slot zeroed the caller's saved frame pointer, and pthread_create read an
+ * affinity mask out of whatever followed the slot. V8 only ever sees the
+ * fields in front of cpuaffinity; the rest is supplied here, with
+ * cpuaffinity NULL (inherit, the behaviour before the field existed).
+ */
+#define V8_ATTR_SIZE offsetof(pthread_attr_t, cpuaffinity)
+_Static_assert(offsetof(pthread_attr_t, cpuaffinity) == 32,
+               "V8's pthread_attr_t slot is 32 bytes; a field added in front "
+               "of cpuaffinity changes it - rebuild the V8 monolith");
+
+extern int __real_pthread_attr_init(pthread_attr_t *attr);
+extern int __real_pthread_attr_setstacksize(pthread_attr_t *attr,
+                                            size_t stacksize);
+extern int __real_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                                 void *(*start)(void *), void *arg);
+
+static void v8_attr_expand(pthread_attr_t *full, const void *attr)
+{
+    memset(full, 0, sizeof(*full));
+    memcpy(full, attr, V8_ATTR_SIZE);
+}
+
+int __wrap_pthread_attr_init(void *attr)
+{
+    pthread_attr_t full;
+    int rc;
+
+    if (attr == NULL)
+        return GERR_EINVAL;
+    rc = __real_pthread_attr_init(&full);
+    if (rc == 0)
+        memcpy(attr, &full, V8_ATTR_SIZE);
+    return rc ? GERR_EINVAL : 0;
+}
+
+int __wrap_pthread_attr_destroy(void *attr)
+{
+    if (attr == NULL)
+        return GERR_EINVAL;
+    memset(attr, 0, V8_ATTR_SIZE);
+    return 0;
+}
+
+int __wrap_pthread_attr_setstacksize(void *attr, size_t stacksize)
+{
+    pthread_attr_t full;
+    int rc;
+
+    if (attr == NULL)
+        return GERR_EINVAL;
+    v8_attr_expand(&full, attr);
+    rc = __real_pthread_attr_setstacksize(&full, stacksize);
+    if (rc == 0)
+        memcpy(attr, &full, V8_ATTR_SIZE);
+    return rc ? GERR_EINVAL : 0;
+}
+
+int __wrap_pthread_create(pthread_t *thread, const void *attr,
+                          void *(*start)(void *), void *arg)
+{
+    pthread_attr_t full;
+
+    if (attr == NULL)
+        return __real_pthread_create(thread, NULL, start, arg);
+    v8_attr_expand(&full, attr);
+    return __real_pthread_create(thread, &full, start, arg);
+}
 
 int __wrap_pthread_getattr_np(unsigned long thread, void *attr)
 {
@@ -664,7 +740,7 @@ int __wrap_pthread_getattr_np(unsigned long thread, void *attr)
     char **fields = (char **)attr;
 
     (void)thread;
-    memset(attr, 0, sizeof(pthread_attr_t));
+    memset(attr, 0, V8_ATTR_SIZE);
     fields[0] = (char *)t->tc_SPLower;
     ((size_t *)attr)[1] = (size_t)((char *)t->tc_SPUpper -
                                    (char *)t->tc_SPLower);
