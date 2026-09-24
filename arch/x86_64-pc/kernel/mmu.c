@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <asm/cpu.h>
@@ -13,7 +13,45 @@
 #define D(x)
 #define DMMU(x)
 
-#define MMU_SPLIT_PTE_PAGE_COUNT 32
+/*
+ * Split-PTE pool: how many 2MB PDEs core_ProtPage() can demote to 512x 4K pages
+ * for fine-grained protection. Each slot = one 2MB region, so total coverage is
+ * MMU_SPLIT_PTE_PAGE_COUNT * 2MB. core_ProtKernelArea() protects the whole
+ * kickstart-module region page-by-page, so this pool must exceed that region's
+ * PDE count.
+ *
+ * 32 slots (64MB) sufficed historically, but large embedded payloads push the
+ * protected region well past that - measured here 2026-09-19 with a native
+ * Chromium on the Live CD, which exhausted the pool and then emitted an ungated
+ * bug() PER 4K PAGE: 25,862 lines of "split PTE pool exhausted" over serial,
+ * which is itself what stalls the boot. 64 slots = 128MB coverage.
+ *
+ * 64 then ran out too, on the same day, with a larger Chromium (911MB stripped,
+ * PDF and printing enabled): one "pool exhausted at 0x138400000" and the region
+ * left at 2MB granularity. That silent outcome is the dangerous one. Failing to
+ * demote does not fail the request - core_ProtPage() returns having protected
+ * nothing, so a PartitionAlloc decommit or a PROT_NONE guard page quietly stays
+ * readable and writable, and the fault surfaces much later as a CHECK inside
+ * Chromium with no obvious connection to the MMU.
+ *
+ * 512 was still not enough, and the "sized to stop being a variable" claim
+ * above was wrong twice over. It ran out on EVERY Chromium run - single- and
+ * multi-process alike, always around 0x16e600000 - because the protected
+ * region scales with the payload (a ~900MB browser binary) AND with the number
+ * of processes loading one. Multi-process doubles the demand outright.
+ *
+ * 4096 slots = 8GB of coverage for 16MB of boot memory. That is chosen to
+ * exceed several concurrent Chromium processes rather than to fit one, because
+ * the failure mode is silent (see core_ProtPage below: the protection is simply
+ * not applied) and a silently wrong page table is far more expensive to chase
+ * than 16MB is to spend against a 6GB minimum.
+ *
+ * The real fix is to stop sizing this at boot and demote on demand, since no
+ * constant is correct for "however many large processes the user runs". Until
+ * then this is deliberately generous, and the refusal counter below exists so
+ * that running out is never again mistaken for a one-off warning.
+ */
+#define MMU_SPLIT_PTE_PAGE_COUNT 4096
 
 void core_InitMMU(struct CPUMMUConfig *MMU)
 {
@@ -168,7 +206,12 @@ void core_SetupMMU(struct CPUMMUConfig *MMU, IPTR memtop, IPTR maptop)
         MMU->mmu_PML4 = krnAllocBootMemAligned(sizeof(struct PML4E) * 512, PAGE_SIZE);
         MMU->mmu_PDP  = krnAllocBootMemAligned(sizeof(struct PDPE)  * 512, PAGE_SIZE);
         MMU->mmu_PDE  = krnAllocBootMemAligned(sizeof(struct PDE2M) * MMU->mmu_PDEPageCount, PAGE_SIZE);
-        MMU->mmu_PTE  = krnAllocBootMemAligned(sizeof(struct PTE)   * 512 * 32, PAGE_SIZE);
+        /* MUST use the macro. This site used to hardcode 32 while the guard
+         * below tested MMU_SPLIT_PTE_PAGE_COUNT, so raising the macro alone
+         * would have let core_ProtPage() hand out slots past the end of this
+         * allocation - a heap overrun instead of the graceful 2MB-granularity
+         * degradation the guard intends. */
+        MMU->mmu_PTE  = krnAllocBootMemAligned(sizeof(struct PTE)   * 512 * MMU_SPLIT_PTE_PAGE_COUNT, PAGE_SIZE);
 
         D(bug("[Kernel] Allocated PML4 0x%p, PDP 0x%p, PDE 0x%p PTE 0x%p\n", MMU->mmu_PML4, MMU->mmu_PDP, MMU->mmu_PDE, MMU->mmu_PTE));
     }
@@ -212,8 +255,35 @@ void core_ProtPage(intptr_t addr, char p, char rw, char us)
 
         if (MMU->mmu_PDEPageUsed >= MMU_SPLIT_PTE_PAGE_COUNT)
         {
-            bug("[Kernel] core_ProtPage: split PTE pool exhausted at 0x%p\n",
-                addr);
+            /* EXHAUSTION IS NOT SAFE, and an earlier version of this comment
+             * said it was. It is safe only when the caller merely wants a
+             * mapping to exist - the region does stay mapped, at 2MB rather
+             * than 4K. It is NOT safe when the caller is changing PROTECTION
+             * on a sub-2MB range, which is what core_ProtPage() is for: the
+             * requested protection is then silently not applied and we return
+             * success. A PartitionAlloc decommit leaves the page readable and
+             * writable; worse, a later set-access leaves it PROT_NONE, and the
+             * next legitimate read takes a privilege-violation #GP nowhere
+             * near the MMU. Both were observed in Chromium - a deterministic
+             * #GP in OPENSSL_free on every run, and a PartitionAlloc FATAL in
+             * every child process once multi-process was enabled.
+             *
+             * Still rate-limited, because core_ProtKernelArea() calls this for
+             * every page in the protected region and an ungated bug() emitted
+             * 25,862 lines and stalled the boot - the flood is its own failure.
+             * But report on a doubling schedule rather than once: a single line
+             * reads like a one-off curiosity, when the true count is what says
+             * whether the pool is marginally or hopelessly small. */
+            static unsigned refused = 0;
+            static unsigned next_report = 1;
+            if (++refused >= next_report)
+            {
+                next_report *= 2;
+                bug("[Kernel] core_ProtPage: split PTE pool exhausted (%u slots) at 0x%p"
+                    " - PROTECTION NOT APPLIED, %u refused so far;"
+                    " raise MMU_SPLIT_PTE_PAGE_COUNT\n",
+                    (unsigned)MMU_SPLIT_PTE_PAGE_COUNT, addr, refused);
+            }
             return;
         }
 
