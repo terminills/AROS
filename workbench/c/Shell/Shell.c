@@ -85,11 +85,6 @@ LONG interact(ShellState *ss)
 
     setInteractive(cli, ss);
 
-    /* readLine() writes up to LINE_MAX bytes plus a terminator straight
-     * into in.buf. */
-    if (!bufferExpand(&in, LINE_MAX + 1, ss))
-        return ERROR_NO_FREE_STORE;
-
     do {
         if ((error = Redirection_init(ss)) == 0)
         {
