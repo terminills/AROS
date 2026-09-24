@@ -16,6 +16,7 @@ POSIXCTESTFILES := \
         fsync \
         getfsstat \
         getpass \
+        ioctl_tty \
         lseek \
         mnt_names \
         open \
@@ -24,9 +25,11 @@ POSIXCTESTFILES := \
         statfs \
         strptime \
         strtok_r \
+        sysconf_clktck \
         termios_tty \
         time_r \
         uname \
+        usergroup_release usergroup_release_child \
         usleep \
         vfork \
         vfork_execl \

@@ -69,8 +69,7 @@ static void Timer1Tick(struct TimerBase *TimerBase, struct ExecBase *SysBase)
 
     D(bug("[Timer] Timer1Tick: Reconfiguring interrupt..\n"));
 
-    TimerBase->tb_Platform.tbp_CLO = *((volatile unsigned int *)(SYSTIMER_CLO));
-    *((volatile unsigned int *)(SYSTIMER_C0 + (TICK_TIMER * 4))) = (TimerBase->tb_Platform.tbp_CLO + (1000000 / TimerBase->tb_eclock_rate));
+    Timer_Reprogram(TimerBase);
 
     D(bug("[Timer] Timer1Tick: Done..\n"));
 }
@@ -162,6 +161,9 @@ static int Timer_Init(struct TimerBase *TimerBase)
     Forbid();
     TimerBase->tb_Platform.tbp_CHI = *((volatile unsigned int *)(SYSTIMER_CHI));
     TimerBase->tb_Platform.tbp_CLO = *((volatile unsigned int *)(SYSTIMER_CLO));
+    /* At 0 the first EClockUpdate would book the whole uptime. */
+    TimerBase->tb_Platform.tbp_EClockLast =
+        ((UQUAD)TimerBase->tb_Platform.tbp_CHI << 32) | TimerBase->tb_Platform.tbp_CLO;
     *((volatile unsigned int *)(SYSTIMER_C0 + (TICK_TIMER * 4))) = (TimerBase->tb_Platform.tbp_CLO + TimerBase->tb_Platform.tbp_TickRate.tv_micro);
     Permit();
 

@@ -769,13 +769,21 @@ BOOL setmode(struct amigavideo_staticdata *csd, struct amigabm_data *bm)
     fetchpixels = fetchspan << (bm->res + 1);
     ddfstrt = (bm->diwstartx / 2) & ~(fetchspan - 1);
     ddfstrt -= 1 << maxplanes;
+    /*
+     * DDFSTOP names the start of the last fetch unit, so it sits one unit
+     * short of the span's end: a 640 pixel hires line in FMODE 0 is 20 units
+     * of 8 colour clocks from $3c and stops at $d4, as Kickstart programs it.
+     * Placing it a unit further ($dc) is beyond the $d8 the hardware stops
+     * at, so that unit is never fetched while the modulo below still pays
+     * for it, shearing the display.
+     */
     ddfstop = ddfstrt +
-        ((viewwidth + fetchpixels - 1) / fetchpixels) * fetchspan;
+        (((viewwidth + fetchpixels - 1) / fetchpixels) - 1) * fetchspan;
 
     /*
-     * DDFSTOP is inclusive, so the fetched span includes the unit beginning
-     * at DDFSTOP.  Keep modulopre in colour-clock units for setbitmap(),
-     * which converts it back to bytes according to display resolution.
+     * The fetched span includes the unit beginning at DDFSTOP.  Keep
+     * modulopre in colour-clock units for setbitmap(), which converts it
+     * back to bytes according to display resolution.
      */
     bm->modulopre = ddfstop - ddfstrt + fetchspan;
     bm->ddfstrt = ddfstrt;
@@ -2019,7 +2027,12 @@ VOID initcustom(struct amigavideo_staticdata *csd)
     custom->cop1lc = (ULONG)csd->copper1;
     custom->cop2lc = (ULONG)csd->copper2_backup;
 
-    custom->dmacon = 0x8000 | 0x0080 | 0x0040 | 0x0020;
+    /*
+     * Keep raster DMA enabled even while the null view has no bitplanes,
+     * matching Kickstart.  Hardware-takeover programs may save DMACONR and
+     * restore it after installing their own bitplanes.
+     */
+    custom->dmacon = 0x8000 | 0x0100 | 0x0080 | 0x0040 | 0x0020;
     
     GfxBase->copinit = (struct copinit*)csd->copper1;
 

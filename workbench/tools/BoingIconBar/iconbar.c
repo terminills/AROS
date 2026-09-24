@@ -114,6 +114,7 @@ static BOOL DrainAndReplyPort(struct MsgPort *port);                    // drain
 static BOOL NoIconBouncing(void);                                       // check if no icon is bouncing
 static BOOL MouseOverToolbar(void);                                     // check if mouse is over the toolbar
 static void HandleFocus(void);                                          // focus follows the mouse
+static BOOL ToolbarAreaBlocked(LONG left, LONG top, LONG right, LONG bottom); // check if another window covers the toolbar area
 static void ParseAlign(STRPTR str);                                     // parse ALIGN parameter
 static void ComputeWindowPosition(void);                                // set toolbar position from Align
 static void RefreshBackground(void);                                    // refresh toolbar background
@@ -162,6 +163,7 @@ static LONG                                     Position, OldPosition;
 static LONG                                     WindowHeight, WindowWidth, ScreenHeight, ScreenWidth, IconWidth;
 static LONG                                     IconCounter, LevelCounter, CurrentLevel=0, lbm=0, rbm=0, MouseIcon;
 static LONG                                     Length, BeginningWindow, EndingWindow, Window_Max_X, Window_Max_Y;
+static LONG                                     CacheRelX, CacheRelY;    // window offset within the screen-anchored wallpaper cache
 static BYTE                                     MovingTable[8]={0, 4, 7, 9, 10, 9, 7, 4};
 static TEXT                                     BufferList[20]; 
 static ULONG                                    WindowMask=0, MenuMask=0, WindowSignal;
@@ -200,8 +202,8 @@ static struct DiskObject                        *Icon[SUM_ICON];
 static struct Window                            *MainWindow = NULL, *MenuWindow = NULL; 
 static struct Screen                            *MyScreen = NULL;
 
-static struct BitMap                            *BMP_Buffer, *BMP_DoubleBuffer;
-static struct RastPort                          RP_Buffer, RP_DoubleBuffer;
+static struct BitMap                            *BMP_Buffer, *BMP_DoubleBuffer, *BMP_Wallpaper;
+static struct RastPort                          RP_Buffer, RP_DoubleBuffer, RP_Wallpaper;
 
 // struct of  icons
 static struct Icon_Struct                       Icons[SUM_ICON] = { 0 };
@@ -397,22 +399,6 @@ int main(int argc, char *argv[])
         goto bailout;
     }
 
-    // start notification on Workbench screen reset (e.g. resolution change)
-    ScreenNotifyPort = CreateMsgPort();
-    if (ScreenNotifyPort)
-    {
-        ScreenNotifyHandle = StartScreenNotifyTags(
-            SNA_Notify,   SNOTIFY_WAIT_REPLY | SNOTIFY_BEFORE_CLOSEWB | SNOTIFY_AFTER_OPENWB,
-            SNA_MsgPort,  ScreenNotifyPort,
-            SNA_Priority, 0,
-            TAG_END);
-
-        if (ScreenNotifyHandle)
-        {
-            ScreenNotifyMask = 1 << ScreenNotifyPort->mp_SigBit;
-        }
-    }
-
     // start notification on the wallpaper prefs file
     WallpaperPort = CreateMsgPort();
     if (WallpaperPort)
@@ -506,6 +492,26 @@ int main(int argc, char *argv[])
             FirstOpening = FALSE;
         }
 
+        /* Subscribe to Workbench screen notifications only after the startup
+           delay. StartScreenNotifyTags with SNOTIFY_WAIT_REPLY makes the
+           Workbench wait for our reply to SNOTIFY_AFTER_OPENWB; subscribing
+           before the delay would block the Workbench's initial wallpaper
+           render while we sleep (gray screen during the whole delay). */
+        ScreenNotifyPort = CreateMsgPort();
+        if (ScreenNotifyPort)
+        {
+            ScreenNotifyHandle = StartScreenNotifyTags(
+                SNA_Notify,   SNOTIFY_WAIT_REPLY | SNOTIFY_BEFORE_CLOSEWB | SNOTIFY_AFTER_OPENWB,
+                SNA_MsgPort,  ScreenNotifyPort,
+                SNA_Priority, 0,
+                TAG_END);
+
+            if (ScreenNotifyHandle)
+            {
+                ScreenNotifyMask = 1 << ScreenNotifyPort->mp_SigBit;
+            }
+        }
+
         // ---- main loop
 
         while (BiB_Exit==FALSE)
@@ -564,7 +570,13 @@ int main(int argc, char *argv[])
                     while(GetMsg(FocusPort) != NULL)
                         fired = TRUE;
                     if (fired)
+                    {
+                        /* timer.device zeroes tr_time when the request completes,
+                           so it must be re-armed with the delay re-set. */
+                        FocusTimer->tr_time.tv_secs = 0;
+                        FocusTimer->tr_time.tv_micro = 100000;
                         SendIO((struct IORequest *)FocusTimer);
+                    }
                     HandleFocus();
                 }
 
@@ -574,7 +586,12 @@ int main(int argc, char *argv[])
                     BiB_Exit=TRUE;
                 }
 
-                if(WallpaperPending && Window_Open && NoIconBouncing())
+                if(WallpaperPending && Window_Open && NoIconBouncing() &&
+                    MainWindow &&
+                    !ToolbarAreaBlocked(MainWindow->LeftEdge,
+                        MainWindow->TopEdge,
+                        MainWindow->LeftEdge + MainWindow->Width - 1,
+                        MainWindow->TopEdge + MainWindow->Height - 1))
                 {
                     /* Let Wanderer repaint the new wallpaper before recapturing */
                     Delay(20);
@@ -611,7 +628,11 @@ int main(int argc, char *argv[])
                     while(GetMsg(FocusPort) != NULL)
                         fired = TRUE;
                     if (fired)
+                    {
+                        FocusTimer->tr_time.tv_secs = 0;
+                        FocusTimer->tr_time.tv_micro = 100000;
                         SendIO((struct IORequest *)FocusTimer);
+                    }
                 }
 
                 CheckMousePosition();
@@ -679,6 +700,8 @@ EndNotify(WallpaperNotRequest);
         FreeBitMap(BMP_Buffer);
     if(BMP_DoubleBuffer)
         FreeBitMap(BMP_DoubleBuffer);
+    if(BMP_Wallpaper)
+        FreeBitMap(BMP_Wallpaper);
 
     for(x=0; x<3; x++)
     {
@@ -1050,6 +1073,22 @@ static BOOL SetWindowParameters(void)
         RP_Buffer.BitMap = BMP_Buffer;
         RP_Buffer.Layer = NULL;
 
+        BMP_Wallpaper = AllocBitMap(Window_Max_X,
+            Window_Max_Y,
+            GetBitMapAttr(MyScreen->RastPort.BitMap,
+            BMA_DEPTH),
+            BMF_MINPLANES|BMF_CLEAR,
+            MyScreen->RastPort.BitMap);
+
+        if (BMP_Wallpaper == NULL)
+        {
+            return FALSE;
+        }
+
+        InitRastPort(&RP_Wallpaper);
+        RP_Wallpaper.BitMap = BMP_Wallpaper;
+        RP_Wallpaper.Layer = NULL;
+
         BMP_DoubleBuffer = AllocBitMap(IconWidth + 8,
             Window_Max_Y,
             GetBitMapAttr(MyScreen->RastPort.BitMap,
@@ -1082,6 +1121,15 @@ static void Decode_Toolbar_IDCMP(struct IntuiMessage *KomIDCMP)
             break;
 
         case IDCMP_MOUSEMOVE:
+            if(KomIDCMP->MouseX < 0 ||
+                KomIDCMP->MouseX >= WindowWidth ||
+                KomIDCMP->MouseY < 0 ||
+                KomIDCMP->MouseY >= WindowHeight)
+            {
+                /* Not over the toolbar - nothing to update. */
+                break;
+            }
+
             for(MouseIcon=Levels[CurrentLevel].Beginning; MouseIcon<IconCounter; MouseIcon++)
             {
                 if(Icons[MouseIcon].Icon_OK)
@@ -1238,6 +1286,22 @@ static void Change_State(LONG Mode)
     {
         if(Icons[x].Icon_OK)
         {
+            /* Stop the hover bounce as soon as the mouse leaves the icon,
+               even if no MOUSEMOVE message was delivered for it. */
+            if(Icons[x].Icon_Status & ICON_ACTIVE)
+            {
+                LONG mx = MainWindow->MouseX;
+                LONG my = MainWindow->MouseY;
+
+                if(!(mx >= Icons[x].Icon_PositionX &&
+                        mx < Icons[x].Icon_PositionX + Icons[x].Icon_Width &&
+                        my > 0 &&
+                        my < WindowHeight - 5))
+                {
+                    Icons[x].Icon_Status = Icons[x].Icon_Status & 0x07;
+                }
+            }
+
             if(Icons[x].Icon_Status != 0)
             {
                 if(Mode == 0)
@@ -1266,8 +1330,8 @@ static void Change_State(LONG Mode)
 static void Insert_Icon(LONG Mode, LONG NrIcon)
 {
     BltBitMapRastPort(BMP_Buffer,
-        Icons[NrIcon].Icon_PositionX,
-        0,
+        CacheRelX + Icons[NrIcon].Icon_PositionX,
+        CacheRelY,
         &RP_DoubleBuffer,
         0,
         0,
@@ -1318,21 +1382,66 @@ static void Blink_Icon(LONG NrIcon)
 static BOOL OpenMainWindow(void)
 {
     LONG x, y, a;
+    LONG cacheX;
 
     PrevActiveWindow = NULL;
     FocusOver = FALSE;
     FocusStableTicks = 0;
 
+    /* The wallpaper cache is anchored to a fixed screen region so that a
+       stale capture (used while a window covers the toolbar) still lines up
+       with the current window. Vertically it covers the bottom Window_Max_Y
+       screen rows; horizontally it depends on the alignment. */
+    if (Align == 1)                          /* LEFT */
+        cacheX = 0;
+    else if (Align == 2)                     /* RIGHT */
+        cacheX = ScreenWidth - Window_Max_X;
+    else                                     /* CENTER */
+        cacheX = ScreenWidth / 2 - Window_Max_X / 2;
+
+    CacheRelX = BeginningWindow - cacheX;
+    CacheRelY = Window_Max_Y - WindowHeight;
+
     if((MyScreen=LockPubScreen(NULL)))
     {
-        BltBitMapRastPort(MyScreen->RastPort.BitMap,
-            BeginningWindow,
-            ScreenHeight - WindowHeight,
-            &RP_Buffer,
-            0, 0,
-            Window_Max_X,
-            Window_Max_Y,
-            0xC0);
+        if (!ToolbarAreaBlocked(BeginningWindow,
+                ScreenHeight - WindowHeight,
+                BeginningWindow + Window_Max_X - 1,
+                ScreenHeight - 1))
+        {
+            BltBitMapRastPort(MyScreen->RastPort.BitMap,
+                BeginningWindow - CacheRelX,
+                ScreenHeight - Window_Max_Y,
+                &RP_Buffer,
+                0, 0,
+                Window_Max_X,
+                Window_Max_Y,
+                0xC0);
+
+            /* Keep a copy of the pure wallpaper for the case when a later
+               capture has to be skipped because a window covers the toolbar. */
+            BltBitMapRastPort(BMP_Buffer,
+                0, 0,
+                &RP_Wallpaper,
+                0, 0,
+                Window_Max_X,
+                Window_Max_Y,
+                0xC0);
+        }
+        else
+        {
+            /* A window covers the toolbar area: don't capture a window
+               fragment. Restore the last known good wallpaper instead, so
+               the old bar/labels are wiped before the new ones are drawn. */
+            BltBitMapRastPort(BMP_Wallpaper,
+                0, 0,
+                &RP_Buffer,
+                0, 0,
+                Window_Max_X,
+                Window_Max_Y,
+                0xC0);
+            WallpaperPending = TRUE;
+        }
 
         UnlockPubScreen(NULL,MyScreen);
     }
@@ -1343,29 +1452,29 @@ static BOOL OpenMainWindow(void)
         a = y / BackgroundData[1].Width;
 
         DrawBarTile(picture[0], bm[0],
-            0,
-            WindowHeight - BackgroundData[0].Height,
+            CacheRelX + 0,
+            Window_Max_Y - BackgroundData[0].Height,
             BackgroundData[0].Width,
             BackgroundData[0].Height);
 
         for(x=0; x<a; x++)
         {
             DrawBarTile(picture[1], bm[1],
-                BackgroundData[0].Width + x * BackgroundData[1].Width,
-                WindowHeight - BackgroundData[1].Height,
+                CacheRelX + BackgroundData[0].Width + x * BackgroundData[1].Width,
+                Window_Max_Y - BackgroundData[1].Height,
                 BackgroundData[1].Width,
                 BackgroundData[1].Height);
         }
 
         DrawBarTile(picture[1], bm[1],
-            BackgroundData[0].Width + x * BackgroundData[1].Width,
-            WindowHeight - BackgroundData[1].Height,
+            CacheRelX + BackgroundData[0].Width + x * BackgroundData[1].Width,
+            Window_Max_Y - BackgroundData[1].Height,
             y - BackgroundData[1].Width * a,
             BackgroundData[1].Height);
 
         DrawBarTile(picture[2], bm[2],
-            WindowWidth - BackgroundData[2].Width,
-            WindowHeight - BackgroundData[2].Height,
+            CacheRelX + WindowWidth - BackgroundData[2].Width,
+            Window_Max_Y - BackgroundData[2].Height,
             BackgroundData[2].Width,
             BackgroundData[2].Height);
         }
@@ -1374,8 +1483,8 @@ static BOOL OpenMainWindow(void)
             for(x=0; x<WindowWidth; x=x+BackgroundData[1].Width)
             {
                 DrawBarTile(picture[1], bm[1],
-                    x,
-                    WindowHeight - BackgroundData[1].Height,
+                    CacheRelX + x,
+                    Window_Max_Y - BackgroundData[1].Height,
                     BackgroundData[1].Width,
                     BackgroundData[1].Height);
             }
@@ -1422,7 +1531,7 @@ static BOOL OpenMainWindow(void)
             WindowMask = 1 << MainWindow->UserPort->mp_SigBit;
 
             BltBitMapRastPort(BMP_Buffer,
-                0, 0,
+                CacheRelX, CacheRelY,
                 MainWindow->RPort,
                 0, 0,
                 WindowWidth,
@@ -1454,6 +1563,9 @@ static BOOL OpenMainWindow(void)
 
     Window_Open = TRUE;        
     Window_Active = TRUE;
+
+    /* The toolbar is a background element: push it behind all other windows. */
+    WindowToBack(MainWindow);
 
     return TRUE;
 }
@@ -1750,6 +1862,7 @@ static void ScreenResetCleanup(void)
     }
     RP_Buffer.BitMap = NULL;
     RP_DoubleBuffer.BitMap = NULL;
+    RP_Wallpaper.BitMap = NULL;
 
     for(x=0; x<3; x++)
     {
@@ -1855,6 +1968,10 @@ static void HandleFocus(void)
     if (ScreenResetInProgress || !Window_Open || MenuWindow_Open)
         return;
 
+    /* Don't steal focus from an application running on another screen. */
+    if (IntuitionBase->ActiveScreen != MyScreen)
+        return;
+
     over = MouseOverToolbar();
 
     /* Debounce: only act when the mouse-over state is stable for two
@@ -1885,6 +2002,28 @@ static void HandleFocus(void)
         ActivateWindow(PrevActiveWindow);
         PrevActiveWindow = NULL;
     }
+}
+
+
+static BOOL ToolbarAreaBlocked(LONG left, LONG top, LONG right, LONG bottom)
+{
+    struct Window *w;
+
+    if (!MyScreen)
+        return FALSE;
+
+    for (w = MyScreen->FirstWindow; w; w = w->NextWindow)
+    {
+        if (w == MainWindow)
+            continue;
+        /* Backdrop/desktop windows are the wallpaper below the toolbar */
+        if (w->Flags & WFLG_BACKDROP)
+            continue;
+        if (w->LeftEdge <= right && w->LeftEdge + w->Width - 1 >= left &&
+            w->TopEdge <= bottom && w->TopEdge + w->Height - 1 >= top)
+            return TRUE;
+    }
+    return FALSE;
 }
 
 
@@ -1974,8 +2113,14 @@ static void Reload(void)
         FreeBitMap(BMP_DoubleBuffer);
         BMP_DoubleBuffer = NULL;
     }
+    if(BMP_Wallpaper)
+    {
+        FreeBitMap(BMP_Wallpaper);
+        BMP_Wallpaper = NULL;
+    }
     RP_Buffer.BitMap = NULL;
     RP_DoubleBuffer.BitMap = NULL;
+    RP_Wallpaper.BitMap = NULL;
 
     if(ReadPrefs() == FALSE)
     {
@@ -2016,15 +2161,15 @@ static void IconLabel(void)
 
         PrintIText(&RP_Buffer,
             &Labels,
-            pos_x,
-            WindowHeight - (LabelFont.ta_YSize + 3));
+            CacheRelX + pos_x,
+            Window_Max_Y - (LabelFont.ta_YSize + 3));
 
         Labels.FrontPen = 2;
 
         PrintIText(&RP_Buffer,
             &Labels,
-            pos_x + 1,
-            WindowHeight - (LabelFont.ta_YSize + 4));
+            CacheRelX + pos_x + 1,
+            Window_Max_Y - (LabelFont.ta_YSize + 4));
 
     }
 }

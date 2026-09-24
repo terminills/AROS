@@ -11,9 +11,9 @@
 
 #include "Shell.h"
 
-#define BUF_SIZE 512
+#define BUF_SIZE 128
 
-static BOOL bufferExpand(Buffer *out, LONG size, ShellState *ss)
+BOOL bufferExpand(Buffer *out, LONG size, ShellState *ss)
 {
     ULONG newLength = out->len + size;
 
@@ -73,7 +73,8 @@ LONG bufferCopy(Buffer *in, Buffer *out, ULONG size, ShellState *ss)
 {
     STRPTR s = in->buf + in->cur;
     LONG ret = bufferAppend(s, size, out, ss);
-    in->cur += size;
+    if (ret == 0)
+        in->cur += size;
     return ret;
 }
 

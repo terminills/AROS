@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: Filesystem that uses console device for input/output.
 */
@@ -79,8 +79,10 @@
 
 BOOL parse_filename(struct filehandle *fh, char *filename, struct NewWindow *nw);
 
+void close_con_window(struct filehandle *fh);
+
 void do_write(struct filehandle *fh, APTR data, ULONG length);
-void do_movecursor(struct filehandle *fh, UBYTE direction, UBYTE howmuch);
+void do_movecursor(struct filehandle *fh, UBYTE direction, UWORD howmuch);
 void do_cursorvisible(struct filehandle *fh, BOOL on);
 void do_deletechar(struct filehandle *fh);
 void do_eraseinline(struct filehandle *fh);

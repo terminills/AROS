@@ -2,7 +2,7 @@
 #define DOS_DOSTAGS_H
 
 /*
-    Copyright ï¿½ 1995-2020, The AROS Development Team. All rights reserved.
+    Copyright © 1995-2020, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: Tags for DOS routines
@@ -89,22 +89,10 @@
   */
 #define NP_UserData	(NP_Dummy + 26)
 
-  /* (cpumask_t *) Pin the new process to a set of CPUs, as returned by
-     KrnAllocCPUMask()/KrnGetCPUMask(). TASKAFFINITY_ANY lets it run anywhere.
-     (Default: NULL - inherit exec's per-task default, i.e. the creating CPU.)
-
-     AROS SMP places tasks explicitly rather than balancing them: a new task
-     inherits an affinity mask containing only the CPU that created it
-     (rom/exec/exec_util.c, Exec_InitETask), and nothing moves it afterwards.
-     That is by design - see developer/debug/test/smp/smp-test, which is the
-     reference for the master/child model - but it left CreateNewProc() callers
-     with no way to opt in, so every process spawned by a threading layer landed
-     on its creator's core. This tag is that opt-in.
-
-     The mask is handed to exec, which takes ownership of it: PrepareContext()
-     stores the pointer raw and CleanupETask() frees it when the task dies. Do
-     not free it yourself and do not reuse one mask for two processes.
-  */
+  /* (APTR) Which CPUs the process may run on: a KrnAllocCPUMask() mask,
+     or TASKAFFINITY_ANY. The mask becomes the system's to free, as for
+     TASKTAG_AFFINITY - do not reuse or free it. Absent: the process
+     inherits the CPU it was created on. Non-SMP builds ignore it. */
 #define NP_Affinity	(NP_Dummy + 27)
 
 
@@ -186,8 +174,8 @@
 /* Tags for GetSegListInfo(). */
 
 #define GSLI_Dummy	(TAG_USER + 4000)
- 
-#define GSLI_ElfHandle  (GSLI_Dummy + 4) 
+
+#define GSLI_ElfHandle  (GSLI_Dummy + 4)
 #define GSLI_68KHUNK    (GSLI_Dummy + 5)
 #define GSLI_68KOVLAY   (GSLI_Dummy + 6)
 

@@ -31,6 +31,7 @@ LONG convertBackTicks(ShellState *ss, Buffer *in, Buffer *out, BOOL *quoted)
 
     ess.ss_DOSBase = DOSBase;
     ess.ss_SysBase = SysBase;
+    ess.cliNumber = ss->cliNumber;
 
     for (++in->cur; in->cur < n; p = c)
     {
@@ -39,17 +40,18 @@ LONG convertBackTicks(ShellState *ss, Buffer *in, Buffer *out, BOOL *quoted)
         if (p == '*')
         {
             c = 0;
-            bufferCopy(in, &embedIn, 1, ss);
+            if ((error = bufferCopy(in, &embedIn, 1, ss)))
+                goto freebufs;
         }
         else if (c == '`')
             break;
-        else
-            bufferCopy(in, &embedIn, 1, ss);
+        else if ((error = bufferCopy(in, &embedIn, 1, ss)))
+            goto freebufs;
     }
 
     if (c != '`')
     {
-        bufferCopy(&embedIn, out, embedIn.len, ss);
+        error = bufferCopy(&embedIn, out, embedIn.len, ss);
         goto freebufs;
     }
 
@@ -104,7 +106,8 @@ LONG convertBackTicks(ShellState *ss, Buffer *in, Buffer *out, BOOL *quoted)
                 if (size <= 0 && buf[i] == '\n')
                     --len;
 
-                bufferAppend(buf, len, out, ss);
+                if ((error = bufferAppend(buf, len, out, ss)))
+                    goto cleanup;
             }
         }
 

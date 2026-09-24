@@ -121,6 +121,81 @@ static void bcm2712_irq_init(void)
     GICC(GICC_CTLR) = 1;
 }
 
+/*
+ * MSIs are pulses where everything else on this SoC holds a level, so
+ * their SPIs - and only those - need edge triggering.  Which ones comes
+ * from the mip node's msi-ranges: <phandle type base flags count>, plus
+ * brcm,msi-offset - the SPIs raised start at base + offset. Each host
+ * bridge has its own block, so all three are consulted.
+ */
+#define MIP_MAX_RANGES  3
+
+static struct
+{
+    uint32_t    first;
+    uint32_t    count;
+} mip_ranges[MIP_MAX_RANGES];
+static int mip_nranges;
+static int mip_queried;
+
+static void bcm2712_msi_range_add(char *bridge)
+{
+    void *node;
+    void *prop;
+    uint32_t *cells;
+    uint32_t offset = 0;
+
+    if (mip_nranges >= MIP_MAX_RANGES)
+        return;
+
+    node = dt_find_node(bridge);
+    prop = node ? dt_find_property(node, "msi-parent") : NULL;
+    if (!prop || (dt_get_prop_len(prop) < 4))
+        return;
+
+    node = dt_find_node_by_phandle(AROS_BE2LONG(*(uint32_t *)dt_get_prop_value(prop)));
+    prop = node ? dt_find_property(node, "msi-ranges") : NULL;
+    if (!prop || (dt_get_prop_len(prop) < 20))
+        return;
+
+    cells = dt_get_prop_value(prop);
+
+    /* Only an edge triggered range is ours to reconfigure. */
+    if (AROS_BE2LONG(cells[3]) != 1)
+        return;
+
+    prop = dt_find_property(node, "brcm,msi-offset");
+    if (prop && (dt_get_prop_len(prop) >= 4))
+        offset = AROS_BE2LONG(*(uint32_t *)dt_get_prop_value(prop));
+
+    mip_ranges[mip_nranges].first = AROS_BE2LONG(cells[2]) + offset + GIC_FIRST_SPI;
+    mip_ranges[mip_nranges].count = AROS_BE2LONG(cells[4]);
+    mip_nranges++;
+}
+
+static void bcm2712_msi_range_query(void)
+{
+    mip_queried = 1;
+
+    bcm2712_msi_range_add("/axi/pcie@1000100000");
+    bcm2712_msi_range_add("/axi/pcie@1000110000");
+    bcm2712_msi_range_add("/axi/pcie@1000120000");
+}
+
+static int bcm2712_irq_is_msi(uint32_t irq)
+{
+    int i;
+
+    for (i = 0; i < mip_nranges; i++)
+    {
+        if ((irq >= mip_ranges[i].first) &&
+            (irq < mip_ranges[i].first + mip_ranges[i].count))
+            return 1;
+    }
+
+    return 0;
+}
+
 static void bcm2712_irq_enable(int irq)
 {
     *((volatile uint8_t *)(GICD_BASE + GICD_IPRIORITYR + irq)) = 0xA0;
@@ -129,10 +204,17 @@ static void bcm2712_irq_enable(int irq)
     {
         uint32_t cfg;
 
+        /* On first use: irq_init() runs before the device tree is up. */
+        if (!mip_queried)
+            bcm2712_msi_range_query();
+
         *((volatile uint8_t *)(GICD_BASE + GICD_ITARGETSR + irq)) = 0x01;
 
         cfg = GICD(GICD_ICFGR + 4 * (irq / 16));
-        cfg &= ~(2u << ((irq % 16) * 2));
+        if (bcm2712_irq_is_msi((uint32_t)irq))
+            cfg |= (2u << ((irq % 16) * 2));
+        else
+            cfg &= ~(2u << ((irq % 16) * 2));
         GICD(GICD_ICFGR + 4 * (irq / 16)) = cfg;
     }
 
@@ -255,7 +337,7 @@ static IPTR bcm2712_probe(struct ARM_Implementation *krnARMImpl, struct TagItem 
     krnARMImpl->ARMI_Family = 8;
     // TODO: Remove
     krnARMImpl->ARMI_Platform = 0x2712;
-    krnARMImpl->ARMI_PeripheralBase = (periibase ? periibase : (APTR)BCM2712_PERIBASE);
+    krnARMImpl->ARMI_PeripheralBase = (APTR)(periibase ? periibase : BCM2712_PERIBASE);
     krnARMImpl->ARMI_InitCore = &bcm27xx_init_cpu;
     krnARMImpl->ARMI_FIQProcess = &bcm27xx_fiq_process;
     krnARMImpl->ARMI_SendIPI = &bcm27xx_send_ipi;

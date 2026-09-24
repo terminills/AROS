@@ -1,3 +1,4 @@
+#include <aros/debug.h>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -6,7 +7,6 @@
 #include <stdlib.h>
 #include <xf86drm.h>
 
-#define NOUVEAU_USE_UTIL_LIST
 #include "nouveau.h"
 #include "nvif/class.h"
 #include "nvif/cl0080.h"
@@ -1193,7 +1193,12 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
       dev->gart_limit = (req.gart_available * nouveau_device(dev)->gart_limit_percent) / 100;
 
       if (ret) {
-         err("kernel rejected pushbuf: %s\n", strerror(-ret));
+         static int reported;
+
+         if (!reported++)
+            bug("[nouveau] channel %d: submission rejected (%d)%s\n", channel, ret,
+                ret == -ENODEV ? " - the channel has been killed by the GPU, "
+                                 "acceleration is lost until reboot" : "");
          pushbuf_dump(dev, krec, krec_id++, channel);
          break;
       }

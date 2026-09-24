@@ -30,19 +30,21 @@ static BOOL checkPipe(STRPTR pchar, STRPTR mchar, STRPTR in, LONG inlen)
             quoted = !quoted;
         }
 
+        if (!quoted && !escaped)
+        {
+            if (mcharn > 0 && c == mchar[0] &&
+                memcmp(&in[n], mchar, mcharn) == 0)
+                return TRUE;
+
+            if (pcharn > 0 && c == pchar[0] &&
+                memcmp(&in[n], pchar, pcharn) == 0)
+                return TRUE;
+        }
+
         if (c == '*' && !escaped)
             escaped = TRUE;
         else
             escaped = FALSE;
-
-        if (quoted)
-            continue;
-
-        if (mcharn > 0 && c == mchar[0] && memcmp(&in[n], mchar, mcharn) == 0)
-            return TRUE;
-
-        if (pcharn > 0 && c == pchar[0] && memcmp(&in[n], pchar, pcharn) == 0)
-            return TRUE;
     }
     return FALSE;
 }
@@ -54,7 +56,7 @@ LONG readLine(ShellState *ss, struct CommandLineInterface *cli, Buffer *out, WOR
     BOOL comment = FALSE;
     BOOL quoted = FALSE;
     BOOL escaped = FALSE;
-    LONG c, j, len;
+    LONG c, j, len, error;
     TEXT pchar[3], mchar[3];
 
     len = GetVar("_pchar", pchar, sizeof pchar, GVF_LOCAL_ONLY | LV_VAR);
@@ -127,7 +129,10 @@ LONG readLine(ShellState *ss, struct CommandLineInterface *cli, Buffer *out, WOR
     /* bufferAppend() kept out->len == j and NUL-terminated the line */
 
     if (checkPipe(pchar, mchar, buf, j))
-        bufferInsert(PIPE_NAME, strlen(PIPE_NAME), out, ss);
+    {
+        if ((error = bufferInsert(PIPE_NAME, sizeof(PIPE_NAME) - 1, out, ss)))
+            return error;
+    }
 
     *moreLeft = (c != ENDSTREAMCH);
 
