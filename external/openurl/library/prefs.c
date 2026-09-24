@@ -195,7 +195,10 @@ void setDefaultPrefs(struct URL_Prefs *p)
   // (--aros-pin-workers is deliberately not here: the icon carries it as an
   // opt-in tooltype, because spreading the workers off CPU 0 measured slower
   // at 8 vCPUs - see chromium-aros c051da0a48.)
-  addBrowser(p, 0, "Chromium", "SYS:Applications/Internet/Chromium/Chromium --ozone-platform=aros --no-first-run --no-default-browser-check --aros-spoof-platform=linux \"%u\"", "CHROMIUM", "SHOW", "TOFRONT", "OPENURL \"%u\"", "NEWWINDOW \"%u\"");
+  // The V8 code cache and script streaming stay off until v8.library shares
+  // the browser's allocator: both hand V8 buffers the browser allocated, and
+  // v8.library frees them into a different heap.
+  addBrowser(p, 0, "Chromium", "SYS:Applications/Internet/Chromium/Chromium --ozone-platform=aros --no-first-run --no-default-browser-check --aros-spoof-platform=linux --v8-cache-options=none --disable-features=ConsumeCodeCacheOffThread,ScriptStreaming \"%u\"", "CHROMIUM", "SHOW", "TOFRONT", "OPENURL \"%u\"", "NEWWINDOW \"%u\"");
 
   // Browsers: OWB
   addBrowser(p, UNF_DISABLED, "OWB", "OWB \"%u\"", "OWB", "", "SCREENTOFRONT", "OPENURL \"%u\"", "OPENURL \"%u\"");
