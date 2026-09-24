@@ -16,6 +16,7 @@
 #include <dos/filehandler.h>
 #include <dos/notify.h>
 #include <devices/inputevent.h>
+#include <devices/trackdisk.h>
 
 #include <proto/exec.h>
 #include <proto/dos.h>
