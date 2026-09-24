@@ -228,4 +228,4 @@
 	url = https://github.com/aros-translation-team/wifi-prefs.git
 [submodule "external/aros-web"]
 	path = external/aros-web
-	url = /home/terminills/Documents/GitHub/aros-web
+	url = https://github.com/terminills/aros-web.git
