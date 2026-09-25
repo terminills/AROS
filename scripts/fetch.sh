@@ -152,6 +152,7 @@ curl_http() {
     local state=0
 
     local protocol
+    local unresolved_tried=false
 
     if echo "$tryurl" | grep "prdownloads.sourceforge.net" >/dev/null; then
         if ! echo "$tryurl" | grep "/download" >/dev/null; then
@@ -190,6 +191,16 @@ curl_http() {
         if [ $ret -eq 60 ] && [ "$protocol" = "http" ] && [ $state -lt 3 ]; then
             curlextraflags="$curlextraflags -k"
             state=3
+            continue
+        fi
+
+        # A redirect may end at a presigned URL (S3-style object storage, as
+        # behind freedesktop GitLab's package registry) whose signature covers
+        # the request method, so the URL resolved with HEAD above is refused
+        # for GET. Once, let GET follow the redirects from the original URL.
+        if [ "$unresolved_tried" = false ] && [ "$curlsrc" != "$tryurl$curlext" ]; then
+            unresolved_tried=true
+            curlsrc="$tryurl$curlext"
             continue
         fi
 
