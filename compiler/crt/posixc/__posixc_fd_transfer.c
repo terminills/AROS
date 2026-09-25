@@ -49,7 +49,9 @@
 
     NOTES
         The descriptor stays open in the calling process; closing it does not
-        affect the token. Directories cannot be exported.
+        affect the token. Directory descriptors (opendir()/open() of a
+        directory) are exported the same way: the shared block then holds a
+        lock instead of a file handle.
 
     SEE ALSO
         __posixc_fd_import(), __posixc_fd_release()
@@ -58,8 +60,7 @@
 {
     fdesc *desc = __getfdesc(file_descriptor);
 
-    if (file_descriptor < 0 || desc == NULL || desc->fcb == NULL
-        || (desc->fcb->privflags & _FCB_ISDIR))
+    if (file_descriptor < 0 || desc == NULL || desc->fcb == NULL)
     {
         errno = EBADF;
         return NULL;
@@ -157,12 +158,17 @@
         return;
 
     /* The same teardown as close() for the last reference: handles posixc
-       does not own (_FCB_DONTCLOSE_FH) are left open. Directories are never
-       exported, so the handle is always a FileHandle here. */
+       does not own (_FCB_DONTCLOSE_FH) are left open, and a directory holds
+       a lock rather than a file handle. */
     if (__fcb_unref(shared) == 0)
     {
         if (!(shared->privflags & _FCB_DONTCLOSE_FH) && shared->handle)
-            Close(shared->handle);
+        {
+            if (shared->privflags & _FCB_ISDIR)
+                UnLock(shared->handle);
+            else
+                Close(shared->handle);
+        }
         FreeVec(shared);
     }
 }

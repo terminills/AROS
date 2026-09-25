@@ -68,6 +68,19 @@ int main(void)
     }
     TEST((lseek(fd, 0, SEEK_SET) == 0));
 
+    /* A directory descriptor travels the same way. */
+    {
+        int dfd = open("RAM:", O_RDONLY);
+        int dfd2;
+        TEST((dfd >= 0));
+        token = __posixc_fd_export(dfd);
+        TEST((token != NULL));
+        TEST((close(dfd) == 0));
+        dfd2 = __posixc_fd_import(token, 0);
+        TEST((dfd2 >= 0));
+        TEST((close(dfd2) == 0));
+    }
+
     errno = 0;
     TEST((__posixc_fd_export(-1) == NULL && errno == EBADF));
     errno = 0;
