@@ -33,10 +33,11 @@ LLVMPIPE_HIDD_FILES := \
             llvmpipe_llvm_rtti \
             $(SRCDIR)/workbench/libs/mesa/emul_arosc
 
-# llvmpipe needs the target-side LLVM libraries, which are only built with the
-# llvm toolchain family; skip it entirely on gnu toolchain builds.
-#MM- workbench-hidds : hidd-llvmpipe-$(AROS_TOOLCHAIN)-$(AROS_TARGET_TOOLCHAIN)
-#MM- hidd-llvmpipe-llvm-yes : hidd-llvmpipe
+# llvmpipe's gallivm JIT links the target-side LLVM libraries, which
+# workbench-libs-llvm builds from source with whichever toolchain builds the
+# rest of AROS (gnu included), so any target toolchain build gets llvmpipe.
+#MM- workbench-hidds : hidd-llvmpipe-$(AROS_TARGET_TOOLCHAIN)
+#MM- hidd-llvmpipe-yes : hidd-llvmpipe
 
 #MM hidd-llvmpipe : includes hidd-gallium mesa3dgl-linklibs linklibs-libatomic mesa3d-linklib-llvmpipe mesa3d-linklib-galliumdrawllvm mesa3d-linklib-galliumtess
 
