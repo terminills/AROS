@@ -63,9 +63,9 @@ GALLIUM_AUXILIARY_GENERATED_HEADERS := \
 endif
 
 #MM- mesa3dgl-linklibs : mesa3d-linklib-galliumauxiliary
-#MM mesa3d-linklib-galliumauxiliary : workbench-libs-dxtn-includes mesa3d-linklib-compiler mesa3d-linklib-galliumauxiliary-genobs mesa3d-linklib-galliumauxiliary-$(AROS_TOOLCHAIN)
+#MM mesa3d-linklib-galliumauxiliary : workbench-libs-dxtn-includes mesa3d-linklib-compiler mesa3d-linklib-galliumauxiliary-genobs mesa3d-linklib-galliumauxiliary-$(AROS_TARGET_TOOLCHAIN)
 # The gallivm draw paths above need the target side LLVM installed first.
-#MM- mesa3d-linklib-galliumauxiliary-llvm : workbench-libs-llvm
+#MM- mesa3d-linklib-galliumauxiliary-yes : workbench-libs-llvm
 #MM mesa3d-linklib-galliumauxiliary-quick : mesa3d-linklib-galliumauxiliary-genobs
 #MM- mesa3d-linklib-galliumauxiliary-genobs : mesa3d-linklib-galliumauxiliary-generated
 
@@ -186,7 +186,7 @@ mesa3d-linklib-galliumauxiliary_C_FILES := $(MESA3DGL_GALLIUM_AUXILIARY_SOURCES_
 # A second copy of draw, built with DRAW_LLVM_AVAILABLE. The macro changes
 # draw_vertex_shader and the gs/tess shader layouts, so it cannot be applied to
 # a subset. llvmpipe links this ahead of libgalliumauxiliary.
-ifeq ($(AROS_TOOLCHAIN),llvm)
+ifeq ($(AROS_TARGET_TOOLCHAIN),yes)
 GALLIUM_DRAW_LLVM_C := \
             $(patsubst $(top_srcdir)/$(CUR_MESADIR)/%,%, \
                 $(wildcard $(top_srcdir)/$(CUR_MESADIR)/draw/*.c)) \
@@ -197,10 +197,12 @@ GALLDRAWLLVMDFILES := $(patsubst %.o,%.d,$(GALLDRAWLLVMOFILES))
 $(GALLDRAWLLVMOFILES) $(GALLDRAWLLVMDFILES): mesa3d-linklib-galliumdrawllvm_MC_EXTRA_CPPFLAGS:=-DDRAW_LLVM_AVAILABLE=1
 
 # mmake reads #MM out of the .src text, so the ifeq above cannot hide these.
-# Route through $(AROS_TOOLCHAIN) instead: on gnu the -gnu spelling is never
-# declared, and an undeclared metatarget is simply empty.
-#MM- mesa3dgl-linklibs : mesa3d-linklib-galliumdrawllvm-$(AROS_TOOLCHAIN)
-#MM- mesa3d-linklib-galliumdrawllvm-llvm : mesa3d-linklib-galliumdrawllvm
+# Route through $(AROS_TARGET_TOOLCHAIN) instead: without a target toolchain
+# the -no spelling is never declared, and an undeclared metatarget is simply
+# empty. The target LLVM these link is built by workbench-libs-llvm with the
+# target toolchain, gnu included, so this follows llvmpipe.hidd's gate.
+#MM- mesa3dgl-linklibs : mesa3d-linklib-galliumdrawllvm-$(AROS_TARGET_TOOLCHAIN)
+#MM- mesa3d-linklib-galliumdrawllvm-yes : mesa3d-linklib-galliumdrawllvm
 #MM mesa3d-linklib-galliumdrawllvm : workbench-libs-llvm mesa3d-linklib-compiler mesa3d-linklib-galliumauxiliary-genobs
 
 # _C_FILES must be absolute - the generated rules put the .c files in an
@@ -215,11 +217,11 @@ endif
 # The tessellator, reached from draw_tess.c under DRAW_LLVM_AVAILABLE. Own
 # linklib because %build_linklib resolves cxxfiles against $(SRCDIR)/$(CURDIR),
 # ignoring its own srcdir= - only the C side honours that.
-ifeq ($(AROS_TOOLCHAIN),llvm)
+ifeq ($(AROS_TARGET_TOOLCHAIN),yes)
 GALLIUM_TESS_CXX := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/tessellator/,p_tessellator.cpp tessellator.cpp))
 
-#MM- mesa3dgl-linklibs : mesa3d-linklib-galliumtess-$(AROS_TOOLCHAIN)
-#MM- mesa3d-linklib-galliumtess-llvm : mesa3d-linklib-galliumtess
+#MM- mesa3dgl-linklibs : mesa3d-linklib-galliumtess-$(AROS_TARGET_TOOLCHAIN)
+#MM- mesa3d-linklib-galliumtess-yes : mesa3d-linklib-galliumtess
 #MM mesa3d-linklib-galliumtess : includes
 
 %build_linklib mmake=mesa3d-linklib-galliumtess libname=galliumtess \
