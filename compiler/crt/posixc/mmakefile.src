@@ -21,6 +21,7 @@ POSIXC := \
     __posixc_timer \
     __stdio \
     __get_default_file \
+    __posixc_fd_transfer \
     __rand48 \
     __stat \
     __threadhook \

@@ -9,6 +9,7 @@ POSIXCTESTFILES := \
         chown \
         execl \
         execl2 execl2_vfork execl2_slave \
+        fdtransfer fdtransfer_slave \
         fchdir \
         fchmod \
         fcntl \
