@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2025 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -35,6 +35,7 @@ MA 02111-1307, USA.
 #include "endian.h"
 #include "io.h"
 #include "ethernet.h"
+#include "../sana2_portlock.h"
 
 #define DEVICE_NAME "broadcom4400.device"
 #define VERSION 1
@@ -118,6 +119,7 @@ struct DevUnit
    UWORD rx_slot;
    ULONG speed;
    UBYTE mii_phy_no;
+   struct Sana2TxGate tx_gate;   /* one Tx producer at a time on SMP */
 };
 
 

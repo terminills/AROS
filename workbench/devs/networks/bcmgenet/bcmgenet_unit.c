@@ -20,6 +20,7 @@
 #include <aros/macros.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/utility.h>
 
 #include "bcmgenet.h"
@@ -73,27 +74,7 @@ struct TypeStats *BCMGENET_FindTypeStats(struct MinList *list, ULONG packet_type
 void BCMGENET_ReportEvents(struct BCMGENETBase *base, struct BCMGENETUnit *unit,
                            ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next;
-    struct List *list;
-
-    list = &unit->bgu_RequestPorts[EVENT_QUEUE]->mp_MsgList;
-    next = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
-
-    Disable();
-    while (next != tail)
-    {
-        request = next;
-        next = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-        if ((request->ios2_WireError & events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            ReplyMsg((APTR)request);
-        }
-    }
-    Enable();
+    ReplyEventRequests(unit->bgu_RequestPorts[EVENT_QUEUE], events);
 }
 
 /* == multicast address ranges ============================================ */
@@ -731,10 +712,7 @@ static void bcmgenet_tx_drain(struct BCMGENETBase *base,
              * stream and, with PA_SIGNAL, re-wake the task into a spin.
              * The TX-done interrupt gets the queue moving again.
              */
-            Disable();
-            AddHead(&port->mp_MsgList,
-                    &request->ios2_Req.io_Message.mn_Node);
-            Enable();
+            RequeueRequest(port, request);
             ReleaseSemaphore(&unit->bgu_Lock);
             break;
         }
@@ -819,7 +797,10 @@ static void bcmgenet_copy_packet(struct BCMGENETBase *base,
 
     /* A rejected packet leaves the request queued for the next one */
     if (filtered)
+    {
+        RequeueRequest(&opener->read_port, request);
         return;
+    }
 
     if (!opener->rx_function(request->ios2_Data, ptr, packet_size))
     {
@@ -829,9 +810,6 @@ static void bcmgenet_copy_packet(struct BCMGENETBase *base,
                               S2EVENT_BUFF | S2EVENT_RX);
     }
 
-    Disable();
-    Remove((APTR)request);
-    Enable();
     ReplyMsg((APTR)request);
 }
 
@@ -840,7 +818,7 @@ static void bcmgenet_rx_packet(struct BCMGENETBase *base,
                                struct eth_frame *frame, ULONG length)
 {
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     struct TypeStats *tracker;
     BOOL accepted, is_orphan = TRUE;
     UWORD packet_type;
@@ -868,25 +846,19 @@ static void bcmgenet_rx_packet(struct BCMGENETBase *base,
 
     while (opener != opener_tail)
     {
-        request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-        request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
         accepted = FALSE;
 
-        while (request != request_tail && !accepted)
+        /*
+         * First matching request, taken off the read port under its lock;
+         * an 802.3 length field matches any small-type request
+         */
+        request = TakeMatchingRequest(&opener->read_port, packet_type, TRUE,
+                                      ETH_MTU);
+        if (request != NULL)
         {
-            struct IOSana2Req *next =
-                (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-            /* An 802.3 length field matches any small-type request */
-            if (request->ios2_PacketType == packet_type ||
-                (request->ios2_PacketType <= ETH_MTU &&
-                 packet_type <= ETH_MTU))
-            {
-                bcmgenet_copy_packet(base, unit, request, length,
-                                     packet_type, frame);
-                accepted = TRUE;
-            }
-            request = next;
+            bcmgenet_copy_packet(base, unit, request, length,
+                                 packet_type, frame);
+            accepted = TRUE;
         }
 
         if (accepted)
@@ -912,12 +884,10 @@ static void bcmgenet_rx_packet(struct BCMGENETBase *base,
     {
         unit->bgu_Stats.UnknownTypesReceived++;
 
-        if (!IsListEmpty(&unit->bgu_RequestPorts[ADOPT_QUEUE]->mp_MsgList))
-        {
-            bcmgenet_copy_packet(base, unit,
-                (APTR)unit->bgu_RequestPorts[ADOPT_QUEUE]->mp_MsgList.lh_Head,
-                length, packet_type, frame);
-        }
+        request = (APTR)GetMsg(unit->bgu_RequestPorts[ADOPT_QUEUE]);
+        if (request != NULL)
+            bcmgenet_copy_packet(base, unit, request, length, packet_type,
+                                 frame);
     }
 }
 

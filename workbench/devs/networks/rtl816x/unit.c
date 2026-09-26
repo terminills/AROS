@@ -38,6 +38,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/dos.h>
 #include <proto/oop.h>
 #include <proto/timer.h>
@@ -56,28 +57,9 @@
  */
 VOID ReportEvents(struct RTL816XBase *RTL816XDeviceBase, struct RTL816XUnit *unit, ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next_request;
-    struct List *list;
+    ReplyEventRequests(unit->rtl816xu_request_ports[EVENT_QUEUE], events);
 
-    list = &unit->rtl816xu_request_ports[EVENT_QUEUE]->mp_MsgList;
-
-    Disable();
-    next_request = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
-
-    while (next_request != tail)
-    {
-        request = next_request;
-        next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-        if ((request->ios2_WireError & events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            ReplyMsg((APTR)request);
-        }
-    }
-    Enable();
+    return;
 }
 
 struct TypeStats *FindTypeStats(struct RTL816XBase *RTL816XDeviceBase, struct RTL816XUnit *unit,
@@ -148,7 +130,7 @@ VOID RTL816X_Rx_Process(struct RTL816XUnit *unit)
     struct TypeStats *tracker;
     UWORD packet_type;
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     BOOL accepted, is_orphan;
     ULONG processed;
 
@@ -201,21 +183,14 @@ VOID RTL816X_Rx_Process(struct RTL816XUnit *unit)
                 /* Offer packet to every opener */
                 while (opener != opener_tail)
                 {
-                    request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-                    request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
                     accepted = FALSE;
 
-                    /* Offer packet to each request until it's accepted */
-                    while ((request != request_tail) && !accepted)
+                    /* First matching request, taken off the read port under its lock */
+                    request = TakeMatchingRequest(&opener->read_port, packet_type, TRUE, ETH_MTU);
+                    if (request != NULL)
                     {
-                        if ((request->ios2_PacketType == packet_type)
-                            || ((request->ios2_PacketType <= ETH_MTU)
-                            && (packet_type <= ETH_MTU)))
-                        {
-                            CopyPacket(LIBBASE, unit, request, rx_size, packet_type, frame);
-                            accepted = TRUE;
-                        }
-                        request = (struct IOSana2Req *)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+                        CopyPacket(LIBBASE, unit, request, rx_size, packet_type, frame);
+                        accepted = TRUE;
                     }
 
                     if (accepted)
@@ -229,10 +204,10 @@ VOID RTL816X_Rx_Process(struct RTL816XUnit *unit)
                 {
                     unit->rtl816xu_stats.UnknownTypesReceived++;
 
-                    if (!IsMsgPortEmpty(unit->rtl816xu_request_ports[ADOPT_QUEUE]))
+                    request = (APTR)GetMsg(unit->rtl816xu_request_ports[ADOPT_QUEUE]);
+                    if (request != NULL)
                     {
-                        CopyPacket(LIBBASE, unit,
-                                   (APTR)unit->rtl816xu_request_ports[ADOPT_QUEUE]->mp_MsgList.lh_Head,
+                        CopyPacket(LIBBASE, unit, request,
                                    rx_size, packet_type, frame);
                     }
                 }
@@ -294,128 +269,136 @@ static AROS_INTH1(RTL816X_TX_IntF, struct RTL816XUnit *, unit)
 {
     AROS_INTFUNC_INIT
 
-    struct rtl816x_priv *np = unit->rtl816xu_priv;
-    struct RTL816XBase *RTL816XDeviceBase = unit->rtl816xu_device;
-    APTR base = unit->rtl816xu_BaseMem;
-    struct MsgPort *port;
-    BOOL stopped = netif_queue_stopped(unit) ? TRUE : FALSE;
+    /* One Tx producer at a time; see Sana2TxGate */
+    if (!Sana2TxGateEnter(&unit->rtl816xu_txgate))
+        return FALSE;
 
-    RTLD(bug("[%s] RTL816X_TX_IntF()\n", unit->rtl816xu_name))
-
-    port = unit->rtl816xu_request_ports[WRITE_QUEUE];
-
-    if (!stopped && (np->TxDescArray != NULL))
+    do
     {
-        while (!IsMsgPortEmpty(port))
+        struct rtl816x_priv *np = unit->rtl816xu_priv;
+        struct RTL816XBase *RTL816XDeviceBase = unit->rtl816xu_device;
+        APTR base = unit->rtl816xu_BaseMem;
+        struct MsgPort *port;
+        BOOL stopped = netif_queue_stopped(unit) ? TRUE : FALSE;
+
+        RTLD(bug("[%s] RTL816X_TX_IntF()\n", unit->rtl816xu_name))
+
+        port = unit->rtl816xu_request_ports[WRITE_QUEUE];
+
+        if (!stopped && (np->TxDescArray != NULL))
         {
-            unsigned int nr = np->cur_tx % NUM_TX_DESC;
-            struct IOSana2Req *request;
-            struct Opener *opener;
-            struct eth_frame *frame;
-            UBYTE *buffer;
-            UWORD packet_size, data_size;
-            ULONG wire_error = 0;
-            BYTE error = 0;
-
-            if (((np->cur_tx - np->dirty_tx) >= NUM_TX_DESC) ||
-                (AROS_LE2LONG(np->TxDescArray[nr].opts1) & DescOwn))
+            while (!IsMsgPortEmpty(port))
             {
-                /* Ring full - wait for RTL816X_Tx_Cleanup() to wake us */
-                RTLD(bug("[%s] RTL816X_TX_IntF: output ring full, stopping queue\n", unit->rtl816xu_name))
-                netif_stop_queue(unit);
-                stopped = TRUE;
-                break;
-            }
+                unsigned int nr = np->cur_tx % NUM_TX_DESC;
+                struct IOSana2Req *request;
+                struct Opener *opener;
+                struct eth_frame *frame;
+                UBYTE *buffer;
+                UWORD packet_size, data_size;
+                ULONG wire_error = 0;
+                BYTE error = 0;
 
-            request = (APTR)port->mp_MsgList.lh_Head;
-            data_size = packet_size = request->ios2_DataLength;
-
-            opener = (APTR)request->ios2_BufferManagement;
-
-            frame = (APTR)(IPTR)AROS_LE2QUAD(np->TxDescArray[nr].addr);
-
-            if ((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-                packet_size += ETH_HEADERSIZE;
-
-            if (packet_size > TX_BUF_SIZE)
-            {
-                error = S2ERR_MTU_EXCEEDED;
-                wire_error = S2WERR_GENERIC_ERROR;
-            }
-            else
-            {
-                if ((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+                if (((np->cur_tx - np->dirty_tx) >= NUM_TX_DESC) ||
+                    (AROS_LE2LONG(np->TxDescArray[nr].opts1) & DescOwn))
                 {
-                    CopyMem(request->ios2_DstAddr, frame->eth_packet_dest, ETH_ADDRESSSIZE);
-                    CopyMem(unit->rtl816xu_dev_addr, frame->eth_packet_source, ETH_ADDRESSSIZE);
-                    frame->eth_packet_type = AROS_WORD2BE(request->ios2_PacketType);
+                    /* Ring full - wait for RTL816X_Tx_Cleanup() to wake us */
+                    RTLD(bug("[%s] RTL816X_TX_IntF: output ring full, stopping queue\n", unit->rtl816xu_name))
+                    netif_stop_queue(unit);
+                    stopped = TRUE;
+                    break;
+                }
 
-                    buffer = frame->eth_packet_data;
+                /* Dequeued under the port's lock */
+                request = (APTR)GetMsg(port);
+                if (request == NULL)
+                    break;
+                data_size = packet_size = request->ios2_DataLength;
+
+                opener = (APTR)request->ios2_BufferManagement;
+
+                frame = (APTR)(IPTR)AROS_LE2QUAD(np->TxDescArray[nr].addr);
+
+                if ((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+                    packet_size += ETH_HEADERSIZE;
+
+                if (packet_size > TX_BUF_SIZE)
+                {
+                    error = S2ERR_MTU_EXCEEDED;
+                    wire_error = S2WERR_GENERIC_ERROR;
                 }
                 else
                 {
-                    buffer = (UBYTE *)frame;
+                    if ((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+                    {
+                        CopyMem(request->ios2_DstAddr, frame->eth_packet_dest, ETH_ADDRESSSIZE);
+                        CopyMem(unit->rtl816xu_dev_addr, frame->eth_packet_source, ETH_ADDRESSSIZE);
+                        frame->eth_packet_type = AROS_WORD2BE(request->ios2_PacketType);
+
+                        buffer = frame->eth_packet_data;
+                    }
+                    else
+                    {
+                        buffer = (UBYTE *)frame;
+                    }
+
+                    if (!opener->tx_function(buffer, request->ios2_Data, data_size))
+                    {
+                        error = S2ERR_NO_RESOURCES;
+                        wire_error = S2WERR_BUFF_ERROR;
+                        ReportEvents(LIBBASE, unit,
+                                     S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_TX);
+                    }
                 }
 
-                if (!opener->tx_function(buffer, request->ios2_Data, data_size))
+                if (error == 0)
                 {
-                    error = S2ERR_NO_RESOURCES;
-                    wire_error = S2WERR_BUFF_ERROR;
-                    ReportEvents(LIBBASE, unit,
-                                 S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_TX);
+                    struct TypeStats *tracker;
+
+                    /* Pad short frames - the buffer is always large enough */
+                    if (packet_size < ETH_ZLEN)
+                    {
+                        memset(((UBYTE *)frame) + packet_size, 0, ETH_ZLEN - packet_size);
+                        packet_size = ETH_ZLEN;
+                    }
+
+                    RTLD(bug("[%s] RTL816X_TX_IntF: packet %d @ %p (%d bytes) queued for transmission\n",
+                             unit->rtl816xu_name, nr, frame, packet_size))
+
+                    np->TxDescArray[nr].opts2 = 0;
+                    np->TxDescArray[nr].opts1 =
+                        AROS_LONG2LE(DescOwn | FirstFrag | LastFrag | packet_size |
+                                     ((nr == (NUM_TX_DESC - 1)) ? RingEnd : 0));
+
+                    RTL_W8(base + TxPoll, NPQ);     /* set polling bit */
+
+                    np->cur_tx++;
+
+                    unit->rtl816xu_stats.PacketsSent++;
+
+                    tracker = FindTypeStats(LIBBASE, unit, &unit->rtl816xu_type_trackers,
+                                            request->ios2_PacketType);
+                    if (tracker != NULL)
+                    {
+                        tracker->stats.PacketsSent++;
+                        tracker->stats.BytesSent += packet_size;
+                    }
                 }
+
+                /* Reply the request whether it was sent or failed */
+                request->ios2_Req.io_Error = error;
+                request->ios2_WireError = wire_error;
+                ReplyMsg((APTR)request);
             }
-
-            if (error == 0)
-            {
-                struct TypeStats *tracker;
-
-                /* Pad short frames - the buffer is always large enough */
-                if (packet_size < ETH_ZLEN)
-                {
-                    memset(((UBYTE *)frame) + packet_size, 0, ETH_ZLEN - packet_size);
-                    packet_size = ETH_ZLEN;
-                }
-
-                RTLD(bug("[%s] RTL816X_TX_IntF: packet %d @ %p (%d bytes) queued for transmission\n",
-                         unit->rtl816xu_name, nr, frame, packet_size))
-
-                np->TxDescArray[nr].opts2 = 0;
-                np->TxDescArray[nr].opts1 =
-                    AROS_LONG2LE(DescOwn | FirstFrag | LastFrag | packet_size |
-                                 ((nr == (NUM_TX_DESC - 1)) ? RingEnd : 0));
-
-                RTL_W8(base + TxPoll, NPQ);     /* set polling bit */
-
-                np->cur_tx++;
-
-                unit->rtl816xu_stats.PacketsSent++;
-
-                tracker = FindTypeStats(LIBBASE, unit, &unit->rtl816xu_type_trackers,
-                                        request->ios2_PacketType);
-                if (tracker != NULL)
-                {
-                    tracker->stats.PacketsSent++;
-                    tracker->stats.BytesSent += packet_size;
-                }
-            }
-
-            /* Reply the request whether it was sent or failed */
-            request->ios2_Req.io_Error = error;
-            request->ios2_WireError = wire_error;
-            Disable();
-            Remove((APTR)request);
-            Enable();
-            ReplyMsg((APTR)request);
         }
-    }
 
-    /* While stopped, incoming writes queue silently; the queue is
-       re-armed by netif_wake_queue() */
-    if (stopped)
-        port->mp_Flags = PA_IGNORE;
-    else
-        port->mp_Flags = PA_SOFTINT;
+        /* While stopped, incoming writes queue silently; the queue is
+           re-armed by netif_wake_queue() */
+        if (stopped)
+            port->mp_Flags = PA_IGNORE;
+        else
+            port->mp_Flags = PA_SOFTINT;
+    }
+    while (Sana2TxGateLeave(&unit->rtl816xu_txgate));
 
     return FALSE;
 
@@ -543,6 +526,10 @@ VOID CopyPacket(struct RTL816XBase *RTL816XDeviceBase, struct RTL816XUnit *unit,
         }
     }
 
+    /* A rejected packet leaves the request queued for the next one */
+    if (filtered)
+        RequeueRequest(&opener->read_port, request);
+
     if (!filtered)
     {
         /* Copy packet into opener's buffer and reply packet */
@@ -552,9 +539,6 @@ VOID CopyPacket(struct RTL816XBase *RTL816XDeviceBase, struct RTL816XUnit *unit,
             request->ios2_WireError = S2WERR_BUFF_ERROR;
             ReportEvents(LIBBASE, unit, S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_RX);
         }
-        Disable();
-        Remove((APTR)request);
-        Enable();
         ReplyMsg((APTR)request);
     }
 }

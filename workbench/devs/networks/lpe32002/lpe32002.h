@@ -45,6 +45,7 @@
 #include LC_LIBDEFS_FILE
 
 #include "lpe32002_hw.h"
+#include "../sana2_portlock.h"
 
 typedef BOOL bool;
 typedef UBYTE u8;
@@ -353,6 +354,7 @@ struct LPe32002Unit {
 
     struct MsgPort          *lpeu_input_port;
     struct MsgPort          *lpeu_request_ports[REQUEST_QUEUE_COUNT];
+    struct Sana2TxGate lpeu_txgate;   /* one Tx producer at a time on SMP */
 };
 
 /* ===== Helper macros ===== */

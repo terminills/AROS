@@ -38,6 +38,7 @@
 #define _E1000_OSDEP_H_
 
 #include "e1000.h"
+#include "../sana2_portlock.h"
 
 #define ADVERTISED_1000baseT_Full           (1 << 5)
 #define ADVERTISED_Autoneg                  (1 << 6)
@@ -391,11 +392,11 @@ struct e1000Unit {
      * which takes semaphores, and doing that with a lock held and interrupts
      * off trips "ObtainSemaphore called in supervisor mode".
      *
-     * So the second core never blocks: it sets e1ku_txAgain and returns, and
-     * the core already producing re-runs the drain loop before it leaves.
+     * So the second core never blocks: it marks the gate and returns, and
+     * the core already producing re-runs the drain loop before it leaves
+     * (Sana2TxGate in sana2_portlock.h).
      */
-    volatile ULONG          e1ku_txBusy;
-    volatile ULONG          e1ku_txAgain;
+    struct Sana2TxGate      e1ku_txgate;
 
 /* Start : Intel e1000 specific */
 

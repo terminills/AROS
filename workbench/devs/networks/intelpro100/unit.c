@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2017 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ MA 02111-1307, USA.
 #include <exec/tasks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #ifndef __amigaos4__
 #include <proto/alib.h>
 #else
@@ -1065,7 +1066,7 @@ static VOID RXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
    BOOL is_orphan, accepted;
    ULONG rx_status_le, rx_info, packet_type, *rcb, *last_rcb, dma_size;
    UBYTE *buffer;
-   struct IOSana2Req *request, *request_tail;
+   struct IOSana2Req *request;
    struct Opener *opener, *opener_tail;
    struct TypeStats *tracker;
 
@@ -1096,22 +1097,14 @@ static VOID RXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
 
             while(opener != opener_tail)
             {
-               request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-               request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
                accepted = FALSE;
 
-               /* Offer packet to each request until it's accepted */
-
-               while((request != request_tail) && !accepted)
+               /* First matching request, taken off the read port under its lock */
+               request = TakeMatchingRequest(&opener->read_port, packet_type, FALSE, 0);
+               if(request != NULL)
                {
-                  if(request->ios2_PacketType == packet_type)
-                  {
-                     CopyPacket(unit, request, packet_size, packet_type,
-                        buffer, base);
-                     accepted = TRUE;
-                  }
-                  request =
-                     (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+                  CopyPacket(unit, request, packet_size, packet_type, buffer, base);
+                  accepted = TRUE;
                }
 
                if(accepted)
@@ -1124,11 +1117,10 @@ static VOID RXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
             if(is_orphan)
             {
                unit->stats.UnknownTypesReceived++;
-               if(!IsMsgPortEmpty(unit->request_ports[ADOPT_QUEUE]))
+               request = (APTR)GetMsg(unit->request_ports[ADOPT_QUEUE]);
+               if(request != NULL)
                {
-                  CopyPacket(unit,
-                     (APTR)unit->request_ports[ADOPT_QUEUE]->
-                     mp_MsgList.lh_Head, packet_size, packet_type, buffer,
+                  CopyPacket(unit, request, packet_size, packet_type, buffer,
                      base);
                }
             }
@@ -1237,6 +1229,10 @@ static VOID CopyPacket(struct DevUnit *unit, struct IOSana2Req *request,
       if(!CallHookPkt(opener->filter_hook, request, buffer))
          filtered = TRUE;
 
+   /* A rejected packet leaves the request queued for the next one */
+   if(filtered)
+      RequeueRequest(&opener->read_port, request);
+
    if(!filtered)
    {
       /* Copy packet into opener's buffer and reply packet */
@@ -1249,7 +1245,6 @@ static VOID CopyPacket(struct DevUnit *unit, struct IOSana2Req *request,
             S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_RX,
             base);
       }
-      Remove((APTR)request);
       ReplyMsg((APTR)request);
    }
 
@@ -1344,204 +1339,212 @@ static BOOL AddressFilter(struct DevUnit *unit, UBYTE *address,
 
 static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
 {
-   struct DevBase *base;
-   UWORD packet_size, data_size, *p, *q, i;
-   struct IOSana2Req *request;
-   BOOL proceed = TRUE;
-   struct Opener *opener;
-   ULONG wire_error, *tcb, *last_tcb, *mcast_cb, *fragment, dma_size,
-      action;
-   UBYTE *(*dma_tx_function)(REG(a0, APTR));
-   BYTE error;
-   UBYTE *buffer;
-   struct MsgPort *port;
+   /* One Tx producer at a time; see Sana2TxGate */
+   if(!Sana2TxGateEnter(&unit->tx_gate))
+      return;
 
-   base = unit->device;
-   port = unit->request_ports[WRITE_QUEUE];
-
-   while(proceed && !IsMsgPortEmpty(port))
+   do
    {
-      last_tcb = unit->last_tcb;
-      tcb = (ULONG *)(UPINT)LELong(last_tcb[PROCB_NEXT]);
+      struct DevBase *base;
+      UWORD packet_size, data_size, *p, *q, i;
+      struct IOSana2Req *request;
+      BOOL proceed = TRUE;
+      struct Opener *opener;
+      ULONG wire_error, *tcb, *last_tcb, *mcast_cb, *fragment, dma_size,
+         action;
+      UBYTE *(*dma_tx_function)(REG(a0, APTR));
+      BYTE error;
+      UBYTE *buffer;
+      struct MsgPort *port;
 
-      /* Ensure there are at least two free CBs available (two are needed
-         for setting the multicast filter) and that neither the TX nor the
-         multicast buffer is currently in use */
+      base = unit->device;
+      port = unit->request_ports[WRITE_QUEUE];
 
-      if((UPINT)LELong(((ULONG *)(UPINT)LELong(tcb[PROCB_NEXT]))[PROCB_NEXT])
-         != (UPINT)unit->first_tcb
-         && (unit->flags & (UNITF_TXBUFFERINUSE | UNITF_MCASTBUFFERINUSE))
-         == 0)
+      while(proceed && !IsMsgPortEmpty(port))
       {
-         error = 0;
-         request = (APTR)GetMsg(port);
-         request->ios2_Req.io_Message.mn_Node.ln_Type = NT_FREEMSG;
+         last_tcb = unit->last_tcb;
+         tcb = (ULONG *)(UPINT)LELong(last_tcb[PROCB_NEXT]);
 
-         switch(request->ios2_Req.io_Command)
+         /* Ensure there are at least two free CBs available (two are needed
+            for setting the multicast filter) and that neither the TX nor the
+            multicast buffer is currently in use */
+
+         if((UPINT)LELong(((ULONG *)(UPINT)LELong(tcb[PROCB_NEXT]))[PROCB_NEXT])
+            != (UPINT)unit->first_tcb
+            && (unit->flags & (UNITF_TXBUFFERINUSE | UNITF_MCASTBUFFERINUSE))
+            == 0)
          {
-         case CMD_WRITE:
-         case S2_MULTICAST:
-         case S2_BROADCAST:
-            action = PROACT_TX;
-            break;
-         default:
-            action = PROACT_CONFIGURE;
-         }
+            error = 0;
+            request = (APTR)GetMsg(port);
+            request->ios2_Req.io_Message.mn_Node.ln_Type = NT_FREEMSG;
 
-         if(action == PROACT_TX)
-         {
-            /* Handle TX request */
-
-            data_size = packet_size = request->ios2_DataLength;
-
-            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-               packet_size += ETH_HEADERSIZE;
-
-            /* Write packet preamble */
-
-            tcb[PROCB_CONTROL] =
-               MakeLELong(PROACT_TX | PROCB_CONTROLF_SUSPEND
-               | PROCB_CONTROLF_INT | PROCB_CONTROLF_FLEXIBLE);
-            fragment = tcb + PROCB_EXTFRAGS;
-            tcb[PROCB_FRAGMENTS] = MakeLELong((ULONG)(UPINT)fragment);
-
-            /* Write packet header */
-
-            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+            switch(request->ios2_Req.io_Command)
             {
-               buffer = (UBYTE *)(tcb + PROCB_EXTBUFFER);
-               tcb[PROCB_TXINFO] =
-                  MakeLELong(2 << PROCB_TXINFOB_FRAGCOUNT
-                  | 1 << PROCB_TXINFOB_THRESHOLD
-                  | PROCB_TXINFOF_EOF);
-               fragment[PROFRAG_ADDR] = MakeLELong((ULONG)(UPINT)buffer);
-               fragment[PROFRAG_LEN] = MakeLELong(ETH_HEADERSIZE);
-
-               p = (UWORD *)buffer;
-               for(i = 0, q = (UWORD *)request->ios2_DstAddr;
-                  i < ETH_ADDRESSSIZE / 2; i++)
-                  *p++ = *q++;
-               for(i = 0, q = (UWORD *)unit->address;
-                  i < ETH_ADDRESSSIZE / 2; i++)
-                  *p++ = *q++;
-               *p++ = MakeBEWord(request->ios2_PacketType);
-               buffer = (UBYTE *)p;
-
-               fragment += PRO_FRAGLEN;
-            }
-            else
-            {
-               tcb[PROCB_TXINFO] =
-                  MakeLELong(1 << PROCB_TXINFOB_FRAGCOUNT
-                  | 1 << PROCB_TXINFOB_THRESHOLD
-                  | PROCB_TXINFOF_EOF);
+            case CMD_WRITE:
+            case S2_MULTICAST:
+            case S2_BROADCAST:
+               action = PROACT_TX;
+               break;
+            default:
+               action = PROACT_CONFIGURE;
             }
 
-            /* Get packet data */
-
-            opener = (APTR)request->ios2_BufferManagement;
-            dma_tx_function = opener->dma_tx_function;
-            if(dma_tx_function != NULL)
-               buffer = dma_tx_function(request->ios2_Data);
-            else
-               buffer = NULL;
-
-            if(buffer == NULL)
+            if(action == PROACT_TX)
             {
-               buffer = unit->tx_buffer;
-               if(opener->tx_function(buffer, request->ios2_Data,
-                  data_size))
+               /* Handle TX request */
+
+               data_size = packet_size = request->ios2_DataLength;
+
+               if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+                  packet_size += ETH_HEADERSIZE;
+
+               /* Write packet preamble */
+
+               tcb[PROCB_CONTROL] =
+                  MakeLELong(PROACT_TX | PROCB_CONTROLF_SUSPEND
+                  | PROCB_CONTROLF_INT | PROCB_CONTROLF_FLEXIBLE);
+               fragment = tcb + PROCB_EXTFRAGS;
+               tcb[PROCB_FRAGMENTS] = MakeLELong((ULONG)(UPINT)fragment);
+
+               /* Write packet header */
+
+               if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
                {
-                  unit->flags |= UNITF_TXBUFFERINUSE;
+                  buffer = (UBYTE *)(tcb + PROCB_EXTBUFFER);
+                  tcb[PROCB_TXINFO] =
+                     MakeLELong(2 << PROCB_TXINFOB_FRAGCOUNT
+                     | 1 << PROCB_TXINFOB_THRESHOLD
+                     | PROCB_TXINFOF_EOF);
+                  fragment[PROFRAG_ADDR] = MakeLELong((ULONG)(UPINT)buffer);
+                  fragment[PROFRAG_LEN] = MakeLELong(ETH_HEADERSIZE);
+
+                  p = (UWORD *)buffer;
+                  for(i = 0, q = (UWORD *)request->ios2_DstAddr;
+                     i < ETH_ADDRESSSIZE / 2; i++)
+                     *p++ = *q++;
+                  for(i = 0, q = (UWORD *)unit->address;
+                     i < ETH_ADDRESSSIZE / 2; i++)
+                     *p++ = *q++;
+                  *p++ = MakeBEWord(request->ios2_PacketType);
+                  buffer = (UBYTE *)p;
+
+                  fragment += PRO_FRAGLEN;
                }
                else
                {
-                  error = S2ERR_NO_RESOURCES;
-                  wire_error = S2WERR_BUFF_ERROR;
-                  ReportEvents(unit,
-                     S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
-                     | S2EVENT_TX, base);
+                  tcb[PROCB_TXINFO] =
+                     MakeLELong(1 << PROCB_TXINFOB_FRAGCOUNT
+                     | 1 << PROCB_TXINFOB_THRESHOLD
+                     | PROCB_TXINFOF_EOF);
                }
-            }
 
-            /* Put pointer to packet data into descriptor */
+               /* Get packet data */
 
-            if(error == 0)
-            {
-               dma_size = data_size;
-               CachePreDMA(buffer, &dma_size, DMA_ReadFromRAM);
-               fragment[PROFRAG_ADDR] = MakeLELong((ULONG)(UPINT)buffer);
-               fragment[PROFRAG_LEN] = MakeLELong(data_size);
-            }
-         }
-         else
-         {
-            /* Update multicast reception filter */
+               opener = (APTR)request->ios2_BufferManagement;
+               dma_tx_function = opener->dma_tx_function;
+               if(dma_tx_function != NULL)
+                  buffer = dma_tx_function(request->ios2_Data);
+               else
+                  buffer = NULL;
 
-            SetMulticast(unit, base);
-            if((unit->flags & UNITF_ALLMCAST) == 0)
-            {
-               tcb[PROCB_CONTROL] = MakeLELong(PROACT_NOP);
-               mcast_cb = unit->multicast_cb;
-               mcast_cb[PROCB_CONTROL] = MakeLELong(PROACT_SETMCAST);
-               mcast_cb[PROCB_NEXT] = tcb[PROCB_NEXT];
-               tcb[PROCB_NEXT] = MakeLELong((ULONG)(UPINT)mcast_cb);
-               unit->link_cb = tcb;
-               tcb = (ULONG *)(UPINT)LELong(mcast_cb[PROCB_NEXT]);
-               tcb[PROCB_CONTROL] = MakeLELong(PROACT_CONFIGURE
-                  | PROCB_CONTROLF_SUSPEND | PROCB_CONTROLF_INT);
-               FillConfigData(unit, tcb, base);
-               unit->flags |= UNITF_MCASTBUFFERINUSE;
+               if(buffer == NULL)
+               {
+                  buffer = unit->tx_buffer;
+                  if(opener->tx_function(buffer, request->ios2_Data,
+                     data_size))
+                  {
+                     unit->flags |= UNITF_TXBUFFERINUSE;
+                  }
+                  else
+                  {
+                     error = S2ERR_NO_RESOURCES;
+                     wire_error = S2WERR_BUFF_ERROR;
+                     ReportEvents(unit,
+                        S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
+                        | S2EVENT_TX, base);
+                  }
+               }
+
+               /* Put pointer to packet data into descriptor */
+
+               if(error == 0)
+               {
+                  dma_size = data_size;
+                  CachePreDMA(buffer, &dma_size, DMA_ReadFromRAM);
+                  fragment[PROFRAG_ADDR] = MakeLELong((ULONG)(UPINT)buffer);
+                  fragment[PROFRAG_LEN] = MakeLELong(data_size);
+               }
             }
             else
             {
-               tcb[PROCB_CONTROL] = MakeLELong(PROACT_CONFIGURE
-                  | PROCB_CONTROLF_SUSPEND | PROCB_CONTROLF_INT);
-               FillConfigData(unit, tcb, base);
+               /* Update multicast reception filter */
+
+               SetMulticast(unit, base);
+               if((unit->flags & UNITF_ALLMCAST) == 0)
+               {
+                  tcb[PROCB_CONTROL] = MakeLELong(PROACT_NOP);
+                  mcast_cb = unit->multicast_cb;
+                  mcast_cb[PROCB_CONTROL] = MakeLELong(PROACT_SETMCAST);
+                  mcast_cb[PROCB_NEXT] = tcb[PROCB_NEXT];
+                  tcb[PROCB_NEXT] = MakeLELong((ULONG)(UPINT)mcast_cb);
+                  unit->link_cb = tcb;
+                  tcb = (ULONG *)(UPINT)LELong(mcast_cb[PROCB_NEXT]);
+                  tcb[PROCB_CONTROL] = MakeLELong(PROACT_CONFIGURE
+                     | PROCB_CONTROLF_SUSPEND | PROCB_CONTROLF_INT);
+                  FillConfigData(unit, tcb, base);
+                  unit->flags |= UNITF_MCASTBUFFERINUSE;
+               }
+               else
+               {
+                  tcb[PROCB_CONTROL] = MakeLELong(PROACT_CONFIGURE
+                     | PROCB_CONTROLF_SUSPEND | PROCB_CONTROLF_INT);
+                  FillConfigData(unit, tcb, base);
+               }
             }
-         }
 
-         if(error == 0)
-         {
-            /* Clear suspend flag from previous CB without touching bits
-               that adapter may be writing to; and resume execution */
-
-            if(last_tcb[PROCB_CONTROL] != 0)
-               *(((UBYTE *)last_tcb + PROCB_CONTROL) + 3) =
-                  PROCB_CONTROLF_INT >> 24;
-            dma_size = TCB_SIZE * TX_SLOT_COUNT;
-            CachePreDMA(unit->tcbs, &dma_size, 0);
-            dma_size = MCAST_CB_SIZE;
-            CachePreDMA(unit->multicast_cb, &dma_size, 0);
-            if((unit->ByteIn(unit->card, PROREG_STATUS)
-               & PROREG_STATUSF_CUSTATE)
-               == (PRO_CUSTATE_SUSPENDED << PROREG_STATUSB_CUSTATE))
+            if(error == 0)
             {
-               unit->LEWordOut(unit->card, PROREG_COMMAND,
-                  PRO_CUCMD_RESUME);
-            }
+               /* Clear suspend flag from previous CB without touching bits
+                  that adapter may be writing to; and resume execution */
 
-            AddTail((APTR)&unit->tx_requests, (APTR)request);
-            unit->last_tcb = tcb;
+               if(last_tcb[PROCB_CONTROL] != 0)
+                  *(((UBYTE *)last_tcb + PROCB_CONTROL) + 3) =
+                     PROCB_CONTROLF_INT >> 24;
+               dma_size = TCB_SIZE * TX_SLOT_COUNT;
+               CachePreDMA(unit->tcbs, &dma_size, 0);
+               dma_size = MCAST_CB_SIZE;
+               CachePreDMA(unit->multicast_cb, &dma_size, 0);
+               if((unit->ByteIn(unit->card, PROREG_STATUS)
+                  & PROREG_STATUSF_CUSTATE)
+                  == (PRO_CUSTATE_SUSPENDED << PROREG_STATUSB_CUSTATE))
+               {
+                  unit->LEWordOut(unit->card, PROREG_COMMAND,
+                     PRO_CUCMD_RESUME);
+               }
+
+               AddTail((APTR)&unit->tx_requests, (APTR)request);
+               unit->last_tcb = tcb;
+            }
+            else
+            {
+               /* Return failed request */
+
+               request->ios2_Req.io_Error = error;
+               request->ios2_WireError = wire_error;
+               ReplyMsg((APTR)request);
+               tcb[PROCB_CONTROL] = 0;
+            }
          }
          else
-         {
-            /* Return failed request */
-
-            request->ios2_Req.io_Error = error;
-            request->ios2_WireError = wire_error;
-            ReplyMsg((APTR)request);
-            tcb[PROCB_CONTROL] = 0;
-         }
+            proceed = FALSE;
       }
-      else
-         proceed = FALSE;
-   }
 
-   if(proceed)
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-   else
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+      if(proceed)
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
+      else
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+   }
+   while(Sana2TxGateLeave(&unit->tx_gate));
 
    return;
 }
@@ -1743,27 +1746,7 @@ VOID UpdateStats(struct DevUnit *unit, struct DevBase *base)
 static VOID ReportEvents(struct DevUnit *unit, ULONG events,
    struct DevBase *base)
 {
-   struct IOSana2Req *request, *tail, *next_request;
-   struct List *list;
-
-   list = &unit->request_ports[EVENT_QUEUE]->mp_MsgList;
-   next_request = (APTR)list->lh_Head;
-   tail = (APTR)&list->lh_Tail;
-
-   Disable();
-   while(next_request != tail)
-   {
-      request = next_request;
-      next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-      if((request->ios2_WireError & events) != 0)
-      {
-         request->ios2_WireError = events;
-         Remove((APTR)request);
-         ReplyMsg((APTR)request);
-      }
-   }
-   Enable();
+   ReplyEventRequests(unit->request_ports[EVENT_QUEUE], events);
 
    return;
 }

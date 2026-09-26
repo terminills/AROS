@@ -42,6 +42,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/dos.h>
 #include <proto/oop.h>
 #include <proto/timer.h>
@@ -62,27 +63,9 @@
 
 VOID ReportEvents(struct LPe32002Base *LPeBase, struct LPe32002Unit *unit, ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next_request;
-    struct List *list;
+    ReplyEventRequests(unit->lpeu_request_ports[EVENT_QUEUE], events);
 
-    list = &unit->lpeu_request_ports[EVENT_QUEUE]->mp_MsgList;
-    next_request = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
-
-    Disable();
-    while(next_request != tail)
-    {
-        request = next_request;
-        next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-        if((request->ios2_WireError & events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            ReplyMsg((APTR)request);
-        }
-    }
-    Enable();
+    return;
 }
 
 /* ============================================================
@@ -155,95 +138,103 @@ static AROS_INTH1(lpe_TX_Int, struct LPe32002Unit *, unit)
 {
     AROS_INTFUNC_INIT
 
-    struct LPe32002Base *LPeBase = unit->lpeu_device;
-    LIBBASETYPEPTR LIBBASE = LPeBase;
-    struct fc_eth_frame *frame;
-    struct IOSana2Req *request;
-    struct Opener *opener;
-    struct MsgPort *port;
-    struct TypeStats *tracker;
-    UWORD packet_size, data_size;
-    UBYTE *buffer;
-    BYTE error;
-    ULONG wire_error = 0;
-    BOOL proceed = TRUE;
+    /* One Tx producer at a time; see Sana2TxGate */
+    if (!Sana2TxGateEnter(&unit->lpeu_txgate))
+        return 0;
 
-    D(bug("[%s] ## %s()\n", unit->lpeu_name, __func__));
-
-    port = unit->lpeu_request_ports[WRITE_QUEUE];
-
-    while(proceed && (!IsMsgPortEmpty(port)))
+    do
     {
-        error = 0;
-        request = (APTR)port->mp_MsgList.lh_Head;
-        data_size = packet_size = request->ios2_DataLength;
+        struct LPe32002Base *LPeBase = unit->lpeu_device;
+        LIBBASETYPEPTR LIBBASE = LPeBase;
+        struct fc_eth_frame *frame;
+        struct IOSana2Req *request;
+        struct Opener *opener;
+        struct MsgPort *port;
+        struct TypeStats *tracker;
+        UWORD packet_size, data_size;
+        UBYTE *buffer;
+        BYTE error;
+        ULONG wire_error = 0;
+        BOOL proceed = TRUE;
 
-        opener = (APTR)request->ios2_BufferManagement;
+        D(bug("[%s] ## %s()\n", unit->lpeu_name, __func__));
 
-        frame = AllocMem(FC_RXTX_ALLOC_BUFSIZE, MEMF_PUBLIC | MEMF_CLEAR);
-        if (!frame) {
-            error = S2ERR_NO_RESOURCES;
-            wire_error = S2WERR_BUFF_ERROR;
-        }
+        port = unit->lpeu_request_ports[WRITE_QUEUE];
 
-        if (error == 0)
+        while(proceed && (!IsMsgPortEmpty(port)))
         {
-            if ((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-            {
-                packet_size += FC_PACKET_DATA;
-                CopyMem(request->ios2_DstAddr, frame->fc_packet_dest, FC_ADDR_SIZE);
-                CopyMem(unit->lpeu_dev_addr, frame->fc_packet_source, FC_ADDR_SIZE);
-                frame->fc_packet_type = AROS_WORD2BE(request->ios2_PacketType);
+            error = 0;
+            /* Dequeued under the port's lock */
+            request = (APTR)GetMsg(port);
+            if (request == NULL)
+                break;
+            data_size = packet_size = request->ios2_DataLength;
 
-                buffer = frame->fc_packet_data;
-            }
-            else
-            {
-                buffer = (UBYTE *)frame;
-            }
+            opener = (APTR)request->ios2_BufferManagement;
 
-            if (!opener->tx_function(buffer, request->ios2_Data, data_size))
-            {
+            frame = AllocMem(FC_RXTX_ALLOC_BUFSIZE, MEMF_PUBLIC | MEMF_CLEAR);
+            if (!frame) {
                 error = S2ERR_NO_RESOURCES;
                 wire_error = S2WERR_BUFF_ERROR;
-                ReportEvents(LIBBASE, unit,
-                    S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_TX);
             }
 
             if (error == 0)
             {
-                D(bug("[%s] ## %s: Submitting frame (%ld bytes)\n",
-                    unit->lpeu_name, __func__, (ULONG)packet_size));
+                if ((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+                {
+                    packet_size += FC_PACKET_DATA;
+                    CopyMem(request->ios2_DstAddr, frame->fc_packet_dest, FC_ADDR_SIZE);
+                    CopyMem(unit->lpeu_dev_addr, frame->fc_packet_source, FC_ADDR_SIZE);
+                    frame->fc_packet_type = AROS_WORD2BE(request->ios2_PacketType);
 
-                if (lpe_tx_frame(unit, frame, packet_size) != 0)
+                    buffer = frame->fc_packet_data;
+                }
+                else
+                {
+                    buffer = (UBYTE *)frame;
+                }
+
+                if (!opener->tx_function(buffer, request->ios2_Data, data_size))
                 {
                     error = S2ERR_NO_RESOURCES;
-                    wire_error = S2WERR_GENERIC_ERROR;
+                    wire_error = S2WERR_BUFF_ERROR;
+                    ReportEvents(LIBBASE, unit,
+                        S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_TX);
                 }
+
+                if (error == 0)
+                {
+                    D(bug("[%s] ## %s: Submitting frame (%ld bytes)\n",
+                        unit->lpeu_name, __func__, (ULONG)packet_size));
+
+                    if (lpe_tx_frame(unit, frame, packet_size) != 0)
+                    {
+                        error = S2ERR_NO_RESOURCES;
+                        wire_error = S2WERR_GENERIC_ERROR;
+                    }
+                }
+
+                FreeMem(frame, FC_RXTX_ALLOC_BUFSIZE);
             }
 
-            FreeMem(frame, FC_RXTX_ALLOC_BUFSIZE);
-        }
+            /* Reply to the request */
+            request->ios2_Req.io_Error = error;
+            request->ios2_WireError = wire_error;
+            ReplyMsg((APTR)request);
 
-        /* Reply to the request */
-        request->ios2_Req.io_Error = error;
-        request->ios2_WireError = wire_error;
-        Disable();
-        Remove((APTR)request);
-        Enable();
-        ReplyMsg((APTR)request);
-
-        if (error == 0)
-        {
-            tracker = FindTypeStats(LIBBASE, unit, &unit->lpeu_type_trackers,
-                                    request->ios2_PacketType);
-            if (tracker != NULL)
+            if (error == 0)
             {
-                tracker->stats.PacketsSent++;
-                tracker->stats.BytesSent += packet_size;
+                tracker = FindTypeStats(LIBBASE, unit, &unit->lpeu_type_trackers,
+                                        request->ios2_PacketType);
+                if (tracker != NULL)
+                {
+                    tracker->stats.PacketsSent++;
+                    tracker->stats.BytesSent += packet_size;
+                }
             }
         }
     }
+    while (Sana2TxGateLeave(&unit->lpeu_txgate));
 
     return 0;
 
@@ -378,9 +369,6 @@ VOID CopyPacket(struct LPe32002Base *LPeBase, struct LPe32002Unit *unit,
             request->ios2_WireError = S2WERR_BUFF_ERROR;
             ReportEvents(LIBBASE, unit, S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_RX);
         }
-        Disable();
-        Remove((APTR)request);
-        Enable();
         ReplyMsg((APTR)request);
     }
 }

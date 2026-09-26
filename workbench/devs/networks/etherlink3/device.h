@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2025 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -34,6 +34,7 @@ MA 02111-1307, USA.
 #include "compatibility.h"
 #include "io.h"
 #include "ethernet.h"
+#include "../sana2_portlock.h"
 
 #define DEVICE_NAME "etherlink3.device"
 #define VERSION 1
@@ -178,6 +179,7 @@ struct DevUnit
    UWORD tx_active_req_count;
    UWORD int_mask;
    UBYTE mii_phy_no;
+   struct Sana2TxGate tx_gate;   /* one Tx producer at a time on SMP */
 };
 
 

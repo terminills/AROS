@@ -37,6 +37,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/kernel.h>
 #include <proto/dos.h>
 #include <proto/oop.h>
@@ -174,78 +175,13 @@ static int pcnet32_check_32(APTR base)
 }
 
 /*
- * Request ports are filled by PutMsg() from the network stack's task, which on
- * SMP may run on another core while this driver's interrupts walk the same
- * list. PutMsg() and GetMsg() serialise on the port's spinlock; Disable() only
- * stops this core. Any walk or Remove() of a port's message list here takes
- * that lock too, and never holds it across a callback or a ReplyMsg() (which
- * locks the reply port) - as in e1000, where the torn list gave a producer a
- * garbage request and an idle core a #GP at RIP 0x3 under upload load.
- */
-static APTR PortKernelBase(void)
-{
-    static APTR kernelbase;
-
-    if (!kernelbase)
-        kernelbase = OpenResource("kernel.resource");
-    return kernelbase;
-}
-
-static void PortLock(struct MsgPort *port)
-{
-    Disable();
-#if defined(__AROSPLATFORM_SMP__)
-    {
-        APTR KernelBase = PortKernelBase();
-#if defined(__AROSEXEC_SMP__)
-        KrnSpinLock(&port->mp_SpinLock, NULL, SPINLOCK_MODE_WRITE);
-#else
-        KrnSpinLock(&port->mp_Pad, NULL, SPINLOCK_MODE_WRITE);
-#endif
-    }
-#endif
-}
-
-static void PortUnlock(struct MsgPort *port)
-{
-#if defined(__AROSPLATFORM_SMP__)
-    {
-        APTR KernelBase = PortKernelBase();
-#if defined(__AROSEXEC_SMP__)
-        KrnSpinUnLock(&port->mp_SpinLock);
-#else
-        KrnSpinUnLock(&port->mp_Pad);
-#endif
-    }
-#endif
-    Enable();
-}
-
-/*
  * Take the first request a packet of this type satisfies off a read port, or
  * NULL: the same type, or any 802.3 length-field type for an 802.3 packet.
+ * See sana2_portlock.h for why every request-port walk takes the port lock.
  */
 static struct IOSana2Req *TakeTypedRequest(struct MsgPort *port, ULONG packet_type)
 {
-    struct List *list = &port->mp_MsgList;
-    struct IOSana2Req *request, *found = NULL;
-
-    PortLock(port);
-    for (request = (APTR)list->lh_Head;
-         request->ios2_Req.io_Message.mn_Node.ln_Succ != NULL;
-         request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ)
-    {
-        if ((request->ios2_PacketType == packet_type) ||
-            ((request->ios2_PacketType <= ETH_MTU) && (packet_type <= ETH_MTU)))
-        {
-            Remove((APTR)request);
-            found = request;
-            break;
-        }
-    }
-    PortUnlock(port);
-
-    return found;
+    return TakeMatchingRequest(port, packet_type, TRUE, ETH_MTU);
 }
 
 /*
@@ -253,30 +189,7 @@ static struct IOSana2Req *TakeTypedRequest(struct MsgPort *port, ULONG packet_ty
  */
 VOID ReportEvents(struct PCN32Base *PCNet32Base, struct PCN32Unit *unit, ULONG events)
 {
-    struct MsgPort *port = unit->pcnu_request_ports[EVENT_QUEUE];
-    struct IOSana2Req *request, *next_request;
-    struct List matched;
-
-    NEWLIST(&matched);
-
-    /* Take the listeners for these events off the queue under its lock ... */
-    PortLock(port);
-    for (request = (APTR)port->mp_MsgList.lh_Head;
-         (next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ) != NULL;
-         request = next_request)
-    {
-        if((request->ios2_WireError&events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            AddTail(&matched, (APTR)request);
-        }
-    }
-    PortUnlock(port);
-
-    /* ... and reply them with it released */
-    while ((request = (APTR)RemHead(&matched)) != NULL)
-        ReplyMsg((APTR)request);
+    ReplyEventRequests(unit->pcnu_request_ports[EVENT_QUEUE], events);
 
     return;
 }
@@ -537,15 +450,11 @@ AROS_INTH1(PCN32_TX_Int, struct PCN32Unit *,  unit)
 
 D(bug("%s: PCN32_TX_Int()\n", unit->pcnu_name));
 
-    /* One producer at a time; see pcnu_txBusy in pcnet32.h */
-    if (__sync_lock_test_and_set(&unit->pcnu_txBusy, 1))
-    {
-        unit->pcnu_txAgain = 1;     /* the producer in progress will re-drain */
-        return FALSE;
-    }
+    /* One producer at a time; see pcnu_txgate in pcnet32.h */
+    if (!Sana2TxGateEnter(&unit->pcnu_txgate))
+        return FALSE;               /* the producer in progress will re-drain */
 
 again:
-    unit->pcnu_txAgain = 0;
     proceed = FALSE;
 
     /* send packet only if there is free space on tx queue. Otherwise do nothing */
@@ -685,9 +594,8 @@ D(bug("%s: output queue full!. Exiting but not stopping\n", unit->pcnu_name));
     else
         unit->pcnu_request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
 
-    if (unit->pcnu_txAgain && proceed)
+    if (Sana2TxGateLeave(&unit->pcnu_txgate))
         goto again;             /* a write arrived on another core while we ran */
-    __sync_lock_release(&unit->pcnu_txBusy);
 
     return FALSE;
 
@@ -957,6 +865,10 @@ D(bug("%s: CopyPacket: packet @ %x (%d bytes)\n", unit->pcnu_name, ptr, packet_s
 D(bug("%s: CopyPacket: packet filtered\n", unit->pcnu_name));
             filtered = TRUE;
         }
+
+    /* A rejected packet leaves the request queued for the next one */
+    if(filtered)
+        RequeueRequest(&opener->read_port, request);
 
     if(!filtered)
     {

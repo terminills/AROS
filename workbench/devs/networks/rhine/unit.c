@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2025 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ MA 02111-1307, USA.
 #include <exec/tasks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/alib.h>
 #include <proto/utility.h>
 #include <proto/timer.h>
@@ -1082,7 +1083,7 @@ static VOID DistributeRXPacket(struct DevUnit *unit, const UBYTE *packet,
 {
    BOOL is_orphan = TRUE, accepted;
    ULONG packet_type;
-   struct IOSana2Req *request, *request_tail;
+   struct IOSana2Req *request;
    struct Opener *opener, *opener_tail;
    struct TypeStats *tracker;
 
@@ -1094,22 +1095,14 @@ static VOID DistributeRXPacket(struct DevUnit *unit, const UBYTE *packet,
 
    while(opener != opener_tail)
    {
-      request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-      request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
       accepted = FALSE;
 
-      /* Offer packet to each request until it's accepted */
-
-      while(request != request_tail && !accepted)
+      /* First matching request, taken off the read port under its lock */
+      request = TakeMatchingRequest(&opener->read_port, packet_type, FALSE, 0);
+      if(request != NULL)
       {
-         if(request->ios2_PacketType == packet_type)
-         {
-            CopyPacket(unit, request, packet_size, packet_type,
-               packet, base);
-            accepted = TRUE;
-         }
-         request =
-            (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+         CopyPacket(unit, request, packet_size, packet_type, packet, base);
+         accepted = TRUE;
       }
 
       if(accepted)
@@ -1122,10 +1115,10 @@ static VOID DistributeRXPacket(struct DevUnit *unit, const UBYTE *packet,
    if(is_orphan)
    {
       unit->stats.UnknownTypesReceived++;
-      if(!IsMsgPortEmpty(unit->request_ports[ADOPT_QUEUE]))
+      request = (APTR)GetMsg(unit->request_ports[ADOPT_QUEUE]);
+      if(request != NULL)
       {
-         CopyPacket(unit,
-            (APTR)unit->request_ports[ADOPT_QUEUE]->mp_MsgList.lh_Head,
+         CopyPacket(unit, request,
             packet_size, packet_type, packet, base);
       }
    }
@@ -1208,6 +1201,10 @@ static VOID CopyPacket(struct DevUnit *unit, struct IOSana2Req *request,
       if(!CallHookPkt(opener->filter_hook, request, (APTR)buffer))
          filtered = TRUE;
 
+   /* A rejected packet leaves the request queued for the next one */
+   if(filtered)
+      RequeueRequest(&opener->read_port, request);
+
    if(!filtered)
    {
       /* Copy packet into opener's buffer and reply packet */
@@ -1221,7 +1218,6 @@ static VOID CopyPacket(struct DevUnit *unit, struct IOSana2Req *request,
             S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_RX,
             base);
       }
-      Remove((APTR)request);
       ReplyMsg((APTR)request);
    }
 
@@ -1311,166 +1307,175 @@ static BOOL AddressFilter(struct DevUnit *unit, UBYTE *address,
 
 static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
 {
-   struct DevBase *base;
-   UWORD packet_size, data_size, slot, new_slot, *p, *q, i;
-   struct IOSana2Req *request;
-   BOOL proceed = TRUE;
-   struct Opener *opener;
-   ULONG wire_error, *desc, dma_size, desc_p, buffer_p, txcontrol_value;
-   UBYTE *(*dma_tx_function)(REG(a0, APTR));
-   BYTE error;
-   UBYTE *buffer;
-   struct MsgPort *port;
+   /* One Tx producer at a time; see Sana2TxGate */
+   if(!Sana2TxGateEnter(&unit->tx_gate))
+      return;
 
-   base = unit->device;
-   port = unit->request_ports[WRITE_QUEUE];
-
-   while(proceed && !IsMsgPortEmpty(port))
+   do
    {
-      slot = unit->tx_in_slot;
-      new_slot = (slot + 1) % TX_SLOT_COUNT;
+      struct DevBase *base;
+      UWORD packet_size, data_size, slot, new_slot, *p, *q, i;
+      struct IOSana2Req *request;
+      BOOL proceed = TRUE;
+      struct Opener *opener;
+      ULONG wire_error, *desc, dma_size, desc_p, buffer_p, txcontrol_value;
+      UBYTE *(*dma_tx_function)(REG(a0, APTR));
+      BYTE error;
+      UBYTE *buffer;
+      struct MsgPort *port;
 
-      if(new_slot != unit->tx_out_slot
-         && (unit->flags & UNITF_TXBUFFERINUSE) == 0)
+      base = unit->device;
+      port = unit->request_ports[WRITE_QUEUE];
+
+      while(proceed && !IsMsgPortEmpty(port))
       {
-         error = 0;
+         slot = unit->tx_in_slot;
+         new_slot = (slot + 1) % TX_SLOT_COUNT;
 
-         /* Get request and DMA frame descriptor */
-
-         request = (APTR)port->mp_MsgList.lh_Head;
-
-         Remove((APTR)request);
-         unit->tx_requests[slot] = request;
-         desc = unit->tx_descs[slot];
-         desc_p = unit->tx_descs_p[slot];
-
-         data_size = packet_size = request->ios2_DataLength;
-         if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-            packet_size += ETH_HEADERSIZE;
-         if(packet_size < ETH_MINSIZE)
-            packet_size = ETH_MINSIZE;
-
-         /* Decide if one or two descriptors are needed, and generate
-            Ethernet header if necessary */
-
-         if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+         if(new_slot != unit->tx_out_slot
+            && (unit->flags & UNITF_TXBUFFERINUSE) == 0)
          {
-            /* Use first descriptor for Ethernet header */
+            error = 0;
 
-            buffer = (UBYTE *)desc + 2 * RH_DESCSIZE;
-            buffer_p = desc_p + 2 * RH_DESCSIZE;
+            /* Get request and DMA frame descriptor */
 
-            desc[RH_DESC_TXCONTROL] =
-               MakeLELong(RH_DESC_TXCONTROLF_FIRSTFRAG
-               | RH_DESC_TXCONTROLF_CHAIN | ETH_HEADERSIZE);
-            desc[RH_DESC_DATA] = MakeLELong(buffer_p);
-            desc[RH_DESC_NEXT] = MakeLELong(desc_p + RH_DESCSIZE);
+            /* Dequeued under the port's lock */
+            request = (APTR)GetMsg(port);
+            if(request == NULL)
+               break;
+            unit->tx_requests[slot] = request;
+            desc = unit->tx_descs[slot];
+            desc_p = unit->tx_descs_p[slot];
 
-            /* Write Ethernet header */
+            data_size = packet_size = request->ios2_DataLength;
+            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+               packet_size += ETH_HEADERSIZE;
+            if(packet_size < ETH_MINSIZE)
+               packet_size = ETH_MINSIZE;
 
-            p = (UWORD *)buffer;
-            for(i = 0, q = (UWORD *)request->ios2_DstAddr;
-               i < ETH_ADDRESSSIZE / 2; i++)
-               *p++ = *q++;
-            for(i = 0, q = (UWORD *)unit->address;
-               i < ETH_ADDRESSSIZE / 2; i++)
-               *p++ = *q++;
-            *p++ = MakeBEWord(request->ios2_PacketType);
+            /* Decide if one or two descriptors are needed, and generate
+               Ethernet header if necessary */
 
-            /* Use spare second descriptor for frame data */
-
-            desc += RH_DESCSIZE / 4;
-            desc_p += RH_DESCSIZE;
-
-            txcontrol_value = RH_DESC_TXCONTROLF_INT
-               | RH_DESC_TXCONTROLF_LASTFRAG
-               | RH_DESC_TXCONTROLF_CHAIN
-               | packet_size - ETH_HEADERSIZE;
-         }
-         else
-         {
-            txcontrol_value = RH_DESC_TXCONTROLF_INT
-               | RH_DESC_TXCONTROLF_FIRSTFRAG | RH_DESC_TXCONTROLF_LASTFRAG
-               | RH_DESC_TXCONTROLF_CHAIN
-               | packet_size;
-         }
-
-         /* Get packet data */
-
-         opener = (APTR)request->ios2_BufferManagement;
-         dma_tx_function = opener->dma_tx_function;
-         if(dma_tx_function != NULL)
-            buffer = dma_tx_function(request->ios2_Data);
-         else
-            buffer = NULL;
-
-         if(buffer == NULL)
-         {
-            buffer = unit->tx_buffer;
-            if(opener->tx_function(buffer, request->ios2_Data,
-               data_size))
+            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
             {
-               unit->flags |= UNITF_TXBUFFERINUSE;
+               /* Use first descriptor for Ethernet header */
+
+               buffer = (UBYTE *)desc + 2 * RH_DESCSIZE;
+               buffer_p = desc_p + 2 * RH_DESCSIZE;
+
+               desc[RH_DESC_TXCONTROL] =
+                  MakeLELong(RH_DESC_TXCONTROLF_FIRSTFRAG
+                  | RH_DESC_TXCONTROLF_CHAIN | ETH_HEADERSIZE);
+               desc[RH_DESC_DATA] = MakeLELong(buffer_p);
+               desc[RH_DESC_NEXT] = MakeLELong(desc_p + RH_DESCSIZE);
+
+               /* Write Ethernet header */
+
+               p = (UWORD *)buffer;
+               for(i = 0, q = (UWORD *)request->ios2_DstAddr;
+                  i < ETH_ADDRESSSIZE / 2; i++)
+                  *p++ = *q++;
+               for(i = 0, q = (UWORD *)unit->address;
+                  i < ETH_ADDRESSSIZE / 2; i++)
+                  *p++ = *q++;
+               *p++ = MakeBEWord(request->ios2_PacketType);
+
+               /* Use spare second descriptor for frame data */
+
+               desc += RH_DESCSIZE / 4;
+               desc_p += RH_DESCSIZE;
+
+               txcontrol_value = RH_DESC_TXCONTROLF_INT
+                  | RH_DESC_TXCONTROLF_LASTFRAG
+                  | RH_DESC_TXCONTROLF_CHAIN
+                  | packet_size - ETH_HEADERSIZE;
             }
             else
             {
-               error = S2ERR_NO_RESOURCES;
-               wire_error = S2WERR_BUFF_ERROR;
-               ReportEvents(unit,
-                  S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
-                  | S2EVENT_TX, base);
+               txcontrol_value = RH_DESC_TXCONTROLF_INT
+                  | RH_DESC_TXCONTROLF_FIRSTFRAG | RH_DESC_TXCONTROLF_LASTFRAG
+                  | RH_DESC_TXCONTROLF_CHAIN
+                  | packet_size;
             }
-         }
-         unit->tx_buffers[slot] = buffer;
 
-         /* Fill in descriptor for frame data */
+            /* Get packet data */
 
-         if(error == 0)
-         {
-            dma_size = data_size;
-            buffer_p = (ULONG)(UPINT)CachePreDMA(buffer, &dma_size,
-               DMA_ReadFromRAM);
-            desc[RH_DESC_TXCONTROL] = MakeLELong(txcontrol_value);
-            desc[RH_DESC_DATA] = MakeLELong(buffer_p);
-            desc[RH_DESC_NEXT] = MakeLELong(unit->tx_descs_p[new_slot]);
+            opener = (APTR)request->ios2_BufferManagement;
+            dma_tx_function = opener->dma_tx_function;
+            if(dma_tx_function != NULL)
+               buffer = dma_tx_function(request->ios2_Data);
+            else
+               buffer = NULL;
 
-            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-               desc -= RH_DESCSIZE / 4;
+            if(buffer == NULL)
+            {
+               buffer = unit->tx_buffer;
+               if(opener->tx_function(buffer, request->ios2_Data,
+                  data_size))
+               {
+                  unit->flags |= UNITF_TXBUFFERINUSE;
+               }
+               else
+               {
+                  error = S2ERR_NO_RESOURCES;
+                  wire_error = S2WERR_BUFF_ERROR;
+                  ReportEvents(unit,
+                     S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
+                     | S2EVENT_TX, base);
+               }
+            }
+            unit->tx_buffers[slot] = buffer;
 
-            desc[RH_DESC_TXSTATUS] = MakeLELong(RH_DESC_TXSTATUSF_INUSE);
-         }
+            /* Fill in descriptor for frame data */
 
-         if(error == 0)
-         {
-            /* Restart transmission if it had stopped */
+            if(error == 0)
+            {
+               dma_size = data_size;
+               buffer_p = (ULONG)(UPINT)CachePreDMA(buffer, &dma_size,
+                  DMA_ReadFromRAM);
+               desc[RH_DESC_TXCONTROL] = MakeLELong(txcontrol_value);
+               desc[RH_DESC_DATA] = MakeLELong(buffer_p);
+               desc[RH_DESC_NEXT] = MakeLELong(unit->tx_descs_p[new_slot]);
 
-            dma_size = TX_DESC_SIZE * TX_SLOT_COUNT;
-            CachePreDMA(unit->tx_descs, &dma_size, 0);
-            unit->ByteOut(unit->card, RH_REG_CONTROL,
-               unit->ByteIn(unit->card, RH_REG_CONTROL)
-               | RH_REG_CONTROLF_TXPOLL);
+               if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+                  desc -= RH_DESCSIZE / 4;
+
+               desc[RH_DESC_TXSTATUS] = MakeLELong(RH_DESC_TXSTATUSF_INUSE);
+            }
+
+            if(error == 0)
+            {
+               /* Restart transmission if it had stopped */
+
+               dma_size = TX_DESC_SIZE * TX_SLOT_COUNT;
+               CachePreDMA(unit->tx_descs, &dma_size, 0);
+               unit->ByteOut(unit->card, RH_REG_CONTROL,
+                  unit->ByteIn(unit->card, RH_REG_CONTROL)
+                  | RH_REG_CONTROLF_TXPOLL);
 
 /* FIXME: Need IO-sync here for PPC etc.? */
 
-            unit->tx_in_slot = new_slot;
+               unit->tx_in_slot = new_slot;
+            }
+            else
+            {
+               /* Return failed request */
+
+               request->ios2_Req.io_Error = error;
+               request->ios2_WireError = wire_error;
+               ReplyMsg((APTR)request);
+            }
          }
          else
-         {
-            /* Return failed request */
-
-            request->ios2_Req.io_Error = error;
-            request->ios2_WireError = wire_error;
-            ReplyMsg((APTR)request);
-         }
+            proceed = FALSE;
       }
-      else
-         proceed = FALSE;
-   }
 
-   if(proceed)
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-   else
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+      if(proceed)
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
+      else
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+   }
+   while(Sana2TxGateLeave(&unit->tx_gate));
 
    return;
 }
@@ -1670,27 +1675,7 @@ static VOID ResetHandler(REG(a1, struct DevUnit *unit),
 static VOID ReportEvents(struct DevUnit *unit, ULONG events,
    struct DevBase *base)
 {
-   struct IOSana2Req *request, *tail, *next_request;
-   struct List *list;
-
-   list = &unit->request_ports[EVENT_QUEUE]->mp_MsgList;
-   next_request = (APTR)list->lh_Head;
-   tail = (APTR)&list->lh_Tail;
-
-   Disable();
-   while(next_request != tail)
-   {
-      request = next_request;
-      next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-      if((request->ios2_WireError & events) != 0)
-      {
-         request->ios2_WireError = events;
-         Remove((APTR)request);
-         ReplyMsg((APTR)request);
-      }
-   }
-   Enable();
+   ReplyEventRequests(unit->request_ports[EVENT_QUEUE], events);
 
    return;
 }

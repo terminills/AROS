@@ -39,6 +39,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/dos.h>
 #include <proto/battclock.h>
 #include <proto/oop.h>
@@ -57,28 +58,7 @@
  */
 VOID ReportEvents(struct NFBase *NforceBase, struct NFUnit *unit, ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next_request;
-    struct List *list;
-
-    list = &unit->request_ports[EVENT_QUEUE]->mp_MsgList;
-    next_request = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
-
-    /* Go through list of event listeners. If send messages to receivers if event found */
-    Disable();
-    while(next_request != tail)
-    {
-        request = next_request;
-        next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-        if((request->ios2_WireError&events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            ReplyMsg((APTR)request);
-        }
-    }
-    Enable();
+    ReplyEventRequests(unit->request_ports[EVENT_QUEUE], events);
 
     return;
 }
@@ -176,7 +156,7 @@ static AROS_INTH1(RX_Int, struct NFUnit *,  unit)
     struct TypeStats *tracker;
     UWORD packet_type;	/* unsigned: IPv6 ethertype 0x86dd must not sign-extend */
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     BOOL accepted, is_orphan;
 
     /* Endless loop, with break from inside */
@@ -311,22 +291,14 @@ static AROS_INTH1(RX_Int, struct NFUnit *,  unit)
             /* Offer packet to every opener */
             while(opener != opener_tail)
             {
-               request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-               request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
                accepted = FALSE;
 
-               /* Offer packet to each request until it's accepted */
-               while((request != request_tail) && !accepted)
+               /* First matching request, taken off the read port under its lock */
+               request = TakeMatchingRequest(&opener->read_port, packet_type, TRUE, ETH_MTU);
+               if (request != NULL)
                {
-                  if((request->ios2_PacketType == packet_type)
-                     || ((request->ios2_PacketType <= ETH_MTU)
-                          && (packet_type <= ETH_MTU)))
-                  {
-                     CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
-                     accepted = TRUE;
-                  }
-                  request =
-                     (struct IOSana2Req *)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+                   CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
+                   accepted = TRUE;
                }
 
                if(accepted)
@@ -340,11 +312,10 @@ static AROS_INTH1(RX_Int, struct NFUnit *,  unit)
             {
                 unit->stats.UnknownTypesReceived++;
 
-                if(!IsMsgPortEmpty(unit->request_ports[ADOPT_QUEUE]))
+                request = (APTR)GetMsg(unit->request_ports[ADOPT_QUEUE]);
+                if (request != NULL)
                 {
-                    CopyPacket(LIBBASE, unit,
-                        (APTR)unit->request_ports[ADOPT_QUEUE]->
-                        mp_MsgList.lh_Head, len, packet_type, frame);
+                    CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
                 }
             }
 
@@ -440,137 +411,145 @@ static AROS_INTH1(TX_Int, struct NFUnit *,  unit)
 {
     AROS_INTFUNC_INIT
 
-    struct fe_priv *np = unit->nu_fe_priv;
-    struct NFBase *NforceBase = unit->nu_device;
-    int nr;
-    BOOL proceed = FALSE; /* Fails by default */
+    /* One Tx producer at a time; see Sana2TxGate */
+    if (!Sana2TxGateEnter(&unit->nu_txgate))
+        return FALSE;
 
-    /* send packet only if there is free space on tx queue. Otherwise do nothing */
-    if (!netif_queue_stopped(unit))
+    do
     {
-        UWORD packet_size, data_size;
-        struct IOSana2Req *request;
-        struct Opener *opener;
-        UBYTE *buffer;
-        ULONG wire_error=0;
-        BYTE error;
-        struct MsgPort *port;
-        struct TypeStats *tracker;
+        struct fe_priv *np = unit->nu_fe_priv;
+        struct NFBase *NforceBase = unit->nu_device;
+        int nr;
+        BOOL proceed = FALSE; /* Fails by default */
 
-        proceed = TRUE; /* Success by default */
-        port = unit->request_ports[WRITE_QUEUE];
-
-        /* Still no error and there are packets to be sent? */
-        while(proceed && (!IsMsgPortEmpty(port)))
+        /* send packet only if there is free space on tx queue. Otherwise do nothing */
+        if (!netif_queue_stopped(unit))
         {
-            nr = np->next_tx % TX_RING;
-            error = 0;
+            UWORD packet_size, data_size;
+            struct IOSana2Req *request;
+            struct Opener *opener;
+            UBYTE *buffer;
+            ULONG wire_error=0;
+            BYTE error;
+            struct MsgPort *port;
+            struct TypeStats *tracker;
 
-            request = (APTR)port->mp_MsgList.lh_Head;
-            data_size = packet_size = request->ios2_DataLength;
+            proceed = TRUE; /* Success by default */
+            port = unit->request_ports[WRITE_QUEUE];
 
-            opener = (APTR)request->ios2_BufferManagement;
-
-            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+            /* Still no error and there are packets to be sent? */
+            while(proceed && (!IsMsgPortEmpty(port)))
             {
-                packet_size += ETH_PACKET_DATA;
-                CopyMem(request->ios2_DstAddr, np->tx_buffer[nr].eth_packet_dest, ETH_ADDRESSSIZE);
-                CopyMem(unit->dev_addr, np->tx_buffer[nr].eth_packet_source, ETH_ADDRESSSIZE);
-                np->tx_buffer[nr].eth_packet_type = AROS_WORD2BE(request->ios2_PacketType);
+                nr = np->next_tx % TX_RING;
+                error = 0;
 
-                buffer = np->tx_buffer[nr].eth_packet_data;
-            }
-            else
-                buffer = (UBYTE*)&np->tx_buffer[nr];
+                /* Dequeued under the port's lock */
+                request = (APTR)GetMsg(port);
+                if (request == NULL)
+                    break;
+                data_size = packet_size = request->ios2_DataLength;
 
-            if (!opener->tx_function(buffer, request->ios2_Data, data_size))
-            {
-                error = S2ERR_NO_RESOURCES;
-                wire_error = S2WERR_BUFF_ERROR;
-                ReportEvents(LIBBASE, unit,
-                  S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
-                  | S2EVENT_TX);
-            }
+                opener = (APTR)request->ios2_BufferManagement;
 
-            /* Now the packet is already in TX buffer, update flags for NIC */
-            if (error == 0)
-            {
-                Disable();
-                np->tx_ring[nr].FlagLen = AROS_LONG2LE((packet_size-1) | np->tx_flags );
-                D(bug("%s: nv_start_xmit: packet packet %d queued for transmission.",
-                        unit->name, np->next_tx));
+                if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+                {
+                    packet_size += ETH_PACKET_DATA;
+                    CopyMem(request->ios2_DstAddr, np->tx_buffer[nr].eth_packet_dest, ETH_ADDRESSSIZE);
+                    CopyMem(unit->dev_addr, np->tx_buffer[nr].eth_packet_source, ETH_ADDRESSSIZE);
+                    np->tx_buffer[nr].eth_packet_type = AROS_WORD2BE(request->ios2_PacketType);
 
-                /* DEBUG? Dump frame if so */
+                    buffer = np->tx_buffer[nr].eth_packet_data;
+                }
+                else
+                    buffer = (UBYTE*)&np->tx_buffer[nr];
+
+                if (!opener->tx_function(buffer, request->ios2_Data, data_size))
+                {
+                    error = S2ERR_NO_RESOURCES;
+                    wire_error = S2WERR_BUFF_ERROR;
+                    ReportEvents(LIBBASE, unit,
+                      S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
+                      | S2EVENT_TX);
+                }
+
+                /* Now the packet is already in TX buffer, update flags for NIC */
+                if (error == 0)
+                {
+                    Disable();
+                    np->tx_ring[nr].FlagLen = AROS_LONG2LE((packet_size-1) | np->tx_flags );
+                    D(bug("%s: nv_start_xmit: packet packet %d queued for transmission.",
+                            unit->name, np->next_tx));
+
+                    /* DEBUG? Dump frame if so */
 #ifdef DEBUG
-                {
-                int j;
-                    for (j=0; j<64; j++) {
-                        if ((j%16) == 0)
-                            D(bug("\n%03x:", j));
-                        D(bug(" %02x", ((unsigned char*)&np->tx_buffer[nr])[j]));
+                    {
+                    int j;
+                        for (j=0; j<64; j++) {
+                            if ((j%16) == 0)
+                                D(bug("\n%03x:", j));
+                            D(bug(" %02x", ((unsigned char*)&np->tx_buffer[nr])[j]));
+                        }
+                        D(bug("\n"));
                     }
-                    D(bug("\n"));
-                }
 #endif
-                np->next_tx++;
+                    np->next_tx++;
 
-                /* 
-                 * If we've just run out of free space on the TX queue, stop
-                 * it and give up pushing further frames
-                 */
-                if (np->next_tx - np->nic_tx >= TX_LIMIT_STOP)
-                {
-                    bug("%s: output queue full. Stopping\n", unit->name);
-                    netif_stop_queue(unit);
-                    proceed = FALSE;
+                    /* 
+                     * If we've just run out of free space on the TX queue, stop
+                     * it and give up pushing further frames
+                     */
+                    if (np->next_tx - np->nic_tx >= TX_LIMIT_STOP)
+                    {
+                        bug("%s: output queue full. Stopping\n", unit->name);
+                        netif_stop_queue(unit);
+                        proceed = FALSE;
+                    }
+                    Enable();
+                    /* 
+                     * At this place linux driver used to trigger NIC to output
+                     * the queued packets through wire. We will not do it as we
+                     * may already see if there are new outcomming packets.
+                     * 
+                     * Yes, this driver might be a bit faster than linux one.
+                     */
                 }
-                Enable();
-                /* 
-                 * At this place linux driver used to trigger NIC to output
-                 * the queued packets through wire. We will not do it as we
-                 * may already see if there are new outcomming packets.
-                 * 
-                 * Yes, this driver might be a bit faster than linux one.
-                 */
+
+                /* Reply packet */
+
+                request->ios2_Req.io_Error = error;
+                request->ios2_WireError = wire_error;
+                ReplyMsg((APTR)request);
+
+                /* Update statistics */
+
+                if(error == 0)
+                {
+                    tracker = FindTypeStats(LIBBASE, unit, &unit->type_trackers,
+                        request->ios2_PacketType);
+                    if(tracker != NULL)
+                    {
+                        tracker->stats.PacketsSent++;
+                        tracker->stats.BytesSent += packet_size;
+                    }
+                }	
             }
 
-            /* Reply packet */
-
-            request->ios2_Req.io_Error = error;
-            request->ios2_WireError = wire_error;
-            Disable();
-            Remove((APTR)request);
-            Enable();
-            ReplyMsg((APTR)request);
-
-            /* Update statistics */
-
-            if(error == 0)
-            {
-                tracker = FindTypeStats(LIBBASE, unit, &unit->type_trackers,
-                    request->ios2_PacketType);
-                if(tracker != NULL)
-                {
-                    tracker->stats.PacketsSent++;
-                    tracker->stats.BytesSent += packet_size;
-                }
-            }	
+            /* 
+             * Here either we've filled the queue with packets to be transmitted,
+             * or just run out of spare space in TX queue. In both cases tell the
+             * NIC to start transmitting them all through wire.
+             */
+            writel(NVREG_TXRXCTL_KICK|np->desc_ver, (UBYTE*)unit->nu_BaseMem + NvRegTxRxControl);
+            pci_push((UBYTE*)unit->nu_BaseMem);
         }
 
-        /* 
-         * Here either we've filled the queue with packets to be transmitted,
-         * or just run out of spare space in TX queue. In both cases tell the
-         * NIC to start transmitting them all through wire.
-         */
-        writel(NVREG_TXRXCTL_KICK|np->desc_ver, (UBYTE*)unit->nu_BaseMem + NvRegTxRxControl);
-        pci_push((UBYTE*)unit->nu_BaseMem);
+        /* Was there success? Enable incomming of new packets */    
+        if(proceed)
+            unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
+        else
+            unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
     }
-
-    /* Was there success? Enable incomming of new packets */    
-    if(proceed)
-        unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-    else
-        unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+    while (Sana2TxGateLeave(&unit->nu_txgate));
 
     return FALSE;
 
@@ -791,6 +770,10 @@ VOID CopyPacket(struct NFBase *NforceBase, struct NFUnit *unit,
         if(!CallHookPkt(opener->filter_hook, request, ptr))
             filtered = TRUE;
 
+    /* A rejected packet leaves the request queued for the next one */
+    if(filtered)
+        RequeueRequest(&opener->read_port, request);
+
     if(!filtered)
     {
         /* Copy packet into opener's buffer and reply packet */
@@ -801,9 +784,6 @@ VOID CopyPacket(struct NFBase *NforceBase, struct NFUnit *unit,
             request->ios2_WireError = S2WERR_BUFF_ERROR;
             ReportEvents(LIBBASE, unit, S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_RX);
         }
-        Disable();
-        Remove((APTR)request);
-        Enable();
         ReplyMsg((APTR)request);
     }
 }

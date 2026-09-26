@@ -38,6 +38,7 @@ MA 02111-1307, USA.
 #include "ethernet.h"
 #include "wireless.h"
 #include "encryption.h"
+#include "../sana2_portlock.h"
 
 #define DEVICE_NAME "atheros5000.device"
 #define VERSION 1
@@ -183,6 +184,8 @@ struct DevUnit
       UBYTE *, UWORD *, UBYTE *, struct DevBase *);
    BOOL (*fragment_decrypt_functions[ENC_COUNT])(struct DevUnit *, UBYTE *,
       UBYTE *, UWORD *, UBYTE *, struct DevBase *);
+   struct Sana2TxGate mgmt_gate;   /* one Tx producer at a time on SMP */
+   struct Sana2TxGate tx_gate;   /* one Tx producer at a time on SMP */
 };
 
 

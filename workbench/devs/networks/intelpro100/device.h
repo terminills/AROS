@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2025 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -33,6 +33,7 @@ MA 02111-1307, USA.
 
 #include "io.h"
 #include "endian.h"
+#include "../sana2_portlock.h"
 #undef Lock
 
 #define DEVICE_NAME "intelpro100.device"
@@ -188,6 +189,7 @@ struct DevUnit
    UWORD phy_info;
    UWORD bus;
    UWORD eeprom_addr_size;
+   struct Sana2TxGate tx_gate;   /* one Tx producer at a time on SMP */
 };
 
 

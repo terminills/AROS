@@ -36,6 +36,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/kernel.h>
 #include <proto/dos.h>
 #include <proto/oop.h>
@@ -53,77 +54,12 @@
 #include LC_LIBDEFS_FILE
 
 /*
- * Request ports are filled by PutMsg() from the network stack's task, which on
- * SMP may run on another core while this driver's interrupts walk the same
- * list. PutMsg() and GetMsg() serialise on the port's spinlock; Disable() only
- * stops this core. Any walk or Remove() of a port's message list here takes
- * that lock too, and never holds it across a callback or a ReplyMsg() (which
- * locks the reply port). Without it the list tore under upload load: a
- * producer took a garbage request, called its opener's tx_function through a
- * bogus pointer, and an idle core died with a #GP at RIP 0x3.
- */
-static APTR PortKernelBase(void)
-{
-    static APTR kernelbase;
-
-    if (!kernelbase)
-        kernelbase = OpenResource("kernel.resource");
-    return kernelbase;
-}
-
-static void PortLock(struct MsgPort *port)
-{
-    Disable();
-#if defined(__AROSPLATFORM_SMP__)
-    {
-        APTR KernelBase = PortKernelBase();
-#if defined(__AROSEXEC_SMP__)
-        KrnSpinLock(&port->mp_SpinLock, NULL, SPINLOCK_MODE_WRITE);
-#else
-        KrnSpinLock(&port->mp_Pad, NULL, SPINLOCK_MODE_WRITE);
-#endif
-    }
-#endif
-}
-
-static void PortUnlock(struct MsgPort *port)
-{
-#if defined(__AROSPLATFORM_SMP__)
-    {
-        APTR KernelBase = PortKernelBase();
-#if defined(__AROSEXEC_SMP__)
-        KrnSpinUnLock(&port->mp_SpinLock);
-#else
-        KrnSpinUnLock(&port->mp_Pad);
-#endif
-    }
-#endif
-    Enable();
-}
-
-/*
  * Take the first request of the given packet type off a read port, or NULL.
+ * See sana2_portlock.h for why every request-port walk takes the port lock.
  */
 struct IOSana2Req *TakeTypedRequest(struct MsgPort *port, ULONG packet_type)
 {
-    struct List *list = &port->mp_MsgList;
-    struct IOSana2Req *request, *found = NULL;
-
-    PortLock(port);
-    for (request = (APTR)list->lh_Head;
-         request->ios2_Req.io_Message.mn_Node.ln_Succ != NULL;
-         request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ)
-    {
-        if (request->ios2_PacketType == packet_type)
-        {
-            Remove((APTR)request);
-            found = request;
-            break;
-        }
-    }
-    PortUnlock(port);
-
-    return found;
+    return TakeMatchingRequest(port, packet_type, FALSE, 0);
 }
 
 /*
@@ -131,30 +67,7 @@ struct IOSana2Req *TakeTypedRequest(struct MsgPort *port, ULONG packet_type)
  */
 VOID ReportEvents(struct e1000Base *e1KBase, struct e1000Unit *unit, ULONG events)
 {
-    struct MsgPort *port = unit->e1ku_request_ports[EVENT_QUEUE];
-    struct IOSana2Req *request, *next_request;
-    struct List matched;
-
-    NEWLIST(&matched);
-
-    /* Take the listeners for these events off the queue under its lock ... */
-    PortLock(port);
-    for (request = (APTR)port->mp_MsgList.lh_Head;
-         (next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ) != NULL;
-         request = next_request)
-    {
-        if((request->ios2_WireError&events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            AddTail(&matched, (APTR)request);
-        }
-    }
-    PortUnlock(port);
-
-    /* ... and reply them with it released */
-    while ((request = (APTR)RemHead(&matched)) != NULL)
-        ReplyMsg((APTR)request);
+    ReplyEventRequests(unit->e1ku_request_ports[EVENT_QUEUE], events);
 
     return;
 }
@@ -270,14 +183,10 @@ static AROS_INTH1(e1000func_TX_Int, struct e1000Unit *,  unit)
      * and the unit wedges: software sees a full ring, the hardware sits idle
      * with TDH == TDT, and no completion is left to re-Cause this softint.
      */
-    if (__sync_lock_test_and_set(&unit->e1ku_txBusy, 1))
-    {
-        unit->e1ku_txAgain = 1;	/* the producer in progress will re-drain */
-        return 0;
-    }
+    if (!Sana2TxGateEnter(&unit->e1ku_txgate))
+        return 0;	/* the producer in progress will re-drain */
 
 again:
-    unit->e1ku_txAgain = 0;
 
     i = tx_ring->next_to_use;
 
@@ -402,9 +311,8 @@ again:
 
     MMIO_W32((APTR)(((struct e1000_hw *)unit->e1ku_Private00)->hw_addr + tx_ring->tdt), tx_ring->next_to_use);
 
-    if (unit->e1ku_txAgain)
+    if (Sana2TxGateLeave(&unit->e1ku_txgate))
         goto again;		/* a write arrived on another core while we ran */
-    __sync_lock_release(&unit->e1ku_txBusy);
 
     return 0;
 
@@ -556,6 +464,10 @@ VOID CopyPacket(struct e1000Base *e1KBase, struct e1000Unit *unit,
             D(bug("[%s] %s: packet filtered\n", unit->e1ku_name, __func__));
             filtered = TRUE;
         }
+
+    /* A rejected packet leaves the request queued for the next one */
+    if(filtered)
+        RequeueRequest(&opener->read_port, request);
 
     if(!filtered)
     {

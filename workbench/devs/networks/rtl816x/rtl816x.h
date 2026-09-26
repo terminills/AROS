@@ -64,6 +64,7 @@
 #include <devices/sana2specialstats.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 
 #include LC_LIBDEFS_FILE
 
@@ -307,6 +308,7 @@ struct RTL816XUnit {
     struct rtl816x_priv     *rtl816xu_priv;
 
     UWORD                   rtl816xu_intr_event;
+    struct Sana2TxGate rtl816xu_txgate;   /* one Tx producer at a time on SMP */
 };
 
 void handle_request(LIBBASETYPEPTR, struct IOSana2Req *);

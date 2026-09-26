@@ -39,6 +39,7 @@
 
 #include <proto/exec.h>
 #include <aros/debug.h>
+#include "../sana2_portlock.h"
 
 #include LC_LIBDEFS_FILE
 
@@ -199,6 +200,7 @@ struct VIARHINEUnit {
     UBYTE                   rhineu_dev_addr[6];
     UBYTE                   rhineu_org_addr[6];
     struct fe_priv          *rhineu_fe_priv;
+    struct Sana2TxGate rhineu_txgate;   /* one Tx producer at a time on SMP */
 };
 
 void handle_request(LIBBASETYPEPTR, struct IOSana2Req *);

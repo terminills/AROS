@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2025 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ MA 02111-1307, USA.
 #include <exec/tasks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #ifndef __amigaos4__
 #include <proto/alib.h>
 #else
@@ -1701,7 +1702,7 @@ static VOID DistributeRXPacket(struct DevUnit *unit, const UBYTE *frame,
    ULONG packet_type;
    UBYTE *buffer;
    const UBYTE *template = snap_template;
-   struct IOSana2Req *request, *request_tail;
+   struct IOSana2Req *request;
    struct Opener *opener, *opener_tail;
    struct TypeStats *tracker;
 
@@ -1730,22 +1731,14 @@ static VOID DistributeRXPacket(struct DevUnit *unit, const UBYTE *frame,
 
    while(opener != opener_tail)
    {
-      request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-      request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
       accepted = FALSE;
 
-      /* Offer packet to each request until it's accepted */
-
-      while(request != request_tail && !accepted)
+      /* First matching request, taken off the read port under its lock */
+      request = TakeMatchingRequest(&opener->read_port, packet_type, FALSE, 0);
+      if(request != NULL)
       {
-         if(request->ios2_PacketType == packet_type)
-         {
-            CopyPacket(unit, request, packet_size, packet_type,
-               buffer, base);
-            accepted = TRUE;
-         }
-         request =
-            (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+         CopyPacket(unit, request, packet_size, packet_type, buffer, base);
+         accepted = TRUE;
       }
 
       if(accepted)
@@ -1758,11 +1751,10 @@ static VOID DistributeRXPacket(struct DevUnit *unit, const UBYTE *frame,
    if(is_orphan)
    {
       unit->stats.UnknownTypesReceived++;
-      if(!IsMsgPortEmpty(unit->request_ports[ADOPT_QUEUE]))
+      request = (APTR)GetMsg(unit->request_ports[ADOPT_QUEUE]);
+      if(request != NULL)
       {
-         CopyPacket(unit,
-            (APTR)unit->request_ports[ADOPT_QUEUE]->
-            mp_MsgList.lh_Head, packet_size, packet_type, buffer,
+         CopyPacket(unit, request, packet_size, packet_type, buffer,
             base);
       }
    }
@@ -1845,6 +1837,10 @@ static VOID CopyPacket(struct DevUnit *unit, struct IOSana2Req *request,
       if(!CallHookPkt(opener->filter_hook, request, buffer))
          filtered = TRUE;
 
+   /* A rejected packet leaves the request queued for the next one */
+   if(filtered)
+      RequeueRequest(&opener->read_port, request);
+
    if(!filtered)
    {
       /* Copy packet into opener's buffer and reply packet */
@@ -1857,7 +1853,6 @@ static VOID CopyPacket(struct DevUnit *unit, struct IOSana2Req *request,
             S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_RX,
             base);
       }
-      Remove((APTR)request);
       ReplyMsg((APTR)request);
    }
 
@@ -2006,267 +2001,276 @@ static VOID DistributeMgmtFrame(struct DevUnit *unit, UBYTE *frame,
 
 static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a6, APTR int_code))
 {
-   struct DevBase *base;
-   UWORD i, frame_size, data_size, packet_type, body_size, slot, new_slot,
-      encryption, subtype, duration;
-   UBYTE *buffer, *q, *plaintext, *ciphertext, *frame,
-      mic_header[ETH_ADDRESSSIZE * 2];
-   const UBYTE *p, *dest, *source;
-   struct IOSana2Req *request;
-   BOOL proceed = TRUE, is_ieee, has_bssid;
-   struct Opener *opener;
-   ULONG wire_error, control_value;
-   UBYTE *tx_desc;
-   UBYTE *(*dma_tx_function)(REG(a0, APTR));
-   BYTE error;
-   struct MsgPort *port;
-   struct TypeStats *tracker;
+   /* One Tx producer at a time; see Sana2TxGate */
+   if(!Sana2TxGateEnter(&unit->tx_gate))
+      return;
 
-   base = unit->device;
-   port = unit->request_ports[WRITE_QUEUE];
-
-   while(proceed && (!IsMsgPortEmpty(port)))
+   do
    {
-      slot = unit->tx_in_slot;
-      new_slot = (slot + 1) % TX_SLOT_COUNT;
+      struct DevBase *base;
+      UWORD i, frame_size, data_size, packet_type, body_size, slot, new_slot,
+         encryption, subtype, duration;
+      UBYTE *buffer, *q, *plaintext, *ciphertext, *frame,
+         mic_header[ETH_ADDRESSSIZE * 2];
+      const UBYTE *p, *dest, *source;
+      struct IOSana2Req *request;
+      BOOL proceed = TRUE, is_ieee, has_bssid;
+      struct Opener *opener;
+      ULONG wire_error, control_value;
+      UBYTE *tx_desc;
+      UBYTE *(*dma_tx_function)(REG(a0, APTR));
+      BYTE error;
+      struct MsgPort *port;
+      struct TypeStats *tracker;
 
-      if(new_slot != unit->tx_out_slot)
+      base = unit->device;
+      port = unit->request_ports[WRITE_QUEUE];
+
+      while(proceed && (!IsMsgPortEmpty(port)))
       {
-         error = 0;
-         body_size = 0;
+         slot = unit->tx_in_slot;
+         new_slot = (slot + 1) % TX_SLOT_COUNT;
 
-         /* Get request and DMA frame descriptor */
-
-         request = (APTR)port->mp_MsgList.lh_Head;
-
-         Remove((APTR)request);
-         unit->tx_requests[slot] = request;
-         tx_desc = unit->tx_descs[slot];
-         frame = unit->tx_buffers[slot];
-
-         /* Get packet data */
-
-         opener = request->ios2_BufferManagement;
-         dma_tx_function = opener->dma_tx_function;
-         if(dma_tx_function != NULL)
-            buffer = dma_tx_function(request->ios2_Data);
-         else
-            buffer = NULL;
-
-         if(buffer == NULL)
+         if(new_slot != unit->tx_out_slot)
          {
-            buffer = unit->tx_buffer;
-            if(!opener->tx_function(buffer, request->ios2_Data,
-               request->ios2_DataLength))
-            {
-               error = S2ERR_NO_RESOURCES;
-               wire_error = S2WERR_BUFF_ERROR;
-               ReportEvents(unit,
-                  S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
-                  | S2EVENT_TX, base);
-            }
-         }
+            error = 0;
+            body_size = 0;
 
-         if(error == 0)
-         {
-            /* Get packet type and/or length */
+            /* Get request and DMA frame descriptor */
 
-            data_size = request->ios2_DataLength;
-            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) != 0)
-            {
-               data_size -= ETH_PACKET_DATA;
-               packet_type = BEWord(*(UWORD *)(buffer + ETH_PACKET_TYPE));
-            }
+            /* Dequeued under the port's lock */
+            request = (APTR)GetMsg(port);
+            if(request == NULL)
+               break;
+            unit->tx_requests[slot] = request;
+            tx_desc = unit->tx_descs[slot];
+            frame = unit->tx_buffers[slot];
+
+            /* Get packet data */
+
+            opener = request->ios2_BufferManagement;
+            dma_tx_function = opener->dma_tx_function;
+            if(dma_tx_function != NULL)
+               buffer = dma_tx_function(request->ios2_Data);
             else
-               packet_type = request->ios2_PacketType;
-            is_ieee = packet_type <= ETH_MTU;
+               buffer = NULL;
 
-            /* Determine encryption type and frame subtype */
-
-            if(data_size > 0)
+            if(buffer == NULL)
             {
-               encryption = unit->keys[unit->tx_key_no].type;
-               subtype = 0;
-            }
-            else
-            {
-               encryption = S2ENC_NONE;
-               subtype = 4;
-            }
-
-            /* Get source and destination addresses */
-
-            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) != 0)
-            {
-               dest = buffer;
-               source = buffer + ETH_ADDRESSSIZE;
-               buffer += ETH_ADDRESSSIZE * 2 + 2;
-            }
-            else
-            {
-               dest = request->ios2_DstAddr;
-               source = unit->address;
+               buffer = unit->tx_buffer;
+               if(!opener->tx_function(buffer, request->ios2_Data,
+                  request->ios2_DataLength))
+               {
+                  error = S2ERR_NO_RESOURCES;
+                  wire_error = S2WERR_BUFF_ERROR;
+                  ReportEvents(unit,
+                     S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
+                     | S2EVENT_TX, base);
+               }
             }
 
-            /* Write 802.11 header */
-
-            q = frame;
-            *(UWORD *)q = MakeLEWord(
-               (encryption == S2ENC_NONE ? 0 : WIFI_FRM_CONTROLF_WEP)
-               | (unit->mode == S2PORT_ADHOC ? 0 : WIFI_FRM_CONTROLF_TODS)
-               | subtype << WIFI_FRM_CONTROLB_SUBTYPE
-               | WIFI_FRMTYPE_DATA << WIFI_FRM_CONTROLB_TYPE);
-            q += 4;
-
-            if(unit->mode == S2PORT_ADHOC)
-               p = dest;
-            else
-               p = unit->bssid;
-            for(i = 0; i < ETH_ADDRESSSIZE; i++)
-               *q++ = *p++;
-
-            for(i = 0, p = source; i < ETH_ADDRESSSIZE; i++)
-               *q++ = *p++;
-
-            if(unit->mode == S2PORT_ADHOC)
-               p = unit->bssid;
-            else
-               p = dest;
-            for(i = 0; i < ETH_ADDRESSSIZE; i++)
-               *q++ = *p++;
-            *(UWORD *)q = MakeLEWord(unit->tx_sequence);
-            unit->tx_sequence += 0x10;
-            q += 2;
-
-            /* Leave room for encryption overhead */
-
-            ciphertext = q;
-            q += unit->iv_sizes[encryption];
-            plaintext = q;
-
-            /* Write SNAP header */
-
-            if(!is_ieee)
+            if(error == 0)
             {
-               for(i = 0, p = snap_template;
-                  i < SNAP_FRM_TYPE; i++)
+               /* Get packet type and/or length */
+
+               data_size = request->ios2_DataLength;
+               if((request->ios2_Req.io_Flags & SANA2IOF_RAW) != 0)
+               {
+                  data_size -= ETH_PACKET_DATA;
+                  packet_type = BEWord(*(UWORD *)(buffer + ETH_PACKET_TYPE));
+               }
+               else
+                  packet_type = request->ios2_PacketType;
+               is_ieee = packet_type <= ETH_MTU;
+
+               /* Determine encryption type and frame subtype */
+
+               if(data_size > 0)
+               {
+                  encryption = unit->keys[unit->tx_key_no].type;
+                  subtype = 0;
+               }
+               else
+               {
+                  encryption = S2ENC_NONE;
+                  subtype = 4;
+               }
+
+               /* Get source and destination addresses */
+
+               if((request->ios2_Req.io_Flags & SANA2IOF_RAW) != 0)
+               {
+                  dest = buffer;
+                  source = buffer + ETH_ADDRESSSIZE;
+                  buffer += ETH_ADDRESSSIZE * 2 + 2;
+               }
+               else
+               {
+                  dest = request->ios2_DstAddr;
+                  source = unit->address;
+               }
+
+               /* Write 802.11 header */
+
+               q = frame;
+               *(UWORD *)q = MakeLEWord(
+                  (encryption == S2ENC_NONE ? 0 : WIFI_FRM_CONTROLF_WEP)
+                  | (unit->mode == S2PORT_ADHOC ? 0 : WIFI_FRM_CONTROLF_TODS)
+                  | subtype << WIFI_FRM_CONTROLB_SUBTYPE
+                  | WIFI_FRMTYPE_DATA << WIFI_FRM_CONTROLB_TYPE);
+               q += 4;
+
+               if(unit->mode == S2PORT_ADHOC)
+                  p = dest;
+               else
+                  p = unit->bssid;
+               for(i = 0; i < ETH_ADDRESSSIZE; i++)
                   *q++ = *p++;
-               *(UWORD *)q = MakeBEWord(packet_type);
-               q += 2;
-               body_size += SNAP_HEADERSIZE;
-            }
 
-            /* Copy data into frame */
-
-            CopyMem(buffer, q, data_size);
-            body_size += data_size;
-
-            /* Append MIC to frame for TKIP */
-
-            if(encryption == S2ENC_TKIP)
-            {
-               q = mic_header;
-               for(i = 0, p = dest; i < ETH_ADDRESSSIZE; i++)
-                  *q++ = *p++;
                for(i = 0, p = source; i < ETH_ADDRESSSIZE; i++)
                   *q++ = *p++;
-               TKIPEncryptFrame(unit, mic_header, plaintext, body_size,
-                  plaintext, base);
-               body_size += MIC_SIZE;
+
+               if(unit->mode == S2PORT_ADHOC)
+                  p = unit->bssid;
+               else
+                  p = dest;
+               for(i = 0; i < ETH_ADDRESSSIZE; i++)
+                  *q++ = *p++;
+               *(UWORD *)q = MakeLEWord(unit->tx_sequence);
+               unit->tx_sequence += 0x10;
+               q += 2;
+
+               /* Leave room for encryption overhead */
+
+               ciphertext = q;
+               q += unit->iv_sizes[encryption];
+               plaintext = q;
+
+               /* Write SNAP header */
+
+               if(!is_ieee)
+               {
+                  for(i = 0, p = snap_template;
+                     i < SNAP_FRM_TYPE; i++)
+                     *q++ = *p++;
+                  *(UWORD *)q = MakeBEWord(packet_type);
+                  q += 2;
+                  body_size += SNAP_HEADERSIZE;
+               }
+
+               /* Copy data into frame */
+
+               CopyMem(buffer, q, data_size);
+               body_size += data_size;
+
+               /* Append MIC to frame for TKIP */
+
+               if(encryption == S2ENC_TKIP)
+               {
+                  q = mic_header;
+                  for(i = 0, p = dest; i < ETH_ADDRESSSIZE; i++)
+                     *q++ = *p++;
+                  for(i = 0, p = source; i < ETH_ADDRESSSIZE; i++)
+                     *q++ = *p++;
+                  TKIPEncryptFrame(unit, mic_header, plaintext, body_size,
+                     plaintext, base);
+                  body_size += MIC_SIZE;
+               }
+
+               /* Encrypt fragment if applicable */
+
+               unit->fragment_encrypt_functions[encryption](unit, frame,
+                  plaintext, &body_size, ciphertext, base);
+
+               /* Clear frame descriptor as far as start of 802.11 header */
+
+               q = tx_desc;
+               for(i = 0; i < unit->tx_desc_size; i++)
+                  *q++ = 0;
+
+               /* Set TX control field */
+
+               frame_size = WIFI_FRM_DATA + body_size;
+               control_value = R8180FRM_TXCONTROLF_NOENC
+                  | R8180FRM_TXCONTROLF_FIRSTFRAG
+                  | R8180FRM_TXCONTROLF_LASTFRAG
+                  | unit->tx_rate_code << R8180FRM_TXCONTROLB_RATE
+                  | frame_size;
+               *(ULONG *)(tx_desc + R8180FRM_TXCONTROL) =
+                  MakeLELong(control_value);
+
+               /* Set durations */
+
+               has_bssid = ((frame + WIFI_FRM_ADDRESS1)[0] & 0x1) == 0;
+               if(has_bssid)
+                  duration = SIFS_TIME + GetDuration(unit, 14,
+                     AckRate(unit, unit->tx_rate, base), FALSE, base);
+               else
+                  duration = 0;
+               *(UWORD *)(frame + WIFI_FRM_DURATION) = MakeLEWord(duration);
+
+               if(unit->generation >= RTL8187B0_GEN)
+               {
+                  duration += GetDuration(unit, frame_size + 4,
+                     unit->tx_rate,
+                     (unit->flags & UNITF_SHORTPREAMBLE) != 0 && has_bssid,
+                     base);
+                  *(UWORD *)(tx_desc + R8180FRM_TXDUR) = MakeLEWord(duration);
+               }
+
+               /* Set max number of retries */
+
+               *(ULONG *)(tx_desc + unit->retries_offset) =
+                  MakeLELong((TX_TRIES - 1) << 8);
+
+               /* Pass packet to adapter */
+
+               unit->SendFrame(unit->card, tx_desc,
+                  R8180_MAXDESCSIZE + frame_size);
+               unit->tx_in_slot = new_slot;
             }
-
-            /* Encrypt fragment if applicable */
-
-            unit->fragment_encrypt_functions[encryption](unit, frame,
-               plaintext, &body_size, ciphertext, base);
-
-            /* Clear frame descriptor as far as start of 802.11 header */
-
-            q = tx_desc;
-            for(i = 0; i < unit->tx_desc_size; i++)
-               *q++ = 0;
-
-            /* Set TX control field */
-
-            frame_size = WIFI_FRM_DATA + body_size;
-            control_value = R8180FRM_TXCONTROLF_NOENC
-               | R8180FRM_TXCONTROLF_FIRSTFRAG
-               | R8180FRM_TXCONTROLF_LASTFRAG
-               | unit->tx_rate_code << R8180FRM_TXCONTROLB_RATE
-               | frame_size;
-            *(ULONG *)(tx_desc + R8180FRM_TXCONTROL) =
-               MakeLELong(control_value);
-
-            /* Set durations */
-
-            has_bssid = ((frame + WIFI_FRM_ADDRESS1)[0] & 0x1) == 0;
-            if(has_bssid)
-               duration = SIFS_TIME + GetDuration(unit, 14,
-                  AckRate(unit, unit->tx_rate, base), FALSE, base);
             else
-               duration = 0;
-            *(UWORD *)(frame + WIFI_FRM_DURATION) = MakeLEWord(duration);
-
-            if(unit->generation >= RTL8187B0_GEN)
             {
-               duration += GetDuration(unit, frame_size + 4,
-                  unit->tx_rate,
-                  (unit->flags & UNITF_SHORTPREAMBLE) != 0 && has_bssid,
-                  base);
-               *(UWORD *)(tx_desc + R8180FRM_TXDUR) = MakeLEWord(duration);
+               /* Reply failed request */
+
+               request->ios2_Req.io_Error = error;
+               request->ios2_WireError = wire_error;
+               ReplyMsg((APTR)request);
             }
 
-            /* Set max number of retries */
+            /* Update statistics */
 
-            *(ULONG *)(tx_desc + unit->retries_offset) =
-               MakeLELong((TX_TRIES - 1) << 8);
+            if(error == 0)
+            {
+               unit->stats.PacketsSent++;
 
-            /* Pass packet to adapter */
-
-            unit->SendFrame(unit->card, tx_desc,
-               R8180_MAXDESCSIZE + frame_size);
-            unit->tx_in_slot = new_slot;
+               tracker = FindTypeStats(unit, &unit->type_trackers,
+                  request->ios2_PacketType, base);
+               if(tracker != NULL)
+               {
+                  tracker->stats.PacketsSent++;
+                  tracker->stats.BytesSent += ETH_HEADERSIZE + data_size;
+               }
+            }
          }
          else
-         {
-            /* Reply failed request */
+            proceed = FALSE;
+      }
 
-            request->ios2_Req.io_Error = error;
-            request->ios2_WireError = wire_error;
-            ReplyMsg((APTR)request);
-         }
+      /* Don't try to keep sending packets if there's no space left */
 
-         /* Update statistics */
-
-         if(error == 0)
-         {
-            unit->stats.PacketsSent++;
-
-            tracker = FindTypeStats(unit, &unit->type_trackers,
-               request->ios2_PacketType, base);
-            if(tracker != NULL)
-            {
-               tracker->stats.PacketsSent++;
-               tracker->stats.BytesSent += ETH_HEADERSIZE + data_size;
-            }
-         }
+      if(proceed)
+      {
+         unit->request_ports[MGMT_QUEUE]->mp_Flags = PA_SOFTINT;
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
       }
       else
-         proceed = FALSE;
+      {
+         unit->request_ports[MGMT_QUEUE]->mp_Flags = PA_IGNORE;
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+      }
    }
-
-   /* Don't try to keep sending packets if there's no space left */
-
-   if(proceed)
-   {
-      unit->request_ports[MGMT_QUEUE]->mp_Flags = PA_SOFTINT;
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-   }
-   else
-   {
-      unit->request_ports[MGMT_QUEUE]->mp_Flags = PA_IGNORE;
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
-   }
+   while(Sana2TxGateLeave(&unit->tx_gate));
 
    return;
 }
@@ -2297,105 +2301,114 @@ static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a6, APTR int_code))
 
 static VOID MgmtTXInt(REG(a1, struct DevUnit *unit), REG(a6, APTR int_code))
 {
-   struct DevBase *base;
-   UWORD frame_size, slot, new_slot, i, duration;
-   UBYTE *desc, *frame, *q;
-   struct IOSana2Req *request;
-   BOOL proceed = TRUE, has_bssid;
-   ULONG control_value;
-   struct MsgPort *port;
+   /* One Tx producer at a time; see Sana2TxGate */
+   if(!Sana2TxGateEnter(&unit->tx_gate))
+      return;
 
-   base = unit->device;
-   port = unit->request_ports[MGMT_QUEUE];
-
-   while(proceed && (!IsMsgPortEmpty(port)))
+   do
    {
-      slot = unit->tx_in_slot;
-      new_slot = (slot + 1) % TX_SLOT_COUNT;
+      struct DevBase *base;
+      UWORD frame_size, slot, new_slot, i, duration;
+      UBYTE *desc, *frame, *q;
+      struct IOSana2Req *request;
+      BOOL proceed = TRUE, has_bssid;
+      ULONG control_value;
+      struct MsgPort *port;
 
-      if(new_slot != unit->tx_out_slot)
+      base = unit->device;
+      port = unit->request_ports[MGMT_QUEUE];
+
+      while(proceed && (!IsMsgPortEmpty(port)))
       {
-         /* Get request and frame descriptor */
+         slot = unit->tx_in_slot;
+         new_slot = (slot + 1) % TX_SLOT_COUNT;
 
-         request = (APTR)port->mp_MsgList.lh_Head;
-
-         Remove((APTR)request);
-         unit->tx_requests[slot] = request;
-         desc = unit->tx_descs[slot];
-         frame = unit->tx_buffers[slot];
-
-         /* Get packet length */
-
-         frame_size = request->ios2_DataLength;
-
-         /* Copy frame into transmit buffer */
-
-         CopyMem(request->ios2_Data, frame, frame_size);
-
-         /* Clear frame descriptor as far as start of 802.11 header */
-
-         q = desc;
-         for(i = 0; i < unit->tx_desc_size; i++)
-            *q++ = 0;
-
-         /* Set TX control field */
-
-         control_value = R8180FRM_TXCONTROLF_NOENC
-            | R8180FRM_TXCONTROLF_FIRSTFRAG
-            | R8180FRM_TXCONTROLF_LASTFRAG
-            | unit->mgmt_rate_code << R8180FRM_TXCONTROLB_RATE
-            | frame_size;
-         *(ULONG *)(desc + R8180FRM_TXCONTROL) = MakeLELong(control_value);
-
-         /* Set durations */
-
-         has_bssid = ((frame + WIFI_FRM_ADDRESS1)[0] & 0x1) == 0;
-         if(has_bssid)
-            duration = SIFS_TIME + GetDuration(unit, 14,
-               AckRate(unit, unit->mgmt_rate, base), FALSE, base);
-         else
-            duration = 0;
-         *(UWORD *)(frame + WIFI_FRM_DURATION) = MakeLEWord(duration);
-
-         if(unit->generation >= RTL8187B0_GEN)
+         if(new_slot != unit->tx_out_slot)
          {
-            duration += GetDuration(unit, frame_size + 4,
-               unit->mgmt_rate, FALSE, base);
-            *(UWORD *)(desc + R8180FRM_TXDUR) = MakeLEWord(duration);
+            /* Get request and frame descriptor */
+
+            /* Dequeued under the port's lock */
+            request = (APTR)GetMsg(port);
+            if(request == NULL)
+               break;
+            unit->tx_requests[slot] = request;
+            desc = unit->tx_descs[slot];
+            frame = unit->tx_buffers[slot];
+
+            /* Get packet length */
+
+            frame_size = request->ios2_DataLength;
+
+            /* Copy frame into transmit buffer */
+
+            CopyMem(request->ios2_Data, frame, frame_size);
+
+            /* Clear frame descriptor as far as start of 802.11 header */
+
+            q = desc;
+            for(i = 0; i < unit->tx_desc_size; i++)
+               *q++ = 0;
+
+            /* Set TX control field */
+
+            control_value = R8180FRM_TXCONTROLF_NOENC
+               | R8180FRM_TXCONTROLF_FIRSTFRAG
+               | R8180FRM_TXCONTROLF_LASTFRAG
+               | unit->mgmt_rate_code << R8180FRM_TXCONTROLB_RATE
+               | frame_size;
+            *(ULONG *)(desc + R8180FRM_TXCONTROL) = MakeLELong(control_value);
+
+            /* Set durations */
+
+            has_bssid = ((frame + WIFI_FRM_ADDRESS1)[0] & 0x1) == 0;
+            if(has_bssid)
+               duration = SIFS_TIME + GetDuration(unit, 14,
+                  AckRate(unit, unit->mgmt_rate, base), FALSE, base);
+            else
+               duration = 0;
+            *(UWORD *)(frame + WIFI_FRM_DURATION) = MakeLEWord(duration);
+
+            if(unit->generation >= RTL8187B0_GEN)
+            {
+               duration += GetDuration(unit, frame_size + 4,
+                  unit->mgmt_rate, FALSE, base);
+               *(UWORD *)(desc + R8180FRM_TXDUR) = MakeLEWord(duration);
+            }
+
+            /* Set max number of retries */
+
+            *(ULONG *)(desc + unit->retries_offset) =
+               MakeLELong((TX_TRIES - 1) << 8);
+
+            /* Set sequence number */
+
+            *(UWORD *)(frame + WIFI_FRM_SEQCONTROL) =
+               MakeLEWord(unit->tx_sequence);
+            unit->tx_sequence += 0x10;
+
+            /* Pass packet to adapter */
+
+            unit->SendFrame(unit->card, desc, R8180_MAXDESCSIZE + frame_size);
+            unit->tx_in_slot = new_slot;
          }
+         else
+            proceed = FALSE;
+      }
 
-         /* Set max number of retries */
+      /* Don't try to keep sending packets if there's no space left */
 
-         *(ULONG *)(desc + unit->retries_offset) =
-            MakeLELong((TX_TRIES - 1) << 8);
-
-         /* Set sequence number */
-
-         *(UWORD *)(frame + WIFI_FRM_SEQCONTROL) =
-            MakeLEWord(unit->tx_sequence);
-         unit->tx_sequence += 0x10;
-
-         /* Pass packet to adapter */
-
-         unit->SendFrame(unit->card, desc, R8180_MAXDESCSIZE + frame_size);
-         unit->tx_in_slot = new_slot;
+      if(proceed)
+      {
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
+         unit->request_ports[MGMT_QUEUE]->mp_Flags = PA_SOFTINT;
       }
       else
-         proceed = FALSE;
+      {
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+         unit->request_ports[MGMT_QUEUE]->mp_Flags = PA_IGNORE;
+      }
    }
-
-   /* Don't try to keep sending packets if there's no space left */
-
-   if(proceed)
-   {
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-      unit->request_ports[MGMT_QUEUE]->mp_Flags = PA_SOFTINT;
-   }
-   else
-   {
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
-      unit->request_ports[MGMT_QUEUE]->mp_Flags = PA_IGNORE;
-   }
+   while(Sana2TxGateLeave(&unit->tx_gate));
 
    return;
 }
@@ -2486,27 +2499,7 @@ VOID RetireTXSlot(struct DevUnit *unit, struct DevBase *base)
 static VOID ReportEvents(struct DevUnit *unit, ULONG events,
    struct DevBase *base)
 {
-   struct IOSana2Req *request, *tail, *next_request;
-   struct List *list;
-
-   list = &unit->request_ports[EVENT_QUEUE]->mp_MsgList;
-   next_request = (APTR)list->lh_Head;
-   tail = (APTR)&list->lh_Tail;
-
-   Disable();
-   while(next_request != tail)
-   {
-      request = next_request;
-      next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-      if((request->ios2_WireError & events) != 0)
-      {
-         request->ios2_WireError = events;
-         Remove((APTR)request);
-         ReplyMsg((APTR)request);
-      }
-   }
-   Enable();
+   ReplyEventRequests(unit->request_ports[EVENT_QUEUE], events);
 
    return;
 }

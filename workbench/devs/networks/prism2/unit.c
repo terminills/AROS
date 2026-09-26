@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2017 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ MA 02111-1307, USA.
 #include <exec/tasks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #ifndef __amigaos4__
 #include <proto/alib.h>
 #else
@@ -1835,7 +1836,7 @@ static VOID DistributeRXPacket(struct DevUnit *unit, UBYTE *frame,
    ULONG packet_type;
    UBYTE *buffer;
    const UBYTE *template = snap_template;
-   struct IOSana2Req *request, *request_tail;
+   struct IOSana2Req *request;
    struct Opener *opener, *opener_tail;
    struct TypeStats *tracker;
 
@@ -1869,22 +1870,14 @@ static VOID DistributeRXPacket(struct DevUnit *unit, UBYTE *frame,
 
       while(opener != opener_tail)
       {
-         request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-         request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
          accepted = FALSE;
 
-         /* Offer packet to each request until it's accepted */
-
-         while(request != request_tail && !accepted)
+         /* First matching request, taken off the read port under its lock */
+         request = TakeMatchingRequest(&opener->read_port, packet_type, FALSE, 0);
+         if(request != NULL)
          {
-            if(request->ios2_PacketType == packet_type)
-            {
-               CopyPacket(unit, request, packet_size, packet_type,
-                  buffer, base);
-               accepted = TRUE;
-            }
-            request =
-               (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+            CopyPacket(unit, request, packet_size, packet_type, buffer, base);
+            accepted = TRUE;
          }
 
          if(accepted)
@@ -1897,11 +1890,10 @@ static VOID DistributeRXPacket(struct DevUnit *unit, UBYTE *frame,
       if(is_orphan)
       {
          unit->stats.UnknownTypesReceived++;
-         if(!IsMsgPortEmpty(unit->request_ports[ADOPT_QUEUE]))
+         request = (APTR)GetMsg(unit->request_ports[ADOPT_QUEUE]);
+         if(request != NULL)
          {
-            CopyPacket(unit,
-               (APTR)unit->request_ports[ADOPT_QUEUE]->
-               mp_MsgList.lh_Head, packet_size, packet_type, buffer,
+            CopyPacket(unit, request, packet_size, packet_type, buffer,
                base);
          }
       }
@@ -1987,6 +1979,10 @@ static VOID CopyPacket(struct DevUnit *unit, struct IOSana2Req *request,
       if(!CallHookPkt(opener->filter_hook, request, buffer))
          filtered = TRUE;
 
+   /* A rejected packet leaves the request queued for the next one */
+   if(filtered)
+      RequeueRequest(&opener->read_port, request);
+
    if(!filtered)
    {
       /* Copy packet into opener's buffer and reply packet */
@@ -1999,7 +1995,6 @@ static VOID CopyPacket(struct DevUnit *unit, struct IOSana2Req *request,
             S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_RX,
             base);
       }
-      Remove((APTR)request);
       ReplyMsg((APTR)request);
    }
 
@@ -2123,251 +2118,259 @@ static VOID SaveBeacon(struct DevUnit *unit, const UBYTE *frame,
 
 static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a6, APTR int_code))
 {
-   UWORD i, packet_size, send_size, packet_type, data_size, body_size = 0,
-      frame_id, encryption, control_value, subtype;
-   UBYTE *buffer, *desc = unit->tx_descriptor, *plaintext, *ciphertext,
-      *header, mic_header[ETH_ADDRESSSIZE * 2], *q;
-   const UBYTE *p, *dest, *source;
-   struct DevBase *base;
-   struct IOSana2Req *request;
-   BOOL is_ieee;
-   struct Opener *opener;
-   ULONG wire_error;
-   UBYTE *(*dma_tx_function)(REG(a0, APTR));
-   BYTE error = 0;
-   struct MsgPort *port;
-   struct TypeStats *tracker;
+   /* One Tx producer at a time; see Sana2TxGate */
+   if(!Sana2TxGateEnter(&unit->tx_gate))
+      return;
 
-   base = unit->device;
-   port = unit->request_ports[WRITE_QUEUE];
-
-   if(unit->tx_frame_id != 0 && !IsMsgPortEmpty(port))
+   do
    {
-      /* Get next request and full packet size */
+      UWORD i, packet_size, send_size, packet_type, data_size, body_size = 0,
+         frame_id, encryption, control_value, subtype;
+      UBYTE *buffer, *desc = unit->tx_descriptor, *plaintext, *ciphertext,
+         *header, mic_header[ETH_ADDRESSSIZE * 2], *q;
+      const UBYTE *p, *dest, *source;
+      struct DevBase *base;
+      struct IOSana2Req *request;
+      BOOL is_ieee;
+      struct Opener *opener;
+      ULONG wire_error;
+      UBYTE *(*dma_tx_function)(REG(a0, APTR));
+      BYTE error = 0;
+      struct MsgPort *port;
+      struct TypeStats *tracker;
 
-      request = (APTR)port->mp_MsgList.lh_Head;
-      packet_size = request->ios2_DataLength;
-      if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-         packet_size += ETH_PACKET_DATA;
+      base = unit->device;
+      port = unit->request_ports[WRITE_QUEUE];
 
-      /* Determine encryption type and frame subtype */
+      /* Get next request, dequeued under the port's lock */
 
-      if(packet_size > ETH_HEADERSIZE)
+      if(unit->tx_frame_id != 0 && (request = (APTR)GetMsg(port)) != NULL)
       {
-         encryption = unit->keys[unit->tx_key_no].type;
-         subtype = 0;
-      }
-      else
-      {
-         encryption = S2ENC_NONE;
-         subtype = 4;
-      }
+         /* Get full packet size */
 
-      /* Get packet data */
+         packet_size = request->ios2_DataLength;
+         if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+            packet_size += ETH_PACKET_DATA;
 
-      opener = request->ios2_BufferManagement;
-      dma_tx_function = opener->dma_tx_function;
-      if(dma_tx_function != NULL)
-         buffer = dma_tx_function(request->ios2_Data);
-      else
-         buffer = NULL;
+         /* Determine encryption type and frame subtype */
 
-      if(buffer == NULL)
-      {
-         buffer = unit->tx_buffer;
-         if(!opener->tx_function(buffer, request->ios2_Data,
-            request->ios2_DataLength))
+         if(packet_size > ETH_HEADERSIZE)
          {
-            error = S2ERR_NO_RESOURCES;
-            wire_error = S2WERR_BUFF_ERROR;
-            ReportEvents(unit,
-               S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_TX,
-               base);
-         }
-      }
-
-      if(error == 0)
-      {
-         /* Get packet type and/or length */
-
-         data_size = request->ios2_DataLength;
-         if((request->ios2_Req.io_Flags & SANA2IOF_RAW) != 0)
-         {
-            data_size -= ETH_PACKET_DATA;
-            packet_type = BEWord(*(UWORD *)(buffer + ETH_PACKET_TYPE));
-         }
-         else
-            packet_type = request->ios2_PacketType;
-         is_ieee = packet_type <= ETH_MTU;
-
-         /* Get source and destination addresses */
-
-         if((request->ios2_Req.io_Flags & SANA2IOF_RAW) != 0)
-         {
-            dest = buffer;
-            source = buffer + ETH_ADDRESSSIZE;
-            buffer += ETH_ADDRESSSIZE * 2 + 2;
+            encryption = unit->keys[unit->tx_key_no].type;
+            subtype = 0;
          }
          else
          {
-            dest = request->ios2_DstAddr;
-            source = unit->address;
+            encryption = S2ENC_NONE;
+            subtype = 4;
          }
 
-         /* Clear frame descriptor as far as start of 802.11 header */
+         /* Get packet data */
 
-         q = desc;
-         for(i = 0; i < P2_FRM_HEADER; i++)
-            *q++ = 0;
-         header = q;
-
-         /* Set TX control field */
-
-         control_value = P2_FRM_TXCONTROLF_NATIVE;
-         if(encryption == S2ENC_TKIP && (unit->flags & UNITF_HARDTKIP) != 0)
-            control_value |= unit->tx_key_no << P2_FRM_TXCONTROLB_MICKEYID
-               | P2_FRM_TXCONTROLF_MIC;
-         else if(encryption == S2ENC_NONE
-            && unit->firmware_type < LUCENT_FIRMWARE)
-            control_value |= P2_FRM_TXCONTROLF_NOENC;
-
-         *(UWORD *)(desc + unit->txcontrol_offset) =
-            MakeLEWord(control_value);
-
-         /* Write 802.11 header */
-
-         *(UWORD *)q = MakeLEWord(
-            (encryption == S2ENC_NONE ? 0 : WIFI_FRM_CONTROLF_WEP)
-            | (unit->mode == S2PORT_ADHOC ? 0 : WIFI_FRM_CONTROLF_TODS)
-            | subtype << WIFI_FRM_CONTROLB_SUBTYPE
-            | WIFI_FRMTYPE_DATA << WIFI_FRM_CONTROLB_TYPE);
-         q += 2;
-
-         *(UWORD *)q = 0;
-         q += 2;
-
-         if(unit->mode == S2PORT_ADHOC)
-            p = dest;
+         opener = request->ios2_BufferManagement;
+         dma_tx_function = opener->dma_tx_function;
+         if(dma_tx_function != NULL)
+            buffer = dma_tx_function(request->ios2_Data);
          else
-            p = unit->bssid;
-         for(i = 0; i < ETH_ADDRESSSIZE; i++)
-            *q++ = *p++;
+            buffer = NULL;
 
-         for(i = 0, p = source; i < ETH_ADDRESSSIZE; i++)
-            *q++ = *p++;
-
-         if(unit->mode == S2PORT_ADHOC)
-            p = unit->bssid;
-         else
-            p = dest;
-         for(i = 0; i < ETH_ADDRESSSIZE; i++)
-            *q++ = *p++;
-         *(UWORD *)q = 0;
-
-         /* Clear 802.3 header */
-
-         q = desc + unit->ethernet_offset;
-         for(i = 0; i < ETH_HEADERSIZE; i++)
-            *q++ = 0;
-
-         /* Leave room for encryption overhead */
-
-         q = desc + unit->data_offset;
-         ciphertext = q;
-         q += unit->iv_sizes[encryption];
-         plaintext = q;
-
-         /* Write SNAP header */
-
-         if(!is_ieee)
+         if(buffer == NULL)
          {
-            for(i = 0, p = snap_template; i < SNAP_FRM_TYPE; i++)
-               *q++ = *p++;
-            *(UWORD *)q = MakeBEWord(packet_type);
+            buffer = unit->tx_buffer;
+            if(!opener->tx_function(buffer, request->ios2_Data,
+               request->ios2_DataLength))
+            {
+               error = S2ERR_NO_RESOURCES;
+               wire_error = S2WERR_BUFF_ERROR;
+               ReportEvents(unit,
+                  S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF | S2EVENT_TX,
+                  base);
+            }
+         }
+
+         if(error == 0)
+         {
+            /* Get packet type and/or length */
+
+            data_size = request->ios2_DataLength;
+            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) != 0)
+            {
+               data_size -= ETH_PACKET_DATA;
+               packet_type = BEWord(*(UWORD *)(buffer + ETH_PACKET_TYPE));
+            }
+            else
+               packet_type = request->ios2_PacketType;
+            is_ieee = packet_type <= ETH_MTU;
+
+            /* Get source and destination addresses */
+
+            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) != 0)
+            {
+               dest = buffer;
+               source = buffer + ETH_ADDRESSSIZE;
+               buffer += ETH_ADDRESSSIZE * 2 + 2;
+            }
+            else
+            {
+               dest = request->ios2_DstAddr;
+               source = unit->address;
+            }
+
+            /* Clear frame descriptor as far as start of 802.11 header */
+
+            q = desc;
+            for(i = 0; i < P2_FRM_HEADER; i++)
+               *q++ = 0;
+            header = q;
+
+            /* Set TX control field */
+
+            control_value = P2_FRM_TXCONTROLF_NATIVE;
+            if(encryption == S2ENC_TKIP && (unit->flags & UNITF_HARDTKIP) != 0)
+               control_value |= unit->tx_key_no << P2_FRM_TXCONTROLB_MICKEYID
+                  | P2_FRM_TXCONTROLF_MIC;
+            else if(encryption == S2ENC_NONE
+               && unit->firmware_type < LUCENT_FIRMWARE)
+               control_value |= P2_FRM_TXCONTROLF_NOENC;
+
+            *(UWORD *)(desc + unit->txcontrol_offset) =
+               MakeLEWord(control_value);
+
+            /* Write 802.11 header */
+
+            *(UWORD *)q = MakeLEWord(
+               (encryption == S2ENC_NONE ? 0 : WIFI_FRM_CONTROLF_WEP)
+               | (unit->mode == S2PORT_ADHOC ? 0 : WIFI_FRM_CONTROLF_TODS)
+               | subtype << WIFI_FRM_CONTROLB_SUBTYPE
+               | WIFI_FRMTYPE_DATA << WIFI_FRM_CONTROLB_TYPE);
             q += 2;
-            body_size += SNAP_HEADERSIZE;
-         }
 
-         /* Copy data into frame */
+            *(UWORD *)q = 0;
+            q += 2;
 
-         CopyMem(buffer, q, data_size);
-         body_size += data_size;
-
-         /* Append MIC to frame for TKIP */
-
-         if(encryption == S2ENC_TKIP)
-         {
-            q = mic_header;
-            for(i = 0, p = dest; i < ETH_ADDRESSSIZE; i++)
+            if(unit->mode == S2PORT_ADHOC)
+               p = dest;
+            else
+               p = unit->bssid;
+            for(i = 0; i < ETH_ADDRESSSIZE; i++)
                *q++ = *p++;
+
             for(i = 0, p = source; i < ETH_ADDRESSSIZE; i++)
                *q++ = *p++;
-            TKIPEncryptFrame(unit, mic_header, plaintext, body_size,
-               plaintext, base);
-            body_size += MIC_SIZE;
+
+            if(unit->mode == S2PORT_ADHOC)
+               p = unit->bssid;
+            else
+               p = dest;
+            for(i = 0; i < ETH_ADDRESSSIZE; i++)
+               *q++ = *p++;
+            *(UWORD *)q = 0;
+
+            /* Clear 802.3 header */
+
+            q = desc + unit->ethernet_offset;
+            for(i = 0; i < ETH_HEADERSIZE; i++)
+               *q++ = 0;
+
+            /* Leave room for encryption overhead */
+
+            q = desc + unit->data_offset;
+            ciphertext = q;
+            q += unit->iv_sizes[encryption];
+            plaintext = q;
+
+            /* Write SNAP header */
+
+            if(!is_ieee)
+            {
+               for(i = 0, p = snap_template; i < SNAP_FRM_TYPE; i++)
+                  *q++ = *p++;
+               *(UWORD *)q = MakeBEWord(packet_type);
+               q += 2;
+               body_size += SNAP_HEADERSIZE;
+            }
+
+            /* Copy data into frame */
+
+            CopyMem(buffer, q, data_size);
+            body_size += data_size;
+
+            /* Append MIC to frame for TKIP */
+
+            if(encryption == S2ENC_TKIP)
+            {
+               q = mic_header;
+               for(i = 0, p = dest; i < ETH_ADDRESSSIZE; i++)
+                  *q++ = *p++;
+               for(i = 0, p = source; i < ETH_ADDRESSSIZE; i++)
+                  *q++ = *p++;
+               TKIPEncryptFrame(unit, mic_header, plaintext, body_size,
+                  plaintext, base);
+               body_size += MIC_SIZE;
+            }
+
+            /* Encrypt fragment if applicable */
+
+            unit->fragment_encrypt_functions[encryption](unit, header,
+               plaintext, &body_size, ciphertext, base);
+
+            /* Calculate total length of data to send to adapter */
+
+            send_size = unit->data_offset + body_size;
+
+            /* Fill in length field, adjusting for Hermes peculiarities */
+
+            if(unit->firmware_type >= LUCENT_FIRMWARE
+               && encryption == S2ENC_TKIP)
+               body_size -= MIC_SIZE;
+
+            if(unit->firmware_type == LUCENT_FIRMWARE
+               && (unit->flags & UNITF_HARDTKIP) != 0)
+               *(UWORD *)(desc + unit->ethernet_offset + ETH_PACKET_IEEELEN) =
+                  MakeBEWord(body_size);
+            else
+               *(UWORD *)(desc + unit->datalen_offset) = MakeLEWord(body_size);
+
+            /* Write packet to adapter and send */
+
+            frame_id = unit->tx_frame_id;
+            P2Seek(unit, 0, frame_id, 0, base);
+            unit->WordsOut(unit->card, P2_REG_DATA0, (UWORD *)desc,
+               (send_size + 1) / 2);
+            unit->tx_frame_id = 0;
+            P2DoCmd(unit, P2_CMD_TX | P2_CMDF_RECLAIM, frame_id, base);
          }
 
-         /* Encrypt fragment if applicable */
+         /* Reply request */
 
-         unit->fragment_encrypt_functions[encryption](unit, header,
-            plaintext, &body_size, ciphertext, base);
+         request->ios2_Req.io_Error = error;
+         request->ios2_WireError = wire_error;
+         ReplyMsg((APTR)request);
 
-         /* Calculate total length of data to send to adapter */
+         /* Update statistics */
 
-         send_size = unit->data_offset + body_size;
-
-         /* Fill in length field, adjusting for Hermes peculiarities */
-
-         if(unit->firmware_type >= LUCENT_FIRMWARE
-            && encryption == S2ENC_TKIP)
-            body_size -= MIC_SIZE;
-
-         if(unit->firmware_type == LUCENT_FIRMWARE
-            && (unit->flags & UNITF_HARDTKIP) != 0)
-            *(UWORD *)(desc + unit->ethernet_offset + ETH_PACKET_IEEELEN) =
-               MakeBEWord(body_size);
-         else
-            *(UWORD *)(desc + unit->datalen_offset) = MakeLEWord(body_size);
-
-         /* Write packet to adapter and send */
-
-         frame_id = unit->tx_frame_id;
-         P2Seek(unit, 0, frame_id, 0, base);
-         unit->WordsOut(unit->card, P2_REG_DATA0, (UWORD *)desc,
-            (send_size + 1) / 2);
-         unit->tx_frame_id = 0;
-         P2DoCmd(unit, P2_CMD_TX | P2_CMDF_RECLAIM, frame_id, base);
-      }
-
-      /* Reply request */
-
-      request->ios2_Req.io_Error = error;
-      request->ios2_WireError = wire_error;
-      Remove((APTR)request);
-      ReplyMsg((APTR)request);
-
-      /* Update statistics */
-
-      if(error == 0)
-      {
-         unit->stats.PacketsSent++;
-
-         tracker = FindTypeStats(unit, &unit->type_trackers,
-            request->ios2_PacketType, base);
-         if(tracker != NULL)
+         if(error == 0)
          {
-            tracker->stats.PacketsSent++;
-            tracker->stats.BytesSent += packet_size;
+            unit->stats.PacketsSent++;
+
+            tracker = FindTypeStats(unit, &unit->type_trackers,
+               request->ios2_PacketType, base);
+            if(tracker != NULL)
+            {
+               tracker->stats.PacketsSent++;
+               tracker->stats.BytesSent += packet_size;
+            }
          }
       }
+
+      /* Don't try to keep sending packets if there's no space left */
+
+      if(unit->tx_frame_id != 0)
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
+      else
+         unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
    }
-
-   /* Don't try to keep sending packets if there's no space left */
-
-   if(unit->tx_frame_id != 0)
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-   else
-      unit->request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+   while(Sana2TxGateLeave(&unit->tx_gate));
 
    return;
 }
@@ -2675,27 +2678,7 @@ static VOID ResetHandler(REG(a1, struct DevUnit *unit),
 static VOID ReportEvents(struct DevUnit *unit, ULONG events,
    struct DevBase *base)
 {
-   struct IOSana2Req *request, *tail, *next_request;
-   struct List *list;
-
-   list = &unit->request_ports[EVENT_QUEUE]->mp_MsgList;
-   next_request = (APTR)list->lh_Head;
-   tail = (APTR)&list->lh_Tail;
-
-   Disable();
-   while(next_request != tail)
-   {
-      request = next_request;
-      next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-      if((request->ios2_WireError & events) != 0)
-      {
-         request->ios2_WireError = events;
-         Remove((APTR)request);
-         ReplyMsg((APTR)request);
-      }
-   }
-   Enable();
+   ReplyEventRequests(unit->request_ports[EVENT_QUEUE], events);
 
    return;
 }
@@ -2727,8 +2710,7 @@ static VOID ReportEvents(struct DevUnit *unit, ULONG events,
 static VOID SendScanResults(struct DevUnit *unit, struct DevBase *base)
 {
    BYTE error = 0;
-   struct IOSana2Req *request, *tail, *next_request;
-   struct List *list;
+   struct IOSana2Req *request;
    APTR pool;
    UWORD count, i, j, ssid_length, length, entry_length, *ap_rec,
       data_length, frame_length, ies_length;
@@ -2737,14 +2719,10 @@ static VOID SendScanResults(struct DevUnit *unit, struct DevBase *base)
    const UBYTE *beacon, *ie_bssid;
    TEXT *ssid;
 
-   list = &unit->request_ports[SCAN_QUEUE]->mp_MsgList;
-   next_request = (APTR)list->lh_Head;
-   tail = (APTR)&list->lh_Tail;
+   /* Each request is dequeued under the port's lock */
 
-   while(next_request != tail)
+   while((request = (APTR)GetMsg(unit->request_ports[SCAN_QUEUE])) != NULL)
    {
-      request = next_request;
-      next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
 
       pool = request->ios2_Data;
 
@@ -2888,7 +2866,6 @@ static VOID SendScanResults(struct DevUnit *unit, struct DevBase *base)
          request->ios2_Req.io_Error = error;
          request->ios2_WireError = S2WERR_GENERIC_ERROR;
       }
-      Remove((APTR)request);
       ReplyMsg((APTR)request);
    }
 

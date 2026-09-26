@@ -41,6 +41,7 @@
 
 #include <proto/exec.h>
 #include <aros/debug.h>
+#include "../sana2_portlock.h"
 
 #include LC_LIBDEFS_FILE
 
@@ -232,6 +233,7 @@ struct SiS900Unit {
                             dirty_tx;
     
     UBYTE                   autong_complete; /* 1: auto-negotiate complete  */
+    struct Sana2TxGate sis900u_txgate;   /* one Tx producer at a time on SMP */
 };
 
 void handle_request(LIBBASETYPEPTR, struct IOSana2Req *);

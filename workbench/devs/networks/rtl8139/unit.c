@@ -41,6 +41,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/dos.h>
 #include <proto/oop.h>
 #include <proto/timer.h>
@@ -58,31 +59,9 @@
  */
 VOID ReportEvents(struct RTL8139Base *RTL8139DeviceBase, struct RTL8139Unit *unit, ULONG events)
 {
-	struct IOSana2Req *request, *tail, *next_request;
-	struct List *list;
+    ReplyEventRequests(unit->rtl8139u_request_ports[EVENT_QUEUE], events);
 
-	list = &unit->rtl8139u_request_ports[EVENT_QUEUE]->mp_MsgList;
-	next_request = (APTR)list->lh_Head;
-	tail = (APTR)&list->lh_Tail;
-
-	/* Go through list of event listeners. If send messages to receivers if event found */
-	Disable();
-	while(next_request != tail)
-	{
-		request = next_request;
-		next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-		if((request->ios2_WireError&events) != 0)
-		{
-			/* Report only the events that were both requested and raised */
-			request->ios2_WireError &= events;
-			Remove((APTR)request);
-			ReplyMsg((APTR)request);
-		}
-	}
-	Enable();
-
-	return;
+    return;
 }
 
 struct TypeStats *FindTypeStats(struct RTL8139Base *RTL8139DeviceBase, struct RTL8139Unit *unit, 
@@ -158,7 +137,7 @@ void RTL8139_RX_Process(struct RTL8139Unit *unit)
 	struct TypeStats *tracker;
 	UWORD packet_type;	/* unsigned: IPv6 ethertype 0x86dd must not sign-extend */
 	struct Opener *opener, *opener_tail;
-	struct IOSana2Req *request, *request_tail;
+	struct IOSana2Req *request;
 	BOOL accepted, is_orphan;
 
 RTLD(bug("[%s] RTL8139_RX_Process() !!!!\n", unit->rtl8139u_name))
@@ -252,22 +231,15 @@ RTLD(bug("[%s] RTL8139_RX_Process: Packet IP accepted with type = %d\n", unit->r
 				/* Offer packet to every opener */
 				while(opener != opener_tail)
 				{
-					request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-					request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
 					accepted = FALSE;
 
-					/* Offer packet to each request until it's accepted */
-					while((request != request_tail) && !accepted)
+					/* First matching request, taken off the read port under its lock */
+					request = TakeMatchingRequest(&opener->read_port, packet_type, TRUE, ETH_MTU);
+					if (request != NULL)
 					{
-						if((request->ios2_PacketType == packet_type)
-						  || ((request->ios2_PacketType <= ETH_MTU)
-						  && (packet_type <= ETH_MTU)))
-						{
 RTLD(bug("[%s] RTL8139_RX_Process: copy packet for opener ..\n", unit->rtl8139u_name))
-							CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
-							accepted = TRUE;
-						}
-						request = (struct IOSana2Req *)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+					    CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
+					    accepted = TRUE;
 					}
 
 					if(accepted)
@@ -283,11 +255,10 @@ RTLD(bug("[%s] RTL8139_RX_Process: copy packet for opener ..\n", unit->rtl8139u_
 				{
 					unit->rtl8139u_stats.UnknownTypesReceived++;
 
-					if(!IsMsgPortEmpty(unit->rtl8139u_request_ports[ADOPT_QUEUE]))
+					request = (APTR)GetMsg(unit->rtl8139u_request_ports[ADOPT_QUEUE]);
+					if (request != NULL)
 					{
-						CopyPacket(LIBBASE, unit,
-						  (APTR)unit->rtl8139u_request_ports[ADOPT_QUEUE]->
-						  mp_MsgList.lh_Head, len, packet_type, frame);
+						CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
 RTLD(bug("[%s] RTL8139_RX_Process: packet copied to orphan queue\n", unit->rtl8139u_name))
 					}
 				}
@@ -327,7 +298,15 @@ static AROS_INTH1(RTL8139_TX_IntF, struct RTL8139Unit *,  unit)
 	struct Device *TimerBase = unit->rtl8139u_TimerSlowReq->tr_node.io_Device;
 	struct timeval time;
 	int nr;
-	BOOL proceed = FALSE; /* Fails by default */
+	BOOL proceed;
+
+	/* One producer at a time; see Sana2TxGate */
+	if (!Sana2TxGateEnter(&unit->rtl8139u_txgate))
+		return FALSE;
+
+	do
+	{
+	proceed = FALSE; /* Fails by default */
 
 	Disable();
 	RTLD(bug("[%s] RTL8139_TX_IntF()\n", unit->rtl8139u_name))
@@ -354,7 +333,10 @@ static AROS_INTH1(RTL8139_TX_IntF, struct RTL8139Unit *,  unit)
 			nr = np->tx_current % NUM_TX_DESC;
 			error = 0;
 
-			request = (APTR)port->mp_MsgList.lh_Head;
+			/* Dequeued under the port's lock */
+			request = (APTR)GetMsg(port);
+			if (request == NULL)
+			    break;
 			data_size = packet_size = request->ios2_DataLength;
 
 			opener = (APTR)request->ios2_BufferManagement;
@@ -418,9 +400,6 @@ RTLD(bug("[%s] RTL8139_TX_IntF: packet %d  @ %p [type = %d] queued for transmiss
 			/* Reply packet */
 			request->ios2_Req.io_Error = error;
 			request->ios2_WireError = wire_error;
-			Disable();
-			Remove((APTR)request);
-			Enable();
 			ReplyMsg((APTR)request);
 
 			/* Update statistics */
@@ -466,6 +445,7 @@ RTLD(bug("[%s] output queue full!. Stopping [NUM_TX_DESC = %d]\n", unit->rtl8139
 		unit->rtl8139u_toutNEED = TRUE;
 	}
 	Enable();
+	} while (Sana2TxGateLeave(&unit->rtl8139u_txgate));
 
 	return FALSE;
 
@@ -695,6 +675,10 @@ RTLD(bug("[%s] CopyPacket: packet filtered\n", unit->rtl8139u_name))
 			filtered = TRUE;
 		}
 
+	/* A rejected packet leaves the request queued for the next one */
+	if(filtered)
+		RequeueRequest(&opener->read_port, request);
+
 	if(!filtered)
 	{
 		/* Copy packet into opener's buffer and reply packet */
@@ -710,9 +694,6 @@ RTLD(bug("ERROR occured!!\n"))
 		{
 RTLD(bug("SUCCESS!!\n"))
 		}
-		Disable();
-		Remove((APTR)request);
-		Enable();
 		ReplyMsg((APTR)request);
 RTLD(bug("[%s] CopyPacket: opener notified.\n", unit->rtl8139u_name))
 	}

@@ -12,6 +12,7 @@
 #include <devices/sana2specialstats.h>
 
 #include "mal.h"
+#include "../sana2_portlock.h"
 
 #define EMAC_TASK1_NAME      "IBM EMAC0 task"
 #define EMAC_TASK2_NAME      "IBM EMAC1 task"
@@ -177,6 +178,7 @@ struct EMACUnit {
 
     struct MsgPort      eu_TimerPort;
     struct timerequest  eu_TimerRequest;
+    struct Sana2TxGate eu_TXGate;   /* one Tx producer at a time on SMP */
 };
 
 void EMAC_Startup(struct EMACUnit *unit);

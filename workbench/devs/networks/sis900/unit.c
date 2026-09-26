@@ -37,6 +37,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/dos.h>
 #include <proto/oop.h>
 #include <proto/timer.h>
@@ -55,28 +56,7 @@
  */
 VOID ReportEvents(struct SiS900Base *SiS900DeviceBase, struct SiS900Unit *unit, ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next_request;
-    struct List *list;
-
-    list = &unit->sis900u_request_ports[EVENT_QUEUE]->mp_MsgList;
-    next_request = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
-
-    /* Go through list of event listeners. If send messages to receivers if event found */
-    Disable();
-    while(next_request != tail)
-    {
-        request = next_request;
-        next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-        if((request->ios2_WireError&events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            ReplyMsg((APTR)request);
-        }
-    }
-    Enable();
+    ReplyEventRequests(unit->sis900u_request_ports[EVENT_QUEUE], events);
 
     return;
 }
@@ -156,7 +136,7 @@ static AROS_INTH1(SiS900_RX_IntF, struct SiS900Unit *, unit)
     struct TypeStats *tracker;
     UWORD packet_type;	/* unsigned: IPv6 ethertype 0x86dd must not sign-extend */
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     BOOL accepted, is_orphan;
 
 	unsigned int entry = unit->cur_rx % NUM_RX_DESC;
@@ -229,23 +209,15 @@ D(bug("[%s]: SiS900_RX_IntF: Packet IP accepted with type = %d\n", unit->sis900u
 				/* Offer packet to every opener */
 				while(opener != opener_tail)
 				{
-				   request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-				   request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
 				   accepted = FALSE;
 
-				   /* Offer packet to each request until it's accepted */
-				   while((request != request_tail) && !accepted)
+				   /* First matching request, taken off the read port under its lock */
+				   request = TakeMatchingRequest(&opener->read_port, packet_type, TRUE, ETH_MTU);
+				   if (request != NULL)
 				   {
-					  if((request->ios2_PacketType == packet_type)
-						 || ((request->ios2_PacketType <= ETH_MTU)
-							  && (packet_type <= ETH_MTU)))
-					  {
-D(bug("[%s]: SiS900_RX_IntF: copy packet for opener ..\n", unit->sis900u_name));
-						 CopyPacket(LIBBASE, unit, request, rx_size, packet_type, frame);
-						 accepted = TRUE;
-					  }
-					  request =
-						 (struct IOSana2Req *)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+				       D(bug("[%s]: SiS900_RX_IntF: copy packet for opener ..\n", unit->sis900u_name));
+				       CopyPacket(LIBBASE, unit, request, rx_size, packet_type, frame);
+				       accepted = TRUE;
 				   }
 
 				   if(accepted)
@@ -259,11 +231,10 @@ D(bug("[%s]: SiS900_RX_IntF: copy packet for opener ..\n", unit->sis900u_name));
 				{
 					unit->sis900u_stats.UnknownTypesReceived++;
 
-					if(!IsMsgPortEmpty(unit->sis900u_request_ports[ADOPT_QUEUE]))
+					request = (APTR)GetMsg(unit->sis900u_request_ports[ADOPT_QUEUE]);
+					if (request != NULL)
 					{
-						CopyPacket(LIBBASE, unit,
-							(APTR)unit->sis900u_request_ports[ADOPT_QUEUE]->
-							mp_MsgList.lh_Head, rx_size, packet_type, frame);
+						CopyPacket(LIBBASE, unit, request, rx_size, packet_type, frame);
 D(bug("[%s]: SiS900_RX_IntF: packet copied to orphan queue\n", unit->sis900u_name));
 					}
 				}
@@ -301,127 +272,135 @@ static AROS_INTH1(SiS900_TX_IntF, struct SiS900Unit *,unit)
 {
     AROS_INTFUNC_INIT
 
-    struct SiS900Base *SiS900DeviceBase = unit->sis900u_device;
-	long ioaddr = unit->sis900u_BaseMem;
-    BOOL proceed = FALSE; /* Fails by default */
+    /* One Tx producer at a time; see Sana2TxGate */
+    if (!Sana2TxGateEnter(&unit->sis900u_txgate))
+        return FALSE;
 
-	unsigned int  entry;
-	unsigned int  index_cur_tx, index_dirty_tx;
-	unsigned int  count_dirty_tx;
+    do
+    {
+        struct SiS900Base *SiS900DeviceBase = unit->sis900u_device;
+    	long ioaddr = unit->sis900u_BaseMem;
+        BOOL proceed = FALSE; /* Fails by default */
+
+    	unsigned int  entry;
+    	unsigned int  index_cur_tx, index_dirty_tx;
+    	unsigned int  count_dirty_tx;
 	
 D(bug("[%s]: SiS900_TX_IntF()\n", unit->sis900u_name));
 
-    /* send packet only if there is free space on tx queue. Otherwise do nothing */
-    if (!netif_queue_stopped(unit))
-    {
-        UWORD packet_size, data_size;
-        struct IOSana2Req *request;
-        struct Opener *opener;
-        UBYTE *buffer;
-        ULONG wire_error=0;
-        BYTE error;
-        struct MsgPort *port;
-        struct TypeStats *tracker;
-
-        proceed = TRUE; /* Success by default */
-        port = unit->sis900u_request_ports[WRITE_QUEUE];
-
-        /* Still no error and there are packets to be sent? */
-        while(proceed && (!IsMsgPortEmpty(port)))
+        /* send packet only if there is free space on tx queue. Otherwise do nothing */
+        if (!netif_queue_stopped(unit))
         {
-			entry = unit->cur_tx % NUM_TX_DESC;
-            error = 0;
+            UWORD packet_size, data_size;
+            struct IOSana2Req *request;
+            struct Opener *opener;
+            UBYTE *buffer;
+            ULONG wire_error=0;
+            BYTE error;
+            struct MsgPort *port;
+            struct TypeStats *tracker;
 
-			request = (APTR)port->mp_MsgList.lh_Head;
-			data_size = packet_size = request->ios2_DataLength;
+            proceed = TRUE; /* Success by default */
+            port = unit->sis900u_request_ports[WRITE_QUEUE];
 
-			opener = (APTR)request->ios2_BufferManagement;
+            /* Still no error and there are packets to be sent? */
+            while(proceed && (!IsMsgPortEmpty(port)))
+            {
+    			entry = unit->cur_tx % NUM_TX_DESC;
+                error = 0;
 
-			if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-			{
-				packet_size += ETH_PACKET_DATA;
-				CopyMem(request->ios2_DstAddr, &((struct eth_frame *)unit->tx_buffers[entry])->eth_packet_dest, ETH_ADDRESSSIZE);
-				CopyMem(unit->sis900u_dev_addr, &((struct eth_frame *)unit->tx_buffers[entry])->eth_packet_source, ETH_ADDRESSSIZE);
-				((struct eth_frame *)unit->tx_buffers[entry])->eth_packet_type = AROS_WORD2BE(request->ios2_PacketType);
+    			/* Dequeued under the port's lock */
+    			request = (APTR)GetMsg(port);
+    			if (request == NULL)
+    			    break;
+    			data_size = packet_size = request->ios2_DataLength;
 
-				buffer = (UBYTE *)&((struct eth_frame *)(IPTR)unit->tx_buffers[entry])->eth_packet_data;
-			}
-			else
-				buffer = unit->tx_buffers[entry];
+    			opener = (APTR)request->ios2_BufferManagement;
 
-			if (!opener->tx_function(buffer, request->ios2_Data, data_size))
-			{
-				error = S2ERR_NO_RESOURCES;
-				wire_error = S2WERR_BUFF_ERROR;
-				ReportEvents(LIBBASE, unit,
-					S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
-					| S2EVENT_TX);
-			}
+    			if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+    			{
+    				packet_size += ETH_PACKET_DATA;
+    				CopyMem(request->ios2_DstAddr, &((struct eth_frame *)unit->tx_buffers[entry])->eth_packet_dest, ETH_ADDRESSSIZE);
+    				CopyMem(unit->sis900u_dev_addr, &((struct eth_frame *)unit->tx_buffers[entry])->eth_packet_source, ETH_ADDRESSSIZE);
+    				((struct eth_frame *)unit->tx_buffers[entry])->eth_packet_type = AROS_WORD2BE(request->ios2_PacketType);
 
-			/* Now the packet is already in TX buffer, update flags for NIC */
-			if (error == 0)
-			{
-				Disable();
+    				buffer = (UBYTE *)&((struct eth_frame *)(IPTR)unit->tx_buffers[entry])->eth_packet_data;
+    			}
+    			else
+    				buffer = unit->tx_buffers[entry];
+
+    			if (!opener->tx_function(buffer, request->ios2_Data, data_size))
+    			{
+    				error = S2ERR_NO_RESOURCES;
+    				wire_error = S2WERR_BUFF_ERROR;
+    				ReportEvents(LIBBASE, unit,
+    					S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
+    					| S2EVENT_TX);
+    			}
+
+    			/* Now the packet is already in TX buffer, update flags for NIC */
+    			if (error == 0)
+    			{
+    				Disable();
 D(bug("[%s]: SiS900_TX_IntF: packet %d  @ %x [type = %d] queued for transmission.", unit->sis900u_name, entry, unit->tx_buffers[entry], ((struct eth_frame *)unit->tx_buffers[entry])->eth_packet_type));
 
-			  /* DEBUG? Dump frame if so */
+    			  /* DEBUG? Dump frame if so */
 #ifdef DEBUG
-				{
-					int j;
-					for (j=0; j<64; j++) {
-						if ((j%16) == 0)
-							D(bug("\n%03x:", j));
-						D(bug(" %02x", ((unsigned char*)unit->tx_buffers[entry])[j]));
-					}
-					D(bug("\n"));
-				}
+    				{
+    					int j;
+    					for (j=0; j<64; j++) {
+    						if ((j%16) == 0)
+    							D(bug("\n%03x:", j));
+    						D(bug(" %02x", ((unsigned char*)unit->tx_buffers[entry])[j]));
+    					}
+    					D(bug("\n"));
+    				}
 #endif
 
-				Enable();
+    				Enable();
 
-				/* Set the ring details for the packet .. */
-				unit->tx_ring[entry].cmdsts = (OWN | packet_size);
-				LONGOUT(ioaddr + cr, TxENA | LONGIN(ioaddr + cr));
+    				/* Set the ring details for the packet .. */
+    				unit->tx_ring[entry].cmdsts = (OWN | packet_size);
+    				LONGOUT(ioaddr + cr, TxENA | LONGIN(ioaddr + cr));
 
-				unit->cur_tx ++;
-				index_cur_tx = unit->cur_tx;
-				index_dirty_tx = unit->dirty_tx;
+    				unit->cur_tx ++;
+    				index_cur_tx = unit->cur_tx;
+    				index_dirty_tx = unit->dirty_tx;
 
-				for (count_dirty_tx = 0; index_cur_tx != index_dirty_tx; index_dirty_tx++)
-					count_dirty_tx ++;
+    				for (count_dirty_tx = 0; index_cur_tx != index_dirty_tx; index_dirty_tx++)
+    					count_dirty_tx ++;
 
 D(bug("[%s]: SiS900_TX_IntF: Packet Queued.\n", unit->sis900u_name));
-			}
+    			}
 	
-			/* Reply packet */
+    			/* Reply packet */
 
-			request->ios2_Req.io_Error = error;
-			request->ios2_WireError = wire_error;
-			Disable();
-			Remove((APTR)request);
-			Enable();
-			ReplyMsg((APTR)request);
+    			request->ios2_Req.io_Error = error;
+    			request->ios2_WireError = wire_error;
+    			ReplyMsg((APTR)request);
 
-			/* Update statistics */
+    			/* Update statistics */
 
-			if(error == 0)
-			{
-				tracker = FindTypeStats(LIBBASE, unit, &unit->sis900u_type_trackers,
-					request->ios2_PacketType);
-				if(tracker != NULL)
-				{
-					tracker->stats.PacketsSent++;
-					tracker->stats.BytesSent += packet_size;
-				}
-			}
+    			if(error == 0)
+    			{
+    				tracker = FindTypeStats(LIBBASE, unit, &unit->sis900u_type_trackers,
+    					request->ios2_PacketType);
+    				if(tracker != NULL)
+    				{
+    					tracker->stats.PacketsSent++;
+    					tracker->stats.BytesSent += packet_size;
+    				}
+    			}
+            }
         }
-    }
 
-    /* Was there success? Enable incomming of new packets */    
-    if(proceed)
-        unit->sis900u_request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-    else
-        unit->sis900u_request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+        /* Was there success? Enable incomming of new packets */    
+        if(proceed)
+            unit->sis900u_request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
+        else
+            unit->sis900u_request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+    }
+    while (Sana2TxGateLeave(&unit->sis900u_txgate));
 
     return FALSE;
 
@@ -614,6 +593,10 @@ D(bug("[%s]: CopyPacket: packet filtered\n", unit->sis900u_name));
             filtered = TRUE;
         }
 
+    /* A rejected packet leaves the request queued for the next one */
+    if(filtered)
+        RequeueRequest(&opener->read_port, request);
+
     if(!filtered)
     {
         /* Copy packet into opener's buffer and reply packet */
@@ -629,9 +612,6 @@ D(bug("ERROR occured!!\n"));
         {
 D(bug("SUCCESS!!\n"));
         }
-        Disable();
-        Remove((APTR)request);
-        Enable();
         ReplyMsg((APTR)request);
 D(bug("[%s]: CopyPacket: opener notified.\n", unit->sis900u_name));
     }

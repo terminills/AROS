@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2025 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -67,6 +67,7 @@ typedef LONG PINT;
 
 #ifdef __AROS__
 #include <aros/debug.h>
+#include "../sana2_portlock.h"
 #define DebugPrintF kprintf
 #endif
 
@@ -281,6 +282,7 @@ struct DevUnit
    UWORD retries_offset;
    UWORD tx_desc_size;
    UWORD rx_desc_size;
+   struct Sana2TxGate tx_gate;   /* one Tx producer at a time on SMP */
 };
 
 

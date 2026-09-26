@@ -15,6 +15,7 @@
 #include <exec/tasks.h>
 #include <devices/sana2.h>
 #include <devices/sana2specialstats.h>
+#include "../sana2_portlock.h"
 
 /*
  * Two generations of this block share a name and almost nothing else.
@@ -372,6 +373,7 @@ struct DWMACUnit
     ULONG               dwu_TXHead;
     ULONG               dwu_TXTail;
     ULONG               dwu_RXCurrent;
+    struct Sana2TxGate dwu_TXGate;   /* one Tx producer at a time on SMP */
 };
 
 struct DWMACBase

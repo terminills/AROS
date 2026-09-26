@@ -14,6 +14,7 @@
 #include <devices/newstyle.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 
 #include "bcmgenet.h"
 
@@ -151,28 +152,18 @@ static BOOL CmdBroadcast(struct BCMGENETBase *base, struct IOSana2Req *request)
 /* Replies every request still queued for this unit with IOERR_ABORTED */
 static void BCMGENET_FlushUnit(struct BCMGENETUnit *unit)
 {
-    struct IOSana2Req *request, *tail, *next;
-    struct List *list;
+    struct IOSana2Req *request;
     ULONG q;
 
+    /* Each request is dequeued under its port's lock */
     for (q = 0; q < REQUEST_QUEUE_COUNT; q++)
     {
-        list = &unit->bgu_RequestPorts[q]->mp_MsgList;
-        next = (APTR)list->lh_Head;
-        tail = (APTR)&list->lh_Tail;
-
-        Disable();
-        while (next != tail)
+        while ((request = (APTR)GetMsg(unit->bgu_RequestPorts[q])) != NULL)
         {
-            request = next;
-            next = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-            Remove((APTR)request);
             request->ios2_Req.io_Error = IOERR_ABORTED;
             request->ios2_WireError = S2WERR_GENERIC_ERROR;
             ReplyMsg((APTR)request);
         }
-        Enable();
     }
 }
 

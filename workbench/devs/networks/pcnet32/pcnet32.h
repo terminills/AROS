@@ -40,6 +40,7 @@
 #include <devices/sana2specialstats.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <aros/debug.h>
 
 #include LC_LIBDEFS_FILE
@@ -215,11 +216,11 @@ struct PCN32Unit {
      * ring slot and take the same request off the write port. Disable()
      * serialises only one core, and a spinlock cannot be held across the
      * opener's tx_function (it takes semaphores). So the second core never
-     * blocks: it sets pcnu_txAgain and returns, and the core already in the
-     * producer drains again before releasing pcnu_txBusy - as e1000.
+     * blocks: it marks the gate and returns, and the core already in the
+     * producer drains again before it leaves (Sana2TxGate in
+     * sana2_portlock.h) - as e1000.
      */
-    volatile ULONG          pcnu_txBusy;
-    volatile ULONG          pcnu_txAgain;
+    struct Sana2TxGate      pcnu_txgate;
 
     STRPTR                  pcnu_name;
     ULONG                   pcnu_mtu;

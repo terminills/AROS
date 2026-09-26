@@ -37,6 +37,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/dos.h>
 #include <proto/oop.h>
 #include <proto/timer.h>
@@ -54,28 +55,7 @@
  */
 VOID ReportEvents(struct VIARHINEBase *VIARHINEDeviceBase, struct VIARHINEUnit *unit, ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next_request;
-    struct List *list;
-
-    list = &unit->rhineu_request_ports[EVENT_QUEUE]->mp_MsgList;
-    next_request = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
-
-    /* Go through list of event listeners. If send messages to receivers if event found */
-    Disable();
-    while(next_request != tail)
-    {
-        request = next_request;
-        next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-        if((request->ios2_WireError&events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            ReplyMsg((APTR)request);
-        }
-    }
-    Enable();
+    ReplyEventRequests(unit->rhineu_request_ports[EVENT_QUEUE], events);
 
     return;
 }
@@ -157,7 +137,7 @@ AROS_INTH1(VIARHINE_RX_IntF, struct VIARHINEUnit *, unit)
     struct TypeStats *tracker;
     ULONG packet_type;
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     BOOL accepted, is_orphan;
 
     UBYTE *base = (UBYTE*) unit->rhineu_BaseMem;
@@ -238,23 +218,15 @@ D(bug("%s: VIARHINE_RX_IntF: Packet IP accepted with type = %d, len = %d, desc_l
             /* Offer packet to every opener */
             while(opener != opener_tail)
             {
-               request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-               request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
                accepted = FALSE;
 
-               /* Offer packet to each request until it's accepted */
-               while((request != request_tail) && !accepted)
+               /* First matching request, taken off the read port under its lock */
+               request = TakeMatchingRequest(&opener->read_port, packet_type, TRUE, ETH_MTU);
+               if (request != NULL)
                {
-                  if((request->ios2_PacketType == packet_type)
-                     || ((request->ios2_PacketType <= ETH_MTU)
-                          && (packet_type <= ETH_MTU)))
-                  {
-D(bug("%s: VIARHINE_RX_IntF: copy packet for opener ..\n", unit->rhineu_name));
-                     CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
-                     accepted = TRUE;
-                  }
-                  request =
-                     (struct IOSana2Req *)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+                   D(bug("%s: VIARHINE_RX_IntF: copy packet for opener ..\n", unit->rhineu_name));
+                   CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
+                   accepted = TRUE;
                }
                if(accepted)
                   is_orphan = FALSE;
@@ -267,11 +239,10 @@ D(bug("%s: VIARHINE_RX_IntF: copy packet for opener ..\n", unit->rhineu_name));
             {
                 unit->rhineu_stats.UnknownTypesReceived++;
 
-                if(!IsMsgPortEmpty(unit->rhineu_request_ports[ADOPT_QUEUE]))
+                request = (APTR)GetMsg(unit->rhineu_request_ports[ADOPT_QUEUE]);
+                if (request != NULL)
                 {
-                    CopyPacket(LIBBASE, unit,
-                        (APTR)unit->rhineu_request_ports[ADOPT_QUEUE]->
-                        mp_MsgList.lh_Head, len, packet_type, frame);
+                    CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
 D(bug("%s: VIARHINE_RX_IntF: packet copied to orphan queue\n", unit->rhineu_name));
                 }
             }
@@ -312,128 +283,136 @@ AROS_INTH1(VIARHINE_TX_IntF, struct VIARHINEUnit *,  unit)
 {
     AROS_INTFUNC_INIT
 
-    struct fe_priv *np = unit->rhineu_fe_priv;
-    struct VIARHINEBase *VIARHINEDeviceBase = unit->rhineu_device;
-    int nr, try_count=1;
-    BOOL proceed = FALSE; /* Fails by default */
+    /* One Tx producer at a time; see Sana2TxGate */
+    if (!Sana2TxGateEnter(&unit->rhineu_txgate))
+        return FALSE;
+
+    do
+    {
+        struct fe_priv *np = unit->rhineu_fe_priv;
+        struct VIARHINEBase *VIARHINEDeviceBase = unit->rhineu_device;
+        int nr, try_count=1;
+        BOOL proceed = FALSE; /* Fails by default */
 
 D(bug("%s: VIARHINE_TX_IntF()\n", unit->rhineu_name));
 
-    /* send packet only if there is free space on tx queue. Otherwise do nothing */
-    if (!netif_queue_stopped(unit))
-    {
-        UWORD packet_size, data_size;
-        struct IOSana2Req *request;
-        struct Opener *opener;
-        UBYTE *buffer;
-        ULONG wire_error=0;
-        BYTE error;
-        struct MsgPort *port;
-        struct TypeStats *tracker;
-
-        proceed = TRUE; /* Success by default */
-		UBYTE *base = (UBYTE*) unit->rhineu_BaseMem;
-        port = unit->rhineu_request_ports[WRITE_QUEUE];
-
-        /* Still no error and there are packets to be sent? */
-        while(proceed && (!IsMsgPortEmpty(port)))
+        /* send packet only if there is free space on tx queue. Otherwise do nothing */
+        if (!netif_queue_stopped(unit))
         {
+            UWORD packet_size, data_size;
+            struct IOSana2Req *request;
+            struct Opener *opener;
+            UBYTE *buffer;
+            ULONG wire_error=0;
+            BYTE error;
+            struct MsgPort *port;
+            struct TypeStats *tracker;
+
+            proceed = TRUE; /* Success by default */
+    		UBYTE *base = (UBYTE*) unit->rhineu_BaseMem;
+            port = unit->rhineu_request_ports[WRITE_QUEUE];
+
+            /* Still no error and there are packets to be sent? */
+            while(proceed && (!IsMsgPortEmpty(port)))
+            {
 rhine_nexttx:
-			if (try_count >= (TX_BUFFERS * 3))
-			{
+    			if (try_count >= (TX_BUFFERS * 3))
+    			{
 /* TODO: We should probably report that we couldnt send the packet here.. */
 D(bug("%s: VIARHINE_TX_IntF: Send FAILED! no free Tx buffer(s)\n", unit->rhineu_name));
-				break;
-			}
+    				break;
+    			}
 
-            nr = np->tx_current % TX_BUFFERS;
-			np->tx_current++;
+                nr = np->tx_current % TX_BUFFERS;
+    			np->tx_current++;
 
-			if (np->tx_desc[nr].tx_status & DescOwn)
-			{
+    			if (np->tx_desc[nr].tx_status & DescOwn)
+    			{
 D(bug("%s: VIARHINE_TX_IntF: Buffer %d in use!\n", unit->rhineu_name, nr));
-				try_count++;
-				goto rhine_nexttx;
-			}
+    				try_count++;
+    				goto rhine_nexttx;
+    			}
 
-		   request = (APTR)port->mp_MsgList.lh_Head;
-		   data_size = packet_size = request->ios2_DataLength;
+    		   /* Dequeued under the port's lock */
+    		   request = (APTR)GetMsg(port);
+    		   if (request == NULL)
+    		       break;
+    		   data_size = packet_size = request->ios2_DataLength;
 
-		   opener = (APTR)request->ios2_BufferManagement;
+    		   opener = (APTR)request->ios2_BufferManagement;
 
-		   if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-		   {
-			  packet_size += ETH_PACKET_DATA;
-			  CopyMem(request->ios2_DstAddr, &((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_dest, ETH_ADDRESSSIZE);
-			  CopyMem(unit->rhineu_dev_addr, &((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_source, ETH_ADDRESSSIZE);
-			  ((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_type = AROS_WORD2BE(request->ios2_PacketType);
+    		   if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+    		   {
+    			  packet_size += ETH_PACKET_DATA;
+    			  CopyMem(request->ios2_DstAddr, &((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_dest, ETH_ADDRESSSIZE);
+    			  CopyMem(unit->rhineu_dev_addr, &((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_source, ETH_ADDRESSSIZE);
+    			  ((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_type = AROS_WORD2BE(request->ios2_PacketType);
 
-			  buffer = (UBYTE *)&((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_data;
-		   }
-		   else
-			  buffer = (UBYTE *)(IPTR)np->tx_desc[nr].addr;
+    			  buffer = (UBYTE *)&((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_data;
+    		   }
+    		   else
+    			  buffer = (UBYTE *)(IPTR)np->tx_desc[nr].addr;
 
-		   if (!opener->tx_function(buffer, request->ios2_Data, data_size))
-		   {
-			  error = S2ERR_NO_RESOURCES;
-			  wire_error = S2WERR_BUFF_ERROR;
-			  ReportEvents(LIBBASE, unit,
-				 S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
-				 | S2EVENT_TX);
-		   }
+    		   if (!opener->tx_function(buffer, request->ios2_Data, data_size))
+    		   {
+    			  error = S2ERR_NO_RESOURCES;
+    			  wire_error = S2WERR_BUFF_ERROR;
+    			  ReportEvents(LIBBASE, unit,
+    				 S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
+    				 | S2EVENT_TX);
+    		   }
 
-		   /* Now the packet is already in TX buffer, update flags for NIC */
+    		   /* Now the packet is already in TX buffer, update flags for NIC */
 D(bug("%s: VIARHINE_TX_IntF: packet %d  @ %x [type = %d] queued for transmission.", unit->rhineu_name, nr, np->tx_desc[nr].addr, ((struct eth_frame *)(IPTR)np->tx_desc[nr].addr)->eth_packet_type));
-			  Disable();
-			  /* DEBUG? Dump frame if so */
+    			  Disable();
+    			  /* DEBUG? Dump frame if so */
 #ifdef DEBUG
-			  {
-			  int j;
-				   for (j=0; j<64; j++) {
-					  if ((j%16) == 0)
-						  D(bug("\n%03x:", j));
-					  D(bug(" %02x", ((unsigned char*)(IPTR)np->tx_desc[nr].addr)[j]));
-				 }
-				  D(bug("\n"));
-			  }
+    			  {
+    			  int j;
+    				   for (j=0; j<64; j++) {
+    					  if ((j%16) == 0)
+    						  D(bug("\n%03x:", j));
+    					  D(bug(" %02x", ((unsigned char*)(IPTR)np->tx_desc[nr].addr)[j]));
+    				 }
+    				  D(bug("\n"));
+    			  }
 #endif
-			  Enable();
+    			  Enable();
 
-			  /* Set the ring details for the packet .. */
-			  np->tx_desc[nr].tx_status = DescOwn;
-			  np->tx_desc[nr].desc_length = 0x00e08000 | packet_size;
-			  WORDOUT(base + VIAR_ChipCmd, CmdTxDemand | np->cmd);
+    			  /* Set the ring details for the packet .. */
+    			  np->tx_desc[nr].tx_status = DescOwn;
+    			  np->tx_desc[nr].desc_length = 0x00e08000 | packet_size;
+    			  WORDOUT(base + VIAR_ChipCmd, CmdTxDemand | np->cmd);
 D(bug("%s: VIARHINE_TX_IntF: Packet Queued.\n", unit->rhineu_name));
 
-		   /* Reply packet */
+    		   /* Reply packet */
 
-		   request->ios2_Req.io_Error = error;
-		   request->ios2_WireError = wire_error;
-		   Disable();
-		   Remove((APTR)request);
-		   Enable();
-		   ReplyMsg((APTR)request);
+    		   request->ios2_Req.io_Error = error;
+    		   request->ios2_WireError = wire_error;
+    		   ReplyMsg((APTR)request);
 
-		   /* Update statistics */
+    		   /* Update statistics */
 
-		   if(error == 0)
-		   {
-			   tracker = FindTypeStats(LIBBASE, unit, &unit->rhineu_type_trackers,
-				   request->ios2_PacketType);
-			   if(tracker != NULL)
-			   {
-				   tracker->stats.PacketsSent++;
-				   tracker->stats.BytesSent += packet_size;
-			   }
-		   }
+    		   if(error == 0)
+    		   {
+    			   tracker = FindTypeStats(LIBBASE, unit, &unit->rhineu_type_trackers,
+    				   request->ios2_PacketType);
+    			   if(tracker != NULL)
+    			   {
+    				   tracker->stats.PacketsSent++;
+    				   tracker->stats.BytesSent += packet_size;
+    			   }
+    		   }
+            }
         }
-    }
 
-    /* Was there success? Enable incomming of new packets */    
-    if(proceed)
-        unit->rhineu_request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-    else
-        unit->rhineu_request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+        /* Was there success? Enable incomming of new packets */    
+        if(proceed)
+            unit->rhineu_request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
+        else
+            unit->rhineu_request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+    }
+    while (Sana2TxGateLeave(&unit->rhineu_txgate));
 
     return FALSE;
 
@@ -601,6 +580,10 @@ D(bug("%s: CopyPacket: packet filtered\n", unit->rhineu_name));
             filtered = TRUE;
         }
 
+    /* A rejected packet leaves the request queued for the next one */
+    if(filtered)
+        RequeueRequest(&opener->read_port, request);
+
     if(!filtered)
     {
         /* Copy packet into opener's buffer and reply packet */
@@ -616,9 +599,6 @@ D(bug("ERROR occured!!\n"));
         {
 D(bug("SUCCESS!!\n"));
         }
-        Disable();
-        Remove((APTR)request);
-        Enable();
         ReplyMsg((APTR)request);
 D(bug("%s: CopyPacket: opener notified.\n", unit->rhineu_name));
     }

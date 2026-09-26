@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2001-2017 Neil Cafferkey
+Copyright (C) 2001-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -34,6 +34,7 @@ MA 02111-1307, USA.
 
 #include "wireless.h"
 #include "io.h"
+#include "../sana2_portlock.h"
 
 #define DEVICE_NAME "prism2.device"
 #define VERSION 2
@@ -277,6 +278,7 @@ struct DevUnit
    UWORD data_offset;
    UWORD datalen_offset;
    UWORD txcontrol_offset;
+   struct Sana2TxGate tx_gate;   /* one Tx producer at a time on SMP */
 };
 
 

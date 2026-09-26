@@ -19,6 +19,7 @@
 #include <aros/macros.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 #include <proto/utility.h>
 #include <proto/dos.h>
 
@@ -85,27 +86,7 @@ struct TypeStats *DWMAC_FindTypeStats(struct MinList *list, ULONG packet_type)
 void DWMAC_ReportEvents(struct DWMACBase *base, struct DWMACUnit *unit,
                         ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next;
-    struct List *list;
-
-    list = &unit->dwu_RequestPorts[EVENT_QUEUE]->mp_MsgList;
-    next = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
-
-    Disable();
-    while (next != tail)
-    {
-        request = next;
-        next = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-        if ((request->ios2_WireError & events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            ReplyMsg((APTR)request);
-        }
-    }
-    Enable();
+    ReplyEventRequests(unit->dwu_RequestPorts[EVENT_QUEUE], events);
 }
 
 /* == address filtering ================================================== */
@@ -265,7 +246,10 @@ void DWMAC_CopyPacket(struct DWMACBase *base, struct DWMACUnit *unit,
 
     /* A rejected packet leaves the request queued for the next one */
     if (filtered)
+    {
+        RequeueRequest(&opener->read_port, request);
         return;
+    }
 
     if (!opener->rx_function(request->ios2_Data, ptr, packet_size))
     {
@@ -275,9 +259,6 @@ void DWMAC_CopyPacket(struct DWMACBase *base, struct DWMACUnit *unit,
                            S2EVENT_BUFF | S2EVENT_RX);
     }
 
-    Disable();
-    Remove((APTR)request);
-    Enable();
     ReplyMsg((APTR)request);
 }
 
@@ -285,7 +266,7 @@ static void DWMAC_RXPacket(struct DWMACBase *base, struct DWMACUnit *unit,
                            struct eth_frame *frame, ULONG length)
 {
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     struct TypeStats *tracker;
     BOOL accepted, is_orphan = TRUE;
     UWORD packet_type;
@@ -313,25 +294,19 @@ static void DWMAC_RXPacket(struct DWMACBase *base, struct DWMACUnit *unit,
 
     while (opener != opener_tail)
     {
-        request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-        request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
         accepted = FALSE;
 
-        while (request != request_tail && !accepted)
+        /*
+         * First matching request, taken off the read port under its lock;
+         * an 802.3 length field matches any small-type request
+         */
+        request = TakeMatchingRequest(&opener->read_port, packet_type, TRUE,
+                                      ETH_MTU);
+        if (request != NULL)
         {
-            struct IOSana2Req *next =
-                (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-            /* An 802.3 length field matches any small-type request */
-            if (request->ios2_PacketType == packet_type ||
-                (request->ios2_PacketType <= ETH_MTU &&
-                 packet_type <= ETH_MTU))
-            {
-                DWMAC_CopyPacket(base, unit, request, length, packet_type,
-                                 frame);
-                accepted = TRUE;
-            }
-            request = next;
+            DWMAC_CopyPacket(base, unit, request, length, packet_type,
+                             frame);
+            accepted = TRUE;
         }
 
         if (accepted)
@@ -344,12 +319,9 @@ static void DWMAC_RXPacket(struct DWMACBase *base, struct DWMACUnit *unit,
     {
         unit->dwu_Stats.UnknownTypesReceived++;
 
-        if (!IsListEmpty(&unit->dwu_RequestPorts[ADOPT_QUEUE]->mp_MsgList))
-        {
-            DWMAC_CopyPacket(base, unit,
-                (APTR)unit->dwu_RequestPorts[ADOPT_QUEUE]->mp_MsgList.lh_Head,
-                length, packet_type, frame);
-        }
+        request = (APTR)GetMsg(unit->dwu_RequestPorts[ADOPT_QUEUE]);
+        if (request != NULL)
+            DWMAC_CopyPacket(base, unit, request, length, packet_type, frame);
     }
 }
 
@@ -411,104 +383,112 @@ static AROS_INTH1(DWMAC_TXIntF, struct DWMACUnit *, unit)
 {
     AROS_INTFUNC_INIT
 
-    struct DWMACBase *base = unit->dwu_Base;
-    struct dwmac_hw *hw = unit->dwu_HW;
-    struct MsgPort *port = unit->dwu_RequestPorts[WRITE_QUEUE];
-    BOOL proceed = TRUE;
+    /* One Tx producer at a time; see Sana2TxGate */
+    if (!Sana2TxGateEnter(&unit->dwu_TXGate))
+        return FALSE;
 
-    while (proceed && !IsListEmpty(&port->mp_MsgList))
+    do
     {
-        ULONG slot = unit->dwu_TXHead;
-        ULONG next = (slot + 1) % DWMAC_TXDESC;
-        volatile struct dwmac_desc *desc =
-            (volatile struct dwmac_desc *)&unit->dwu_TXDesc[slot];
-        UBYTE *buffer = unit->dwu_TXBuf + slot * unit->dwu_BufSize;
-        struct IOSana2Req *request;
-        struct Opener *opener;
-        ULONG data_size, packet_size, wire_error = 0;
-        BYTE error = 0;
+        struct DWMACBase *base = unit->dwu_Base;
+        struct dwmac_hw *hw = unit->dwu_HW;
+        struct MsgPort *port = unit->dwu_RequestPorts[WRITE_QUEUE];
+        BOOL proceed = TRUE;
 
-        if (next == unit->dwu_TXTail)
+        while (proceed && !IsListEmpty(&port->mp_MsgList))
         {
-            proceed = FALSE;
-            break;
-        }
+            ULONG slot = unit->dwu_TXHead;
+            ULONG next = (slot + 1) % DWMAC_TXDESC;
+            volatile struct dwmac_desc *desc =
+                (volatile struct dwmac_desc *)&unit->dwu_TXDesc[slot];
+            UBYTE *buffer = unit->dwu_TXBuf + slot * unit->dwu_BufSize;
+            struct IOSana2Req *request;
+            struct Opener *opener;
+            ULONG data_size, packet_size, wire_error = 0;
+            BYTE error = 0;
 
-        request = (APTR)port->mp_MsgList.lh_Head;
-        data_size = packet_size = request->ios2_DataLength;
-        opener = request->ios2_BufferManagement;
-
-        if ((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
-        {
-            struct eth_frame *frame = (struct eth_frame *)buffer;
-
-            packet_size += ETH_HEADERSIZE;
-            CopyMem(request->ios2_DstAddr, frame->eth_packet_dest,
-                    ETH_ADDRESSSIZE);
-            CopyMem(unit->dwu_DevAddr, frame->eth_packet_source,
-                    ETH_ADDRESSSIZE);
-            frame->eth_packet_type =
-                AROS_WORD2BE((UWORD)request->ios2_PacketType);
-
-            if (!opener->tx_function(frame->eth_packet_data,
-                                     request->ios2_Data, data_size))
-                error = S2ERR_NO_RESOURCES;
-        }
-        else
-        {
-            if (!opener->tx_function(buffer, request->ios2_Data, data_size))
-                error = S2ERR_NO_RESOURCES;
-        }
-
-        if (error != 0)
-        {
-            wire_error = S2WERR_BUFF_ERROR;
-            DWMAC_ReportEvents(base, unit, S2EVENT_ERROR | S2EVENT_SOFTWARE |
-                               S2EVENT_BUFF | S2EVENT_TX);
-        }
-        else
-        {
-            struct TypeStats *tracker;
-            UWORD packet_type;
-
-            while (packet_size < ETH_ZLEN)
-                buffer[packet_size++] = 0;
-
-            packet_type = ((UWORD)buffer[12] << 8) | buffer[13];
-
-            desc->des0 = (ULONG)(IPTR)buffer;
-            desc->des1 = (ULONG)((UQUAD)(IPTR)buffer >> 32);
-            desc->des2 = DWMAC_TDES2_IOC |
-                         (packet_size & DWMAC_TDES2_B1L_MASK);
-            DWMAC_SYNC(desc, sizeof(*desc));
-            desc->des3 = DWMAC_TDES3_OWN | DWMAC_TDES3_FD | DWMAC_TDES3_LD |
-                         (packet_size & DWMAC_TDES3_LEN_MASK);
-            DWMAC_SYNC(desc, sizeof(*desc));
-
-            unit->dwu_TXHead = next;
-            DWMAC_Write(hw, DWMAC_DMA_CH0_TXDESC_TAIL,
-                        (ULONG)(IPTR)&unit->dwu_TXDesc[next]);
-
-            unit->dwu_Stats.PacketsSent++;
-            tracker = DWMAC_FindTypeStats(&unit->dwu_TypeTrackers,
-                                          packet_type);
-            if (tracker)
+            if (next == unit->dwu_TXTail)
             {
-                tracker->stats.PacketsSent++;
-                tracker->stats.BytesSent += packet_size;
+                proceed = FALSE;
+                break;
             }
+
+            /* Dequeued under the port's lock */
+            request = (APTR)GetMsg(port);
+            if (request == NULL)
+                break;
+            data_size = packet_size = request->ios2_DataLength;
+            opener = request->ios2_BufferManagement;
+
+            if ((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+            {
+                struct eth_frame *frame = (struct eth_frame *)buffer;
+
+                packet_size += ETH_HEADERSIZE;
+                CopyMem(request->ios2_DstAddr, frame->eth_packet_dest,
+                        ETH_ADDRESSSIZE);
+                CopyMem(unit->dwu_DevAddr, frame->eth_packet_source,
+                        ETH_ADDRESSSIZE);
+                frame->eth_packet_type =
+                    AROS_WORD2BE((UWORD)request->ios2_PacketType);
+
+                if (!opener->tx_function(frame->eth_packet_data,
+                                         request->ios2_Data, data_size))
+                    error = S2ERR_NO_RESOURCES;
+            }
+            else
+            {
+                if (!opener->tx_function(buffer, request->ios2_Data, data_size))
+                    error = S2ERR_NO_RESOURCES;
+            }
+
+            if (error != 0)
+            {
+                wire_error = S2WERR_BUFF_ERROR;
+                DWMAC_ReportEvents(base, unit, S2EVENT_ERROR | S2EVENT_SOFTWARE |
+                                   S2EVENT_BUFF | S2EVENT_TX);
+            }
+            else
+            {
+                struct TypeStats *tracker;
+                UWORD packet_type;
+
+                while (packet_size < ETH_ZLEN)
+                    buffer[packet_size++] = 0;
+
+                packet_type = ((UWORD)buffer[12] << 8) | buffer[13];
+
+                desc->des0 = (ULONG)(IPTR)buffer;
+                desc->des1 = (ULONG)((UQUAD)(IPTR)buffer >> 32);
+                desc->des2 = DWMAC_TDES2_IOC |
+                             (packet_size & DWMAC_TDES2_B1L_MASK);
+                DWMAC_SYNC(desc, sizeof(*desc));
+                desc->des3 = DWMAC_TDES3_OWN | DWMAC_TDES3_FD | DWMAC_TDES3_LD |
+                             (packet_size & DWMAC_TDES3_LEN_MASK);
+                DWMAC_SYNC(desc, sizeof(*desc));
+
+                unit->dwu_TXHead = next;
+                DWMAC_Write(hw, DWMAC_DMA_CH0_TXDESC_TAIL,
+                            (ULONG)(IPTR)&unit->dwu_TXDesc[next]);
+
+                unit->dwu_Stats.PacketsSent++;
+                tracker = DWMAC_FindTypeStats(&unit->dwu_TypeTrackers,
+                                              packet_type);
+                if (tracker)
+                {
+                    tracker->stats.PacketsSent++;
+                    tracker->stats.BytesSent += packet_size;
+                }
+            }
+
+            request->ios2_Req.io_Error = error;
+            request->ios2_WireError = wire_error;
+            ReplyMsg((APTR)request);
         }
 
-        request->ios2_Req.io_Error = error;
-        request->ios2_WireError = wire_error;
-        Disable();
-        Remove((APTR)request);
-        Enable();
-        ReplyMsg((APTR)request);
+        /* A full ring stalls the queue; the completion interrupt reopens it */
+        port->mp_Flags = proceed ? PA_SOFTINT : PA_IGNORE;
     }
-
-    /* A full ring stalls the queue; the completion interrupt reopens it */
-    port->mp_Flags = proceed ? PA_SOFTINT : PA_IGNORE;
+    while (Sana2TxGateLeave(&unit->dwu_TXGate));
 
     return FALSE;
 

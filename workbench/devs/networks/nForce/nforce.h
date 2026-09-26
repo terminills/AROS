@@ -38,6 +38,7 @@
 #include <devices/sana2specialstats.h>
 
 #include <proto/exec.h>
+#include "../sana2_portlock.h"
 
 #include LC_LIBDEFS_FILE
 
@@ -184,6 +185,7 @@ struct NFUnit {
     UBYTE                   dev_addr[6];
     UBYTE                   org_addr[6];
     struct fe_priv          *nu_fe_priv;
+    struct Sana2TxGate nu_txgate;   /* one Tx producer at a time on SMP */
 };
 
 void handle_request(LIBBASETYPEPTR, struct IOSana2Req *);

@@ -51,6 +51,8 @@
 
 #include <proto/exec.h>
 
+#include "../sana2_portlock.h"
+
 #include LC_LIBDEFS_FILE
 #define LIBBASETYPEPTR struct RTL8139Base *
 
@@ -200,6 +202,7 @@ struct RTL8139Unit {
 
 	struct timeval          rtl8139u_toutPOLL;
 	BOOL                    rtl8139u_toutNEED;
+	struct Sana2TxGate      rtl8139u_txgate;    /* one Tx producer on SMP */
 	BOOL                    rtl8139u_IntsAdded;
 
 	struct MsgPort          *rtl8139u_TimerSlowPort;

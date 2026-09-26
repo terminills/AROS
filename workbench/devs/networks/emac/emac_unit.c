@@ -5,6 +5,7 @@
 #include <asm/io.h>
 #include <inttypes.h>
 
+#include <proto/exec.h>
 #include <proto/kernel.h>
 #include <proto/dos.h>
 #include <proto/utility.h>
@@ -17,6 +18,7 @@
 #include <resources/processor.h>
 
 #include "emac.h"
+#include "../sana2_portlock.h"
 #include LC_LIBDEFS_FILE
 
 // TODO: Implement CmdFlush!!!!!!!!!
@@ -247,28 +249,7 @@ static void EMAC_SetMacAddress(struct EMACUnit *unit)
  */
 VOID ReportEvents(struct EMACBase *EMACBase, struct EMACUnit *unit, ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next_request;
-    struct List *list;
-
-    list = &unit->eu_RequestPorts[EVENT_QUEUE]->mp_MsgList;
-    next_request = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
-
-    /* Go through list of event listeners. If send messages to receivers if event found */
-    Disable();
-    while(next_request != tail)
-    {
-        request = next_request;
-        next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
-        if((request->ios2_WireError&events) != 0)
-        {
-            request->ios2_WireError = events;
-            Remove((APTR)request);
-            ReplyMsg((APTR)request);
-        }
-    }
-    Enable();
+    ReplyEventRequests(unit->eu_RequestPorts[EVENT_QUEUE], events);
 
     return;
 }
@@ -330,6 +311,10 @@ VOID CopyPacket(struct EMACBase *EMACBase, struct EMACUnit *unit,
             filtered = TRUE;
         }
 
+    /* A rejected packet leaves the request queued for the next one */
+    if(filtered)
+        RequeueRequest(&opener->read_port, request);
+
     if(!filtered)
     {
         /* Copy packet into opener's buffer and reply packet */
@@ -345,9 +330,6 @@ VOID CopyPacket(struct EMACBase *EMACBase, struct EMACUnit *unit,
         {
             D(bug("SUCCESS!!\n"));
         }
-        Disable();
-        Remove((APTR)request);
-        Enable();
         ReplyMsg((APTR)request);
         D(bug("[EMAC%d] CopyPacket: opener notified.\n", unit->eu_UnitNum));
     }
@@ -399,7 +381,7 @@ void rx_int(struct EMACUnit *unit, struct ExecBase *SysBase)
     struct TypeStats *tracker;
     ULONG packet_type;
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     BOOL accepted, is_orphan;
 
 
@@ -460,23 +442,15 @@ void rx_int(struct EMACUnit *unit, struct ExecBase *SysBase)
 
                 while(opener != opener_tail)
                 {
-                   request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-                   request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
                    accepted = FALSE;
 
-                   /* Offer packet to each request until it's accepted */
-                   while((request != request_tail) && !accepted)
+                   /* First matching request, taken off the read port under its lock */
+                   request = TakeMatchingRequest(&opener->read_port, packet_type, TRUE, ETH_MTU);
+                   if (request != NULL)
                    {
-                      if((request->ios2_PacketType == packet_type)
-                         || ((request->ios2_PacketType <= ETH_MTU)
-                              && (packet_type <= ETH_MTU)))
-                      {
-    D(bug("[EMAC%d] copy packet for opener ..\n", unit->eu_UnitNum));
-                         CopyPacket(unit->eu_EMACBase, unit, request, descr.md_length, packet_type, frame);
-                         accepted = TRUE;
-                      }
-                      request =
-                         (struct IOSana2Req *)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+                       D(bug("[EMAC%d] copy packet for opener ..\n", unit->eu_UnitNum));
+                       CopyPacket(unit->eu_EMACBase, unit, request, descr.md_length, packet_type, frame);
+                       accepted = TRUE;
                    }
 
                    if(accepted)
@@ -490,11 +464,11 @@ void rx_int(struct EMACUnit *unit, struct ExecBase *SysBase)
                 {
                     unit->eu_Stats.UnknownTypesReceived++;
 
-                    if(!IsMsgPortEmpty(unit->eu_RequestPorts[ADOPT_QUEUE]))
+                    request = (APTR)GetMsg(unit->eu_RequestPorts[ADOPT_QUEUE]);
+                    if(request != NULL)
                     {
                         CopyPacket(unit->eu_EMACBase, unit,
-                            (APTR)unit->eu_RequestPorts[ADOPT_QUEUE]->
-                            mp_MsgList.lh_Head, descr.md_length, packet_type, frame);
+                            request, descr.md_length, packet_type, frame);
     D(bug("[EMAC%d] packet copied to orphan queue\n", unit->eu_UnitNum));
                     }
                 }
@@ -541,152 +515,160 @@ static AROS_INTH1(EMAC_RX_Int, struct EMACUnit *, unit)
 
 void tx_int(struct EMACUnit *unit, struct ExecBase *SysBase)
 {
-    struct EMACBase *EMACBase = unit->eu_EMACBase;
-    mal_descriptor_t descr;
-    int nr, try_count = 1;
-    int last_slot = unit->eu_LastTXSlot;
-    UWORD packet_size, data_size;
-    struct IOSana2Req *request;
-    struct Opener *opener;
-    UBYTE *buffer;
-    ULONG wire_error=0;
-    BYTE error;
-    struct MsgPort *port;
-    struct TypeStats *tracker;
-    int packet_pos;
-    int sub_pos;
-    BOOL proceed = TRUE; /* Success by default */
+    /* One Tx producer at a time; see Sana2TxGate */
+    if (!Sana2TxGateEnter(&unit->eu_TXGate))
+        return;
 
-    port = unit->eu_RequestPorts[WRITE_QUEUE];
+    do
+    {
+        struct EMACBase *EMACBase = unit->eu_EMACBase;
+        mal_descriptor_t descr;
+        int nr, try_count = 1;
+        int last_slot = unit->eu_LastTXSlot;
+        UWORD packet_size, data_size;
+        struct IOSana2Req *request;
+        struct Opener *opener;
+        UBYTE *buffer;
+        ULONG wire_error=0;
+        BYTE error;
+        struct MsgPort *port;
+        struct TypeStats *tracker;
+        int packet_pos;
+        int sub_pos;
+        BOOL proceed = TRUE; /* Success by default */
 
-    D(bug("[EMAC%d] TX Int\n", unit->eu_UnitNum));
-    D(bug("[EMAC%d] Starting at packet %d\d", unit->eu_UnitNum, (last_slot + 1) % TX_RING_SIZE));
+        port = unit->eu_RequestPorts[WRITE_QUEUE];
+
+        D(bug("[EMAC%d] TX Int\n", unit->eu_UnitNum));
+        D(bug("[EMAC%d] Starting at packet %d\d", unit->eu_UnitNum, (last_slot + 1) % TX_RING_SIZE));
 
 //    for (nr=0; nr < TX_RING_SIZE; nr++)
 //    {
 //        CacheClearE(&unit->eu_TXChannel[nr>>2], sizeof(mal_packet_t), CACRF_InvalidateD);
 //        D(bug("%04x ",unit->eu_TXChannel[nr>>2].descr[nr%4].md_ctrl));
 //    }
-    /* Still no error and there are packets to be sent? */
-    while(proceed && (!IsMsgPortEmpty(port)))
-    {
-        mal_packet_t mal_packet;
-
-        nr = (last_slot + 1) % TX_RING_SIZE;
-
-        packet_pos = nr >> 2 ;
-        sub_pos = nr % 4;
-
-        error = 0;
-
-        /* Invalidate memory containing MAL descriptor */
-        CacheClearE(&unit->eu_TXChannel[packet_pos], sizeof(mal_packet), CACRF_InvalidateD);
-        mal_packet = unit->eu_TXChannel[packet_pos];
-        /* Work on local descriptor's copy */
-        descr = mal_packet.descr[sub_pos];
-
-        if (!(descr.md_ctrl & MAL_CTRL_TX_R))
+        /* Still no error and there are packets to be sent? */
+        while(proceed && (!IsMsgPortEmpty(port)))
         {
-            struct eth_frame *eth = (struct eth_frame *)descr.md_buffer;
-            request = (APTR)port->mp_MsgList.lh_Head;
-            data_size = packet_size = request->ios2_DataLength;
+            mal_packet_t mal_packet;
 
-            opener = (APTR)request->ios2_BufferManagement;
+            nr = (last_slot + 1) % TX_RING_SIZE;
 
-            if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
+            packet_pos = nr >> 2 ;
+            sub_pos = nr % 4;
+
+            error = 0;
+
+            /* Invalidate memory containing MAL descriptor */
+            CacheClearE(&unit->eu_TXChannel[packet_pos], sizeof(mal_packet), CACRF_InvalidateD);
+            mal_packet = unit->eu_TXChannel[packet_pos];
+            /* Work on local descriptor's copy */
+            descr = mal_packet.descr[sub_pos];
+
+            if (!(descr.md_ctrl & MAL_CTRL_TX_R))
             {
-               packet_size += ETH_PACKET_DATA;
-               CopyMem(request->ios2_DstAddr, eth->eth_packet_dest, ETH_ADDRESSSIZE);
-               CopyMem(unit->eu_DevAddr, eth->eth_packet_source, ETH_ADDRESSSIZE);
-               eth->eth_packet_type = request->ios2_PacketType;
+                struct eth_frame *eth = (struct eth_frame *)descr.md_buffer;
+                /* Dequeued under the port's lock */
+                request = (APTR)GetMsg(port);
+                if (request == NULL)
+                    break;
+                data_size = packet_size = request->ios2_DataLength;
 
-               buffer = eth->eth_packet_data;
-            }
-            else
-               buffer = descr.md_buffer;
+                opener = (APTR)request->ios2_BufferManagement;
 
-            if (!opener->tx_function(buffer, request->ios2_Data, data_size))
-            {
-               error = S2ERR_NO_RESOURCES;
-               wire_error = S2WERR_BUFF_ERROR;
-               ReportEvents(EMACBase, unit,
-                  S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
-                  | S2EVENT_TX);
-            }
-
-            if (error == 0)
-            {
-                D(bug("[EMAC%d] packet %d:%d [type = %d] queued for transmission.", unit->eu_UnitNum, last_slot, nr, eth->eth_packet_type));
-
-                /* Dump contents of frame if DEBUG enabled */
-                D({
-                    int j;
-                    for (j=0; j<64; j++) {
-                        if ((j%16) == 0)
-                            D(bug("\n%03x:", j));
-                        D(bug(" %02x", ((unsigned char*)eth)[j]));
-                    }
-                    D(bug("\n"));
-                });
-
-                /* Update the descriptor */
-                descr.md_length = packet_size;
-                descr.md_ctrl |= MAL_CTRL_TX_R | MAL_CTRL_TX_I | MAL_CTRL_TX_L | EMAC_CTRL_TX_GFCS | EMAC_CTRL_TX_GP;
-                CacheClearE(descr.md_buffer, descr.md_length, CACRF_ClearD);
-
-                CacheClearE(&unit->eu_TXChannel[packet_pos], sizeof(mal_packet), CACRF_InvalidateD);
-                mal_packet = unit->eu_TXChannel[packet_pos];
-                mal_packet.descr[sub_pos] = descr;
-                unit->eu_TXChannel[packet_pos] = mal_packet;
-                CacheClearE(&unit->eu_TXChannel[packet_pos], sizeof(mal_packet), CACRF_ClearD);
-            }
-
-            /* Reply packet */
-
-            request->ios2_Req.io_Error = error;
-            request->ios2_WireError = wire_error;
-            Disable();
-            Remove((APTR)request);
-            Enable();
-            ReplyMsg((APTR)request);
-
-            /* Update statistics */
-
-            if(error == 0)
-            {
-                tracker = FindTypeStats(EMACBase, unit, &unit->eu_TypeTrackers,
-                    request->ios2_PacketType);
-                if(tracker != NULL)
+                if((request->ios2_Req.io_Flags & SANA2IOF_RAW) == 0)
                 {
-                    tracker->stats.PacketsSent++;
-                    tracker->stats.BytesSent += packet_size;
+                   packet_size += ETH_PACKET_DATA;
+                   CopyMem(request->ios2_DstAddr, eth->eth_packet_dest, ETH_ADDRESSSIZE);
+                   CopyMem(unit->eu_DevAddr, eth->eth_packet_source, ETH_ADDRESSSIZE);
+                   eth->eth_packet_type = request->ios2_PacketType;
+
+                   buffer = eth->eth_packet_data;
                 }
+                else
+                   buffer = descr.md_buffer;
+
+                if (!opener->tx_function(buffer, request->ios2_Data, data_size))
+                {
+                   error = S2ERR_NO_RESOURCES;
+                   wire_error = S2WERR_BUFF_ERROR;
+                   ReportEvents(EMACBase, unit,
+                      S2EVENT_ERROR | S2EVENT_SOFTWARE | S2EVENT_BUFF
+                      | S2EVENT_TX);
+                }
+
+                if (error == 0)
+                {
+                    D(bug("[EMAC%d] packet %d:%d [type = %d] queued for transmission.", unit->eu_UnitNum, last_slot, nr, eth->eth_packet_type));
+
+                    /* Dump contents of frame if DEBUG enabled */
+                    D({
+                        int j;
+                        for (j=0; j<64; j++) {
+                            if ((j%16) == 0)
+                                D(bug("\n%03x:", j));
+                            D(bug(" %02x", ((unsigned char*)eth)[j]));
+                        }
+                        D(bug("\n"));
+                    });
+
+                    /* Update the descriptor */
+                    descr.md_length = packet_size;
+                    descr.md_ctrl |= MAL_CTRL_TX_R | MAL_CTRL_TX_I | MAL_CTRL_TX_L | EMAC_CTRL_TX_GFCS | EMAC_CTRL_TX_GP;
+                    CacheClearE(descr.md_buffer, descr.md_length, CACRF_ClearD);
+
+                    CacheClearE(&unit->eu_TXChannel[packet_pos], sizeof(mal_packet), CACRF_InvalidateD);
+                    mal_packet = unit->eu_TXChannel[packet_pos];
+                    mal_packet.descr[sub_pos] = descr;
+                    unit->eu_TXChannel[packet_pos] = mal_packet;
+                    CacheClearE(&unit->eu_TXChannel[packet_pos], sizeof(mal_packet), CACRF_ClearD);
+                }
+
+                /* Reply packet */
+
+                request->ios2_Req.io_Error = error;
+                request->ios2_WireError = wire_error;
+                ReplyMsg((APTR)request);
+
+                /* Update statistics */
+
+                if(error == 0)
+                {
+                    tracker = FindTypeStats(EMACBase, unit, &unit->eu_TypeTrackers,
+                        request->ios2_PacketType);
+                    if(tracker != NULL)
+                    {
+                        tracker->stats.PacketsSent++;
+                        tracker->stats.BytesSent += packet_size;
+                    }
+                }
+                try_count=0;
             }
-            try_count=0;
+
+            unit->eu_LastTXSlot = ++last_slot;
+            try_count++;
+
+            /*
+             * If we've just run out of free space on the TX queue, stop
+             * it and give up pushing further frames
+             */
+            if ( (try_count + 1) >= TX_RING_SIZE)
+            {
+                D(bug("[EMAC%d] output queue full!. Stopping [count = %d, TX_RING_SIZE = %d\n", unit->eu_UnitNum, try_count, TX_RING_SIZE));
+                proceed = FALSE;
+            }
         }
 
-        unit->eu_LastTXSlot = ++last_slot;
-        try_count++;
+        /* Tell EMAC that it has new packets to process */
+        outl(inl(EMAC_TXM0 + unit->eu_IOBase) | EMAC_TXM0_GNP0, EMAC_TXM0 + unit->eu_IOBase);
 
-        /*
-         * If we've just run out of free space on the TX queue, stop
-         * it and give up pushing further frames
-         */
-        if ( (try_count + 1) >= TX_RING_SIZE)
-        {
-            D(bug("[EMAC%d] output queue full!. Stopping [count = %d, TX_RING_SIZE = %d\n", unit->eu_UnitNum, try_count, TX_RING_SIZE));
-            proceed = FALSE;
-        }
+        /* Was there success? Enable incomming of new packets */
+        if(proceed)
+            unit->eu_RequestPorts[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
+        else
+            unit->eu_RequestPorts[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
     }
-
-    /* Tell EMAC that it has new packets to process */
-    outl(inl(EMAC_TXM0 + unit->eu_IOBase) | EMAC_TXM0_GNP0, EMAC_TXM0 + unit->eu_IOBase);
-
-    /* Was there success? Enable incomming of new packets */
-    if(proceed)
-        unit->eu_RequestPorts[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
-    else
-        unit->eu_RequestPorts[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+    while (Sana2TxGateLeave(&unit->eu_TXGate));
 
 }
 
