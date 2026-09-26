@@ -37,6 +37,7 @@
 #include <utility/hooks.h>
 
 #include <proto/exec.h>
+#include <proto/kernel.h>
 #include <proto/dos.h>
 #include <proto/oop.h>
 #include <proto/timer.h>
@@ -173,32 +174,109 @@ static int pcnet32_check_32(APTR base)
 }
 
 /*
+ * Request ports are filled by PutMsg() from the network stack's task, which on
+ * SMP may run on another core while this driver's interrupts walk the same
+ * list. PutMsg() and GetMsg() serialise on the port's spinlock; Disable() only
+ * stops this core. Any walk or Remove() of a port's message list here takes
+ * that lock too, and never holds it across a callback or a ReplyMsg() (which
+ * locks the reply port) - as in e1000, where the torn list gave a producer a
+ * garbage request and an idle core a #GP at RIP 0x3 under upload load.
+ */
+static APTR PortKernelBase(void)
+{
+    static APTR kernelbase;
+
+    if (!kernelbase)
+        kernelbase = OpenResource("kernel.resource");
+    return kernelbase;
+}
+
+static void PortLock(struct MsgPort *port)
+{
+    Disable();
+#if defined(__AROSPLATFORM_SMP__)
+    {
+        APTR KernelBase = PortKernelBase();
+#if defined(__AROSEXEC_SMP__)
+        KrnSpinLock(&port->mp_SpinLock, NULL, SPINLOCK_MODE_WRITE);
+#else
+        KrnSpinLock(&port->mp_Pad, NULL, SPINLOCK_MODE_WRITE);
+#endif
+    }
+#endif
+}
+
+static void PortUnlock(struct MsgPort *port)
+{
+#if defined(__AROSPLATFORM_SMP__)
+    {
+        APTR KernelBase = PortKernelBase();
+#if defined(__AROSEXEC_SMP__)
+        KrnSpinUnLock(&port->mp_SpinLock);
+#else
+        KrnSpinUnLock(&port->mp_Pad);
+#endif
+    }
+#endif
+    Enable();
+}
+
+/*
+ * Take the first request a packet of this type satisfies off a read port, or
+ * NULL: the same type, or any 802.3 length-field type for an 802.3 packet.
+ */
+static struct IOSana2Req *TakeTypedRequest(struct MsgPort *port, ULONG packet_type)
+{
+    struct List *list = &port->mp_MsgList;
+    struct IOSana2Req *request, *found = NULL;
+
+    PortLock(port);
+    for (request = (APTR)list->lh_Head;
+         request->ios2_Req.io_Message.mn_Node.ln_Succ != NULL;
+         request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ)
+    {
+        if ((request->ios2_PacketType == packet_type) ||
+            ((request->ios2_PacketType <= ETH_MTU) && (packet_type <= ETH_MTU)))
+        {
+            Remove((APTR)request);
+            found = request;
+            break;
+        }
+    }
+    PortUnlock(port);
+
+    return found;
+}
+
+/*
  * Report incoming events to all hyphotetical event receivers
  */
 VOID ReportEvents(struct PCN32Base *PCNet32Base, struct PCN32Unit *unit, ULONG events)
 {
-    struct IOSana2Req *request, *tail, *next_request;
-    struct List *list;
+    struct MsgPort *port = unit->pcnu_request_ports[EVENT_QUEUE];
+    struct IOSana2Req *request, *next_request;
+    struct List matched;
 
-    list = &unit->pcnu_request_ports[EVENT_QUEUE]->mp_MsgList;
-    next_request = (APTR)list->lh_Head;
-    tail = (APTR)&list->lh_Tail;
+    NEWLIST(&matched);
 
-    /* Go through list of event listeners. If send messages to receivers if event found */
-    Disable();
-    while(next_request != tail)
+    /* Take the listeners for these events off the queue under its lock ... */
+    PortLock(port);
+    for (request = (APTR)port->mp_MsgList.lh_Head;
+         (next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ) != NULL;
+         request = next_request)
     {
-        request = next_request;
-        next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ;
-
         if((request->ios2_WireError&events) != 0)
         {
             request->ios2_WireError = events;
             Remove((APTR)request);
-            ReplyMsg((APTR)request);
+            AddTail(&matched, (APTR)request);
         }
     }
-    Enable();
+    PortUnlock(port);
+
+    /* ... and reply them with it released */
+    while ((request = (APTR)RemHead(&matched)) != NULL)
+        ReplyMsg((APTR)request);
 
     return;
 }
@@ -286,7 +364,7 @@ AROS_INTH1(PCN32_RX_Int, struct PCN32Unit *,  unit)
     struct TypeStats *tracker;
     UWORD packet_type;	/* unsigned: IPv6 ethertype 0x86dd must not sign-extend */
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     BOOL accepted, is_orphan;
 
 D(bug("%s: PCN32_RX_Int() !!!!\n", unit->pcnu_name));
@@ -391,23 +469,16 @@ D(bug("%s: PCN32_RX_Int: Packet IP accepted with type = %d\n", unit->pcnu_name, 
             /* Offer packet to every opener */
             while(opener != opener_tail)
             {
-               request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-               request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
                accepted = FALSE;
 
-               /* Offer packet to each request until it's accepted */
-               while((request != request_tail) && !accepted)
+               /* Hand the packet to this opener's first matching request,
+                  taken off the read port under the port's lock */
+               request = TakeTypedRequest(&opener->read_port, packet_type);
+               if (request != NULL)
                {
-                  if((request->ios2_PacketType == packet_type)
-                     || ((request->ios2_PacketType <= ETH_MTU)
-                          && (packet_type <= ETH_MTU)))
-                  {
 D(bug("%s: PCN32_RX_Int: copy packet for opener ..\n", unit->pcnu_name));
-                     CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
-                     accepted = TRUE;
-                  }
-                  request =
-                     (struct IOSana2Req *)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+                  CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
+                  accepted = TRUE;
                }
 
                if(accepted)
@@ -421,11 +492,10 @@ D(bug("%s: PCN32_RX_Int: copy packet for opener ..\n", unit->pcnu_name));
             {
                 unit->pcnu_stats.UnknownTypesReceived++;
 
-                if(!IsMsgPortEmpty(unit->pcnu_request_ports[ADOPT_QUEUE]))
+                request = (APTR)GetMsg(unit->pcnu_request_ports[ADOPT_QUEUE]);
+                if (request != NULL)
                 {
-                    CopyPacket(LIBBASE, unit,
-                        (APTR)unit->pcnu_request_ports[ADOPT_QUEUE]->
-                        mp_MsgList.lh_Head, len, packet_type, frame);
+                    CopyPacket(LIBBASE, unit, request, len, packet_type, frame);
 D(bug("%s: PCN32_RX_Int: packet copied to orphan queue\n", unit->pcnu_name));
                 }
             }
@@ -502,7 +572,10 @@ again:
             if (!((((struct tx_ring_desc *)np->ring_addr)[nr + RX_RING_SIZE].BufferStatus) & (1 << 15)))
             {
 
-               request = (APTR)port->mp_MsgList.lh_Head;
+               /* Dequeued under the port's lock; this descriptor is free */
+               request = (APTR)GetMsg(port);
+               if (request == NULL)
+                  break;
                data_size = packet_size = request->ios2_DataLength;
 
                opener = (APTR)request->ios2_BufferManagement;
@@ -561,11 +634,9 @@ D(bug("%s: PCN32_TX_Int: send poll triggered.\n", unit->pcnu_name));
 
                /* Reply packet */
 
+               /* Already off the port: GetMsg() above */
                request->ios2_Req.io_Error = error;
                request->ios2_WireError = wire_error;
-               Disable();
-               Remove((APTR)request);
-               Enable();
                ReplyMsg((APTR)request);
 
                /* Update statistics */
@@ -902,9 +973,7 @@ D(bug("ERROR occured!!\n"));
         {
 D(bug("SUCCESS!!\n"));
         }
-        Disable();
-        Remove((APTR)request);
-        Enable();
+        /* The caller took the request off its port under the port's lock */
         ReplyMsg((APTR)request);
 D(bug("%s: CopyPacket: opener notified.\n", unit->pcnu_name));
     }
