@@ -62,6 +62,7 @@ struct APICData
 
 #define APF_8259                (1 << 0)	/* Legacy PIC present				        */
 #define APF_TIMER               (1 << 1)	/* APIC uses its own heartbeat timer	                */
+#define APF_TLSCPUNUM           (1 << 2)	/* Each CPU's number is in its TLS (x86_64)       */
 
 #ifdef __x86_64__
 #define APIC_BASE_MASK 0x000FFFFFFFFFF000

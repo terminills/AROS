@@ -423,6 +423,8 @@ void kernel_cstart(const struct TagItem *start_msg)
 
     /* Load the TSS, and GDT */
     core_CPUSetup(0, __KernBootPrivate->BOOTGDT, __KernBootPrivate->SystemStack);
+    /* The boot CPU is CPU 0; core_APIC_GetNumber() reads it from here */
+    TLS_SET(CPUNumber, 0);
 
     D(bug("[Kernel] %s: preparing interrupt vectors\n", __func__));
     /* Set-up the IDT */

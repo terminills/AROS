@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <exec/memory.h>
@@ -59,6 +59,12 @@ struct APICData *core_APIC_Probe(void)
 
         /* Just initialize to default state */
         core_APIC_Init(data, 0);
+
+#if (__WORDSIZE==64)
+        /* The boot CPU stored its number (0) in its TLS during startup,
+           and each secondary CPU stores its own before it runs anything */
+        data->flags |= APF_TLSCPUNUM;
+#endif
     }
     else
     {
@@ -95,6 +101,17 @@ apicid_t core_APIC_GetNumberFromLocal(struct APICData *data, apicid_t apicLocalI
 apicid_t core_APIC_GetNumber(struct APICData *data)
 {
     apicid_t __APICLogicalID;
+
+#if (__WORDSIZE==64)
+    /*
+     * Every CPU stores its own number in its TLS as it comes up. Reading it
+     * there is one %gs-relative load; reading the local APIC ID register
+     * is an MMIO access, which a hypervisor has to emulate (a VM exit per
+     * call), and the scheduler asks for the CPU number on every switch.
+     */
+    if (data && (data->flags & APF_TLSCPUNUM))
+        return TLS_GET(CPUNumber);
+#endif
 
     D(bug("[APIC] %s()\n", __func__));
    

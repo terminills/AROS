@@ -89,6 +89,9 @@ static void smp_Entry(IPTR stackBase, spinlock_t *apicReadyLock, struct KernelBa
     core_SetupGDT(__KernBootPrivate, apicCPUNo, apicCPU->cpu_GDT, apicCPU->cpu_TLS, __KernBootPrivate->TSS);
 
     core_CPUSetup(apicCPUNo, apicCPU->cpu_GDT, stackBase);
+    /* Our CPU number, where core_APIC_GetNumber() reads it; set before this
+       core runs anything that asks */
+    TLS_SET(CPUNumber, apicCPUNo);
 #endif
 
     D(bug("[Kernel:SMP] %s[%03u]: Core IDT @ 0x%p\n", __func__, apicCPUNo, apicCPU->cpu_IDT));

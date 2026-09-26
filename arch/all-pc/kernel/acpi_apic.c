@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <aros/asmcall.h>
@@ -48,7 +48,10 @@ BOOL acpi_APIC_AllocPrivate(struct PlatformData *pdata, ACPI_TABLE_MADT *madtTab
 
             pdata->kb_ACPI->acpi_madt = madtTable;                      /* Cache ACPI data for secondary cores */
             pdata->kb_APIC->lapicBase = madtTable->Address;
-            pdata->kb_APIC->flags = ((madtTable->Flags & ACPI_MADT_PCAT_COMPAT) == ACPI_MADT_MULTIPLE_APIC) ? APF_8259 : 0;
+            /* Keep APF_TLSCPUNUM from core_APIC_Probe(); only the legacy PIC
+               flag is the MADT's to decide */
+            pdata->kb_APIC->flags = (pdata->kb_APIC->flags & APF_TLSCPUNUM) |
+                (((madtTable->Flags & ACPI_MADT_PCAT_COMPAT) == ACPI_MADT_MULTIPLE_APIC) ? APF_8259 : 0);
 
             D(
                 bug("[Kernel:ACPI-APIC] Local APIC address 0x%p < Flags 0x%04X>\n", pdata->kb_APIC->lapicBase, pdata->kb_APIC->flags);
