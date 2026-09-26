@@ -48,10 +48,14 @@ BOOL acpi_APIC_AllocPrivate(struct PlatformData *pdata, ACPI_TABLE_MADT *madtTab
 
             pdata->kb_ACPI->acpi_madt = madtTable;                      /* Cache ACPI data for secondary cores */
             pdata->kb_APIC->lapicBase = madtTable->Address;
-            /* Keep APF_TLSCPUNUM from core_APIC_Probe(); only the legacy PIC
-               flag is the MADT's to decide */
-            pdata->kb_APIC->flags = (pdata->kb_APIC->flags & APF_TLSCPUNUM) |
-                (((madtTable->Flags & ACPI_MADT_PCAT_COMPAT) == ACPI_MADT_MULTIPLE_APIC) ? APF_8259 : 0);
+            pdata->kb_APIC->flags = ((madtTable->Flags & ACPI_MADT_PCAT_COMPAT) == ACPI_MADT_MULTIPLE_APIC) ? APF_8259 : 0;
+#if (__WORDSIZE==64)
+            /* The boot CPU stored its number (0) in its TLS during startup,
+               and each secondary CPU stores its own before it runs anything:
+               core_APIC_GetNumber() can read it there instead of the MMIO
+               APIC ID register (as in core_APIC_Probe()) */
+            pdata->kb_APIC->flags |= APF_TLSCPUNUM;
+#endif
 
             D(
                 bug("[Kernel:ACPI-APIC] Local APIC address 0x%p < Flags 0x%04X>\n", pdata->kb_APIC->lapicBase, pdata->kb_APIC->flags);
