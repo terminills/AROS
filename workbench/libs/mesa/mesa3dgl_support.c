@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2009-2019, The AROS Development Team. All rights reserved.
+    Copyright (C) 2009-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <aros/debug.h>
@@ -209,6 +209,24 @@ VOID MESA3DGLSelectRastPort(struct mesa3dgl_context * ctx, struct TagItem * tagL
     })
 }
 
+/* A window's RastPort is sized by its layer. A RastPort passed on its own
+ * (GLA_RastPort, e.g. an offscreen bitmap for an EGL pbuffer) has no layer;
+ * its size is its bitmap's. */
+static VOID MESA3DGLRastPortSize(struct RastPort * rp, ULONG * width,
+                                 ULONG * height)
+{
+    if (rp->Layer)
+    {
+        *width = rp->Layer->bounds.MaxX - rp->Layer->bounds.MinX + 1;
+        *height = rp->Layer->bounds.MaxY - rp->Layer->bounds.MinY + 1;
+    }
+    else
+    {
+        *width = GetBitMapAttr(rp->BitMap, BMA_WIDTH);
+        *height = GetBitMapAttr(rp->BitMap, BMA_HEIGHT);
+    }
+}
+
 BOOL MESA3DGLStandardInit(struct mesa3dgl_context * ctx, struct TagItem *tagList)
 {
     LONG requestedwidth = 0, requestedheight = 0;
@@ -249,11 +267,8 @@ BOOL MESA3DGLStandardInit(struct mesa3dgl_context * ctx, struct TagItem *tagList
     requestedheight = GetTagData(GLA_Height, -1 , tagList);
 
     /* Calculate rastport dimensions */
-    ctx->visible_rp_width =
-        ctx->visible_rp->Layer->bounds.MaxX - ctx->visible_rp->Layer->bounds.MinX + 1;
-
-    ctx->visible_rp_height =
-        ctx->visible_rp->Layer->bounds.MaxY - ctx->visible_rp->Layer->bounds.MinY + 1;
+    MESA3DGLRastPortSize(ctx->visible_rp, &ctx->visible_rp_width,
+                         &ctx->visible_rp_height);
 
     /* right will be either passed or calculated from width or 0 */
     ctx->right = 0;
@@ -305,11 +320,8 @@ VOID MESA3DGLRecalculateBufferWidthHeight(struct mesa3dgl_context * ctx)
     
     D(bug("[MESA3DGL] %s(0x%p)\n", __func__, ctx));
 
-    ctx->visible_rp_width =
-        ctx->visible_rp->Layer->bounds.MaxX - ctx->visible_rp->Layer->bounds.MinX + 1;
-
-    ctx->visible_rp_height =
-        ctx->visible_rp->Layer->bounds.MaxY - ctx->visible_rp->Layer->bounds.MinY + 1;
+    MESA3DGLRastPortSize(ctx->visible_rp, &ctx->visible_rp_width,
+                         &ctx->visible_rp_height);
 
     /* NOTE: when a window's layer bounds read ~1px while the window
      * itself is fully sized, faking the framebuffer size here does NOT
