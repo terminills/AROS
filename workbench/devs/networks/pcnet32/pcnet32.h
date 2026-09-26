@@ -209,6 +209,17 @@ struct PCN32Unit {
     struct Interrupt        pcnu_tx_int;
     struct Interrupt        pcnu_tx_end_int;
     ULONG                   pcnu_tx_ring_full;
+    /*
+     * Tx producer guard (PCN32_TX_Int). On SMP, Cause() can run the producer
+     * softint on two cores at once: both read next_tx, build into the same
+     * ring slot and take the same request off the write port. Disable()
+     * serialises only one core, and a spinlock cannot be held across the
+     * opener's tx_function (it takes semaphores). So the second core never
+     * blocks: it sets pcnu_txAgain and returns, and the core already in the
+     * producer drains again before releasing pcnu_txBusy - as e1000.
+     */
+    volatile ULONG          pcnu_txBusy;
+    volatile ULONG          pcnu_txAgain;
 
     STRPTR                  pcnu_name;
     ULONG                   pcnu_mtu;

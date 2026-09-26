@@ -467,6 +467,17 @@ AROS_INTH1(PCN32_TX_Int, struct PCN32Unit *,  unit)
 
 D(bug("%s: PCN32_TX_Int()\n", unit->pcnu_name));
 
+    /* One producer at a time; see pcnu_txBusy in pcnet32.h */
+    if (__sync_lock_test_and_set(&unit->pcnu_txBusy, 1))
+    {
+        unit->pcnu_txAgain = 1;     /* the producer in progress will re-drain */
+        return FALSE;
+    }
+
+again:
+    unit->pcnu_txAgain = 0;
+    proceed = FALSE;
+
     /* send packet only if there is free space on tx queue. Otherwise do nothing */
     if (!netif_queue_stopped(unit))
     {
@@ -602,6 +613,10 @@ D(bug("%s: output queue full!. Exiting but not stopping\n", unit->pcnu_name));
         unit->pcnu_request_ports[WRITE_QUEUE]->mp_Flags = PA_SOFTINT;
     else
         unit->pcnu_request_ports[WRITE_QUEUE]->mp_Flags = PA_IGNORE;
+
+    if (unit->pcnu_txAgain && proceed)
+        goto again;             /* a write arrived on another core while we ran */
+    __sync_lock_release(&unit->pcnu_txBusy);
 
     return FALSE;
 
