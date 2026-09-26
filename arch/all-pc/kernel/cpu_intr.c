@@ -433,6 +433,25 @@ SAVE_XMM_INTO_AREA(localarea)
                     bug("[Kernel]" DEBUGCOLOR_SET " %s(%u): Exception error code %08X" DEBUGCOLOR_RESET "\n", __func__, int_number, error_code);
                     pdata->kb_LastException = int_number;
                     pdata->kb_LastExceptionError = error_code;
+                    /*
+                     * Diagnostic: a #GP in supervisor mode (idle CPUs under
+                     * network IRQ load land at RIP 0x3). Dump the faulting
+                     * stack now, before the alert code runs on it: after a
+                     * call [SP] is the caller, after a ret/iretq the bad
+                     * target sits just below SP.
+                     */
+                    if (int_number == 13 && !(regs->cs & 3))
+                    {
+                        IPTR *sp = (IPTR *)EXCTX_SP(regs);
+                        int di;
+
+                        bug("[GP-DBG] IP=%p SP=%p BP=%p CS=%p FLAGS=%p\n",
+                            (APTR)EXCTX_IP(regs), (APTR)sp, (APTR)regs->rbp,
+                            (APTR)regs->cs, (APTR)regs->rflags);
+                        for (di = -4; di < 12; di++)
+                            bug("[GP-STK] %+04d %p\n", di * (int)sizeof(IPTR),
+                                (APTR)sp[di]);
+                    }
                     if (int_number == 14)
                     {
                         IPTR cr2 = 0;
@@ -571,6 +590,20 @@ SAVE_XMM_INTO_AREA(localarea)
     DIRQ(
         bug("[Kernel]" DEBUGCOLOR_SET " %s(%u): calling LeaveInterrupt...(%08X)" DEBUGCOLOR_RESET "\n", __func__, int_number, regs->Flags);
     )
+
+    /*
+     * Interrupts off for the restore and IRETQ, on every path. A device
+     * IRQ's handlers Cause() softints, and SoftIntDispatch calls KrnSti():
+     * returning to user mode the block above already cli'd, but returning to
+     * supervisor mode - an idle CPU interrupted in cpu_Dispatch's sti;hlt, or
+     * a nested interrupt - nothing did, so the next interrupt could land in
+     * the middle of the XMM restore and core_LeaveInterrupt's pops and
+     * corrupt the frame being returned through: #GP in "CPU #n Idle" at a
+     * garbage RIP (0x3) under sustained network IRQ load (the exception
+     * path got the same cli after cpu_Trap). IRETQ restores the interrupted
+     * context's IF from the frame.
+     */
+    __asm__ __volatile__("cli");
 
 #if (__WORDSIZE==64)
     /* Restore first four XMM registers. They could have been modified by any interrupt handler.
