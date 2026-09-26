@@ -40,7 +40,8 @@ GALLIVM_C_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,  $(fi
 GALLIVM_CXX_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,  $(filter %.cpp, $(GALLIVM_SOURCES))))
 
 GALLIVM_SOURCES_C := \
-            $(GALLIVM_C_SOURCES:.c=)
+            $(GALLIVM_C_SOURCES:.c=) \
+            $(SRCDIR)/$(CURDIR)/lp_aros_stack
 
 GALLIVM_SOURCES_CXX := \
             $(GALLIVM_CXX_SOURCES:.cpp=)

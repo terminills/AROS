@@ -1207,3 +1207,37 @@ diff -ruN mesa-26.0.0/src/gallium/drivers/llvmpipe/lp_rast.c mesa-26.0.0.aros/sr
  
     /* Make sure that denorms are treated like zeros. This is
      * the behavior required by D3D10. OpenGL doesn't care.
+diff -ruN mesa-26.0.0/src/gallium/auxiliary/gallivm/lp_bld_init.c mesa-26.0.0.aros/src/gallium/auxiliary/gallivm/lp_bld_init.c
+--- mesa-26.0.0/src/gallium/auxiliary/gallivm/lp_bld_init.c	2025-02-11 12:07:00.000000000 +0000
++++ mesa-26.0.0.aros/src/gallium/auxiliary/gallivm/lp_bld_init.c	2026-09-26 00:00:00.000000000 +0000
+@@ -374,8 +374,30 @@
+  * Compile a module.
+  * This does IR optimization on all functions in the module.
+  */
++#if defined(__AROS__)
++/* LLVM's compile needs far more stack than an AROS task has by default:
++ * run it on a stack of its own when this one is short (lp_aros_stack.c). */
++void lp_aros_run_on_big_stack(void (*fn)(void *), void *arg);
++static void gallivm_compile_module_body(struct gallivm_state *gallivm);
++
++static void
++gallivm_compile_module_thunk(void *arg)
++{
++   gallivm_compile_module_body(arg);
++}
++
++void
++gallivm_compile_module(struct gallivm_state *gallivm)
++{
++   lp_aros_run_on_big_stack(gallivm_compile_module_thunk, gallivm);
++}
++
++static void
++gallivm_compile_module_body(struct gallivm_state *gallivm)
++#else
+ void
+ gallivm_compile_module(struct gallivm_state *gallivm)
++#endif
+ {
+    assert(!gallivm->compiled);
+ 
