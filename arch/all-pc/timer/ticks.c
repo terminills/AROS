@@ -116,6 +116,139 @@ static inline void ClockLockRelease(struct TimerBase *TimerBase, void *lock)
 }
 
 /*
+ * TSC time source.
+ *
+ * Latching the PIT costs several I/O port accesses per clock read (each one
+ * a VM exit under virtualisation) and, on SMP, is done under the one clock
+ * lock every CPU shares. With Chromium reading the clock from every thread,
+ * eight CPUs together managed fewer reads per second than one CPU alone
+ * (SMP-Clock: ~3.5us per read alone, ~45us each with all eight reading).
+ *
+ * With an invariant TSC (constant rate, running in every C-state) the clock
+ * is instead read with RDTSC: the lock is then held for a few instructions.
+ * The PIT remains the alarm (Timer0Setup() still reloads it) and remains the
+ * clock during the first quarter second, while the TSC rate is measured
+ * against it, and for good on CPUs without an invariant TSC.
+ *
+ * TSC -> EClock conversion: the base advances in whole seconds (tb_TSCHz TSC
+ * ticks are exactly tb_eclock_rate EClock ticks), so only the sub-second
+ * remainder is scaled and no rounding error accumulates; the product then
+ * fits in 64 bits, which keeps this usable on i386 too.
+ */
+static inline UQUAD tsc_read(void)
+{
+    ULONG lo, hi;
+
+    asm volatile("lfence; rdtsc" : "=a"(lo), "=d"(hi));
+    return ((UQUAD)hi << 32) | lo;
+}
+
+void EClockTSCInit(struct TimerBase *TimerBase)
+{
+    ULONG eax, ebx, ecx, edx;
+
+    TimerBase->tb_Platform.tb_TSCMode = PCTIMER_TSC_NONE;
+
+    /* CPUID 0x80000007 EDX bit 8: invariant TSC */
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                         : "a"(0x80000000));
+    if (eax < 0x80000007)
+    {
+        bug("[Timer] clock: PIT (no invariant TSC)\n");
+        return;
+    }
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                         : "a"(0x80000007));
+    if (!(edx & (1 << 8)))
+    {
+        bug("[Timer] clock: PIT (no invariant TSC)\n");
+        return;
+    }
+
+    TimerBase->tb_Platform.tb_TSCBase = tsc_read();
+    TimerBase->tb_Platform.tb_TicksBase = TimerBase->tb_ticks_total;
+    TimerBase->tb_Platform.tb_TSCMode = PCTIMER_TSC_CALIBRATE;
+}
+
+/* EClock ticks now, from the TSC. Caller holds the clock lock. */
+static UQUAD EClockTSCTicks(struct TimerBase *TimerBase)
+{
+    struct PlatformTimer *pt = &TimerBase->tb_Platform;
+    UQUAD now = tsc_read();
+
+    while (now - pt->tb_TSCBase >= pt->tb_TSCHz)
+    {
+        pt->tb_TSCBase += pt->tb_TSCHz;
+        pt->tb_TicksBase += TimerBase->tb_eclock_rate;
+    }
+    return pt->tb_TicksBase +
+           ((now - pt->tb_TSCBase) * TimerBase->tb_eclock_rate) / pt->tb_TSCHz;
+}
+
+/*
+ * Advance the counters by a tick count, at most a second at a time (INCTIME
+ * carries one second per step). Caller holds the clock lock.
+ */
+static void EClockAddTicks(UQUAD ticks, struct TimerBase *TimerBase)
+{
+    while (ticks)
+    {
+        ULONG step = ticks > TimerBase->tb_eclock_rate ?
+                     TimerBase->tb_eclock_rate : (ULONG)ticks;
+
+        TimerBase->tb_ticks_total += step;
+        INCTIME(TimerBase->tb_CurrentTime, TimerBase->tb_ticks_sec, step);
+        INCTIME(TimerBase->tb_Elapsed, TimerBase->tb_ticks_elapsed, step);
+        ticks -= step;
+    }
+}
+
+/*
+ * Bring the counters up to the TSC. Never moves them back: a CPU whose TSC
+ * reads a little behind the one that last advanced them leaves them as they
+ * are. Caller holds the clock lock.
+ */
+static void EClockTSCUpdate(struct TimerBase *TimerBase)
+{
+    UQUAD target = EClockTSCTicks(TimerBase);
+
+    if (target > TimerBase->tb_ticks_total)
+        EClockAddTicks(target - TimerBase->tb_ticks_total, TimerBase);
+}
+
+/*
+ * While calibrating, after a PIT-driven update: once a quarter second of PIT
+ * time has passed, fix the TSC rate and switch the clock to the TSC.
+ * Caller holds the clock lock.
+ */
+static void EClockTSCCalibrate(struct TimerBase *TimerBase)
+{
+    struct PlatformTimer *pt = &TimerBase->tb_Platform;
+    UQUAD ticks = TimerBase->tb_ticks_total - pt->tb_TicksBase;
+    UQUAD now;
+
+    if (ticks < TimerBase->tb_eclock_rate / 4)
+        return;
+
+    now = tsc_read();
+    pt->tb_TSCHz = ((now - pt->tb_TSCBase) * TimerBase->tb_eclock_rate) / ticks;
+    if (pt->tb_TSCHz < 10000000)
+    {
+        /* Implausible (under 10 MHz): stay on the PIT */
+        pt->tb_TSCMode = PCTIMER_TSC_NONE;
+        bug("[Timer] clock: PIT (TSC rate %lu Hz implausible)\n",
+            (unsigned long)pt->tb_TSCHz);
+        return;
+    }
+    pt->tb_TSCBase = now;
+    pt->tb_TicksBase = TimerBase->tb_ticks_total;
+    pt->tb_TSCMode = PCTIMER_TSC_ACTIVE;
+    /* One line, once: which clock a system runs on is the first thing to
+       know when comparing timing reports between machines */
+    bug("[Timer] clock: TSC %lu kHz\n", (unsigned long)(pt->tb_TSCHz / 1000));
+}
+
+/*
  * Calculate difference and add it to our current EClock value.
  * PIT counters actually count backwards. This is why everything here looks reversed.
  * Caller holds the clock lock.
@@ -147,6 +280,13 @@ void EClockUpdate(struct TimerBase *TimerBase)
 
     lock = ClockLockObtain(TimerBase);
 
+    if (TimerBase->tb_Platform.tb_TSCMode == PCTIMER_TSC_ACTIVE)
+    {
+        EClockTSCUpdate(TimerBase);
+        ClockLockRelease(TimerBase, lock);
+        return;
+    }
+
     outb(CH0|ACCESS_LATCH, PIT_CONTROL);        /* Latch the current time value */
     time = ch_read(PIT_CH0);                    /* Read out current 16-bit time */
 
@@ -155,6 +295,9 @@ void EClockUpdate(struct TimerBase *TimerBase)
     EClockAdd(time, TimerBase);                 /* Increment our time counters  */
     TimerBase->tb_prev_tick = time;             /* Remember last counter value as start of new interval */
     D(bug("[Timer] %s:      new = %04x\n", __func__, TimerBase->tb_prev_tick));
+
+    if (TimerBase->tb_Platform.tb_TSCMode == PCTIMER_TSC_CALIBRATE)
+        EClockTSCCalibrate(TimerBase);
 
     ClockLockRelease(TimerBase, lock);
 }
@@ -172,6 +315,14 @@ void EClockSet(struct TimerBase *TimerBase)
 
     outb(CH0|ACCESS_LATCH, PIT_CONTROL);        /* Latch the current time value */
     TimerBase->tb_prev_tick = ch_read(PIT_CH0); /* Read out current 16-bit time */
+
+    /* The tick total was just recomputed from the new time: measure the TSC
+       from here (and restart a calibration in progress from here too) */
+    if (TimerBase->tb_Platform.tb_TSCMode != PCTIMER_TSC_NONE)
+    {
+        TimerBase->tb_Platform.tb_TSCBase = tsc_read();
+        TimerBase->tb_Platform.tb_TicksBase = TimerBase->tb_ticks_total;
+    }
 
     ClockLockRelease(TimerBase, lock);
 }
@@ -239,9 +390,14 @@ void Timer0Setup(struct TimerBase *TimerBase)
 
     /*
      * Now, when our new delay is already in progress, we can spend some time
-     * on adding previous value to our time counters.
+     * on adding previous value to our time counters. With the TSC as the
+     * clock, the counters follow the TSC instead (adding the PIT interval as
+     * well would count it twice).
      */
-    EClockAdd(current_tick, TimerBase);
+    if (TimerBase->tb_Platform.tb_TSCMode == PCTIMER_TSC_ACTIVE)
+        EClockTSCUpdate(TimerBase);
+    else
+        EClockAdd(current_tick, TimerBase);
     /* tb_prev_tick is used by EClockAdd(), so restore it now */
     TimerBase->tb_prev_tick = delay;
 

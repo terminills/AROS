@@ -15,5 +15,6 @@ static inline void Timer0Start(UWORD delay, struct TimerBase *TimerBase)
 }
 
 void Timer0Setup(struct TimerBase *TimerBase);
+void EClockTSCInit(struct TimerBase *TimerBase);
 
 #endif /* _PC_TIMER_TICKS_H */

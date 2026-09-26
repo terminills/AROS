@@ -150,6 +150,10 @@ static int hw_Init(struct TimerBase *LIBBASE)
     LIBBASE->tb_Platform.tb_ReloadValue = 0x5D38; // 23864
     LIBBASE->tb_prev_tick               = LIBBASE->tb_Platform.tb_InitValue;
 
+    /* Read the clock from an invariant TSC once its rate is measured
+       against the PIT (ticks.c) */
+    EClockTSCInit(LIBBASE);
+
     D(bug("[Timer]     gate start state = %x\n", (inb(0x61) & 0x3)));
     if ((inb(0x61) & 0x3))
     {

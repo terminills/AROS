@@ -27,10 +27,24 @@ struct PlatformTimer
      */
     void                *tb_ClockLock;
 #endif
+    /*
+     * TSC time source (ticks.c). The PIT stays the alarm; with an invariant
+     * TSC the clock is read from it instead of latching the PIT through I/O
+     * ports, calibrated against the PIT during the first quarter second.
+     */
+    UBYTE               tb_TSCMode;     /* PCTIMER_TSC_xxx                      */
+    UQUAD               tb_TSCHz;       /* TSC ticks per second                 */
+    UQUAD               tb_TSCBase;     /* TSC value at tb_TicksBase            */
+    UQUAD               tb_TicksBase;   /* EClock ticks at tb_TSCBase           */
 };
 
 /* tb_Flags definitions */
 #define PCTIMER_FLAGB_ENABLED   1
 #define PCTIMER_FLAGF_ENABLED   (1 << PCTIMER_FLAGB_ENABLED)
+
+/* tb_TSCMode values */
+#define PCTIMER_TSC_NONE        0       /* no invariant TSC: PIT only           */
+#define PCTIMER_TSC_CALIBRATE   1       /* PIT clock, measuring the TSC rate    */
+#define PCTIMER_TSC_ACTIVE      2       /* clock read from the TSC              */
 
 #endif /* _PC_TIMER_PLATFORM_H */
