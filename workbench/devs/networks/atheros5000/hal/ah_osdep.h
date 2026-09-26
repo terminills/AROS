@@ -30,6 +30,10 @@
 #define	__packed	__attribute__((__packed__))
 #endif
 
+#ifdef __AROS__
+/* The system's own: long long is not int64_t's type on every AROS target */
+#include <stdint.h>
+#else
 typedef BYTE int8_t;
 typedef WORD int16_t;
 typedef LONG int32_t;
@@ -39,6 +43,7 @@ typedef UBYTE uint8_t;
 typedef UWORD uint16_t;
 typedef ULONG uint32_t;
 typedef unsigned long long uint64_t;
+#endif
 
 #ifndef __size_t
 typedef unsigned int size_t;
