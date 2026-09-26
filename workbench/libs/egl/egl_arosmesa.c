@@ -21,6 +21,8 @@
 #include <string.h>
 
 #include <proto/exec.h>
+#include <proto/graphics.h>
+#include <proto/intuition.h>
 #include <GL/gla.h>
 
 #include <aros/debug.h>
@@ -36,10 +38,22 @@ struct Library * GLBase = NULL;
  * For surfaceless displays, we use GLA_RastPort with an offscreen bitmap.
  */
 
+/* A private render target for offscreen rendering: a bitmap in the default
+ * public screen's format with a RastPort on it. GLA needs a screen (for the
+ * pixel format) and a RastPort to render into; neither is ever shown. */
+struct egl_arosmesa_offscreen
+{
+    struct Screen   * scr;
+    struct BitMap   * bm;
+    struct RastPort * rp;
+};
+
 struct egl_arosmesa_context
 {
     _EGLContext base;
     GLAContext amesactx;
+    struct Window * win;        /* window the GLA context renders to, if any */
+    struct egl_arosmesa_offscreen surfaceless;  /* target with no surface */
 };
 
 static inline struct egl_arosmesa_context * egl_arosmesa_context(_EGLContext * ctx)
@@ -51,12 +65,71 @@ struct egl_arosmesa_surface
 {
     _EGLSurface base;
     struct Window * win;        /* non-NULL for window surfaces */
+    struct egl_arosmesa_offscreen offscreen;    /* pbuffer surfaces */
 };
+
+static void free_offscreen(struct egl_arosmesa_offscreen * off)
+{
+    if (off->rp)
+        FreeVec(off->rp);
+    if (off->bm)
+        FreeBitMap(off->bm);
+    if (off->scr)
+        UnlockPubScreen(NULL, off->scr);
+    off->rp = NULL;
+    off->bm = NULL;
+    off->scr = NULL;
+}
+
+static BOOL alloc_offscreen(struct egl_arosmesa_offscreen * off, LONG w, LONG h)
+{
+    struct BitMap * friend;
+
+    if (w < 1)
+        w = 1;
+    if (h < 1)
+        h = 1;
+
+    off->scr = LockPubScreen(NULL);
+    if (!off->scr)
+        return FALSE;
+
+    friend = off->scr->RastPort.BitMap;
+    off->bm = AllocBitMap(w, h, GetBitMapAttr(friend, BMA_DEPTH),
+                          BMF_CLEAR | BMF_MINPLANES, friend);
+    off->rp = AllocVec(sizeof(struct RastPort), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!off->bm || !off->rp)
+    {
+        free_offscreen(off);
+        return FALSE;
+    }
+    InitRastPort(off->rp);
+    off->rp->BitMap = off->bm;
+
+    return TRUE;
+}
 
 /* --- Helper: is this a surfaceless display? --- */
 static inline EGLBoolean is_surfaceless(_EGLDisplay *disp)
 {
     return disp->Platform == _EGL_PLATFORM_SURFACELESS;
+}
+
+/* --- Helper: GLA tags for rendering to a window --- */
+static void window_attributes(struct Window * win, struct TagItem * attributes)
+{
+    int i = 0;
+
+    attributes[i].ti_Tag = GLA_Window;      attributes[i++].ti_Data = (IPTR)win;
+    attributes[i].ti_Tag = GLA_Left;        attributes[i++].ti_Data = win->BorderLeft;
+    attributes[i].ti_Tag = GLA_Top;         attributes[i++].ti_Data = win->BorderTop;
+    attributes[i].ti_Tag = GLA_Bottom;      attributes[i++].ti_Data = win->BorderBottom;
+    attributes[i].ti_Tag = GLA_Right;       attributes[i++].ti_Data = win->BorderRight;
+    attributes[i].ti_Tag = GLA_DoubleBuf;   attributes[i++].ti_Data = GL_TRUE;
+    attributes[i].ti_Tag = GLA_RGBMode;     attributes[i++].ti_Data = GL_TRUE;
+    attributes[i].ti_Tag = GLA_NoStencil;   attributes[i++].ti_Data = GL_TRUE;
+    attributes[i].ti_Tag = GLA_NoAccum;     attributes[i++].ti_Data = GL_TRUE;
+    attributes[i].ti_Tag = TAG_DONE;
 }
 
 /* --- Driver callbacks (Mesa 26 API: no _EGLDriver* parameter) --- */
@@ -83,6 +156,7 @@ egl_arosmesa_destroycontext(_EGLDisplay *dpy, _EGLContext *ctx)
             glAMakeCurrent(NULL);
             glADestroyContext(eglctx->amesactx);
         }
+        free_offscreen(&eglctx->surfaceless);
         free(eglctx);
     }
 
@@ -94,6 +168,7 @@ egl_arosmesa_destroysurface(_EGLDisplay *disp, _EGLSurface *surf)
 {
     if (_eglPutSurface(surf))
     {
+        free_offscreen(&((struct egl_arosmesa_surface *)surf)->offscreen);
         free(surf);
     }
 
@@ -150,17 +225,33 @@ egl_arosmesa_makecurrent(_EGLDisplay *disp, _EGLSurface *dsurf,
             disp->DriverData = NULL;
         }
 
+        /* What the context renders to follows the surface being bound, not
+         * the display's platform: an AROS-window display still binds
+         * pbuffers, and EGL_KHR_surfaceless_context allows no surface at
+         * all (a client's first MakeCurrent is often one of those). */
+        struct Window * win = dsurf ?
+            ((struct egl_arosmesa_surface *)dsurf)->win : NULL;
+
         if (eglctx->amesactx == NULL)
         {
             struct TagItem attributes[14];
             int i = 0;
 
-            if (is_surfaceless(disp))
+            if (win == NULL)
             {
-                /* Surfaceless/pbuffer: use GLA_Width/GLA_Height, no Window */
+                /* Offscreen: render into the pbuffer's private RastPort, or
+                 * a 1x1 one owned by the context when there is no surface */
                 EGLint w = dsurf ? dsurf->Width  : 1;
                 EGLint h = dsurf ? dsurf->Height : 1;
+                struct egl_arosmesa_offscreen * off = dsurf ?
+                    &((struct egl_arosmesa_surface *)dsurf)->offscreen :
+                    &eglctx->surfaceless;
 
+                if (!off->rp && !alloc_offscreen(off, w, h))
+                    return EGL_FALSE;
+
+                attributes[i].ti_Tag = GLA_Screen;      attributes[i++].ti_Data = (IPTR)off->scr;
+                attributes[i].ti_Tag = GLA_RastPort;    attributes[i++].ti_Data = (IPTR)off->rp;
                 attributes[i].ti_Tag = GLA_Width;       attributes[i++].ti_Data = (IPTR)w;
                 attributes[i].ti_Tag = GLA_Height;      attributes[i++].ti_Data = (IPTR)h;
                 attributes[i].ti_Tag = GLA_DoubleBuf;   attributes[i++].ti_Data = GL_FALSE;
@@ -169,28 +260,30 @@ egl_arosmesa_makecurrent(_EGLDisplay *disp, _EGLSurface *dsurf,
                 attributes[i].ti_Tag = GLA_NoAccum;     attributes[i++].ti_Data = GL_TRUE;
                 attributes[i].ti_Tag = TAG_DONE;
 
-                D(bug("[EGL] surfaceless: glACreateContext %dx%d\n", w, h));
+                D(bug("[EGL] offscreen: glACreateContext %dx%d\n", w, h));
             }
             else
             {
-                /* Window surface: need Window pointer from surface */
-                struct Window * win = ((struct egl_arosmesa_surface *)dsurf)->win;
-
-                attributes[i].ti_Tag = GLA_Window;      attributes[i++].ti_Data = (IPTR)win;
-                attributes[i].ti_Tag = GLA_Left;        attributes[i++].ti_Data = win->BorderLeft;
-                attributes[i].ti_Tag = GLA_Top;         attributes[i++].ti_Data = win->BorderTop;
-                attributes[i].ti_Tag = GLA_Bottom;      attributes[i++].ti_Data = win->BorderBottom;
-                attributes[i].ti_Tag = GLA_Right;       attributes[i++].ti_Data = win->BorderRight;
-                attributes[i].ti_Tag = GLA_DoubleBuf;   attributes[i++].ti_Data = GL_TRUE;
-                attributes[i].ti_Tag = GLA_RGBMode;     attributes[i++].ti_Data = GL_TRUE;
-                attributes[i].ti_Tag = GLA_NoStencil;   attributes[i++].ti_Data = GL_TRUE;
-                attributes[i].ti_Tag = GLA_NoAccum;     attributes[i++].ti_Data = GL_TRUE;
-                attributes[i].ti_Tag = TAG_DONE;
+                window_attributes(win, attributes);
             }
 
             eglctx->amesactx = glACreateContext(attributes);
-            D(bug("[EGL] glACreateContext = %p (surfaceless=%d)\n",
-                  eglctx->amesactx, is_surfaceless(disp)));
+            eglctx->win = win;
+            D(bug("[EGL] glACreateContext = %p (window=%p)\n",
+                  eglctx->amesactx, win));
+        }
+        else if (win != NULL && win != eglctx->win)
+        {
+            /* A context made current offscreen first, now bound to a window
+             * surface: point its rendering at the window. Binding a window
+             * context back to a pbuffer keeps the window target; offscreen
+             * rendering goes to framebuffer objects anyway. */
+            struct TagItem attributes[14];
+
+            window_attributes(win, attributes);
+            glASetRast(eglctx->amesactx, attributes);
+            eglctx->win = win;
+            D(bug("[EGL] glASetRast(%p, window=%p)\n", eglctx->amesactx, win));
         }
 
         if (eglctx->amesactx != NULL)
@@ -246,6 +339,12 @@ egl_arosmesa_createpbuffersurface(_EGLDisplay *disp, _EGLConfig *conf,
     /* Width/Height come from attrib_list (EGL_WIDTH/EGL_HEIGHT),
      * already parsed by _eglInitSurface into surf->base.Width/Height */
     surf->win = NULL;
+    if (!is_surfaceless(disp) &&
+        !alloc_offscreen(&surf->offscreen, surf->base.Width, surf->base.Height))
+    {
+        free(surf);
+        return NULL;
+    }
 
     D(bug("[EGL] pbuffer surface %dx%d created\n",
           surf->base.Width, surf->base.Height));
