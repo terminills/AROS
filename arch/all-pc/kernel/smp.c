@@ -57,6 +57,10 @@ static void smp_Entry(IPTR stackBase, spinlock_t *apicReadyLock, struct KernelBa
     wrcr(cr4, rdcr(cr4) | _CR4_OSFXSR | _CR4_OSXMMEXCPT);
 #endif
 
+    /* Same register interface as the boot CPU, before anything here uses it */
+    if (apicX2Mode)
+        core_APIC_X2Enable();
+
     apicCPU = &apicData->cores[apicCPUNo];
 
     D(

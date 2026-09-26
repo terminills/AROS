@@ -375,8 +375,12 @@ void kernel_cstart(const struct TagItem *start_msg)
             allocator = ALLOCATOR_STD;
     }
 
-    /* We are x86-64, and we know we always have APIC. */
+    /* We are x86-64, and we know we always have APIC. Pick xAPIC or x2APIC
+       before anything touches it. */
+    core_APIC_X2Probe();
     __KernBootPrivate->_APICBase = core_APIC_GetBase();
+    apicLAPICBase = __KernBootPrivate->_APICBase;
+    bug("[Kernel] Local APIC: %s\n", apicX2Mode ? "x2APIC" : "xAPIC");
 
     /* Pre-Allocate TLS & GDT */
     if (!__KernBootPrivate->BOOTTLS)

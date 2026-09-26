@@ -41,6 +41,7 @@ struct APICData *core_APIC_Probe(void)
     if ((ssp = SuperState()) != NULL)
     {
         data->lapicBase    = core_APIC_GetBase();
+        apicLAPICBase      = data->lapicBase;
         
         D(bug("[APIC] APIC Base = 0x%p\n", data->lapicBase));
 

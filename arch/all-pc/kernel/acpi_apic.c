@@ -180,7 +180,7 @@ AROS_UFH3(IPTR, ACPI_hook_Table_LAPIC_NMI_Parse,
             val |= LVT_TGM_LEVEL;
         }
 
-        APIC_REG(pdata->kb_APIC->lapicBase, reg) = val;
+        apic_Write(pdata->kb_APIC->lapicBase, reg, val);
         return TRUE;
     }
 

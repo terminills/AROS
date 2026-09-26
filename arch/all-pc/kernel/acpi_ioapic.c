@@ -718,7 +718,7 @@ BOOL IOAPICInt_AckIntr(APTR icPrivate, icinstid_t icInstance, irqid_t intNum)
     /* Write zero to EOI of APIC */
     apic_base = core_APIC_GetBase();
     DINT(bug("[Kernel:IOAPIC] %s(%u): apicBase = %p\n", __func__, intNum, apic_base);)
-    APIC_REG(apic_base, APIC_EOI) = 0;
+    apic_Write(apic_base, APIC_EOI, 0);
 
     return TRUE;
 }

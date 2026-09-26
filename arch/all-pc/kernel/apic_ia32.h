@@ -273,7 +273,136 @@ UBYTE apicAllocVector(ULONG irq);
 #define MSR_HYPERV_TSC_FREQUENCY		0x40000022		/* TSC frequency */
 #define MAS_HYPERV_APIC_FREQUENCY		0x40000023		/* APIC timer frequency */
 
-/* Register access macro to make the code more readable */
-#define APIC_REG(base, reg) *((volatile ULONG *)(base + reg))
+/*
+ * x2APIC (CPUID.01H:ECX[21]). With IA32_APIC_BASE.EXTD set, the local APIC's
+ * registers are MSRs 0x800 + (MMIO offset >> 4) instead of the MMIO page; the
+ * ICR is one 64-bit register holding the destination in bits 63:32, so an
+ * IPI is a single write and there is no delivery status to wait on; DFR does
+ * not exist and LDR is read-only.
+ *
+ * Under a hypervisor without APIC virtualisation every xAPIC access is an
+ * MMIO exit the hypervisor has to decode and emulate, while x2APIC accesses
+ * are MSR exits (KVM completes ICR and TSC-deadline writes on a fast path).
+ * On hardware an IPI no longer polls ICR delivery status.
+ */
+#define APIC_X2APIC             (1 << 10)               /* IA32_APIC_BASE: x2APIC mode (EXTD)            */
+#define CPUID_FEAT_ECX_X2APIC   (1U << 21)
+#define MSR_X2APIC_REGS         0x800
+#define MSR_X2APIC_ICR          0x830
+
+/* Set once on the boot CPU, before any other CPU runs; see core_APIC_X2Probe() */
+extern UBYTE apicX2Mode;
+
+/*
+ * Much of the kernel's APIC code - ACPI setup, Signal()'s cross-CPU IPIs -
+ * runs in user mode, where the xAPIC page was mapped but RDMSR/WRMSR fault.
+ * The accessors take the MSR path directly at CPL 0 and through SuperState()
+ * (a trap handled inside the guest, not a VM exit) otherwise.
+ */
+static inline BOOL apic_IsCPL0(void)
+{
+    UWORD cs;
+
+    asm volatile("mov %%cs, %0" : "=r"(cs));
+    return (cs & 3) == 0;
+}
+
+static inline ULONG apic_X2Read(ULONG reg)
+{
+    ULONG lo, hi;
+
+    asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(MSR_X2APIC_REGS + (reg >> 4)));
+    return lo;
+}
+
+static inline void apic_WriteMSR(ULONG msr, ULONG lo, ULONG hi)
+{
+    asm volatile("wrmsr" : : "c"(msr), "a"(lo), "d"(hi) : "memory");
+}
+
+/* The same from user mode, in apic_ia32.c */
+ULONG apic_X2ReadUser(ULONG reg);
+void apic_WriteMSRUser(ULONG msr, ULONG lo, ULONG hi);
+
+static inline ULONG apic_Read(IPTR base, ULONG reg)
+{
+    if (apicX2Mode)
+        return apic_IsCPL0() ? apic_X2Read(reg) : apic_X2ReadUser(reg);
+    return *((volatile ULONG *)(base + reg));
+}
+
+static inline void apic_Write(IPTR base, ULONG reg, ULONG val)
+{
+    if (apicX2Mode)
+    {
+        if (apic_IsCPL0())
+            apic_WriteMSR(MSR_X2APIC_REGS + (reg >> 4), val, 0);
+        else
+            apic_WriteMSRUser(MSR_X2APIC_REGS + (reg >> 4), val, 0);
+    }
+    else
+        *((volatile ULONG *)(base + reg)) = val;
+}
+
+/*
+ * TSC-deadline timer (CPUID.01H:ECX[24]): with the timer LVT in this mode the
+ * heartbeat fires when the TSC reaches IA32_TSC_DEADLINE, so re-arming is one
+ * MSR write (on KVM's fast path) instead of reading and rewriting the timer
+ * count registers. Chosen on the boot CPU in core_APIC_Calibrate().
+ */
+#define CPUID_FEAT_ECX_TSCDEADLINE (1U << 24)
+#define MSR_TSC_DEADLINE        0x6E0
+#define LVT_TMM_TSCDEADLINE     0x040000                /* Timer mode 10b: TSC deadline                 */
+
+extern UBYTE apicTSCDeadline;
+
+static inline UQUAD apic_RDTSC(void)
+{
+    ULONG lo, hi;
+
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((UQUAD)hi << 32) | lo;
+}
+
+/* Fire the heartbeat when the TSC reaches tsc */
+static inline void apic_ArmTSCDeadline(UQUAD tsc)
+{
+    if (apic_IsCPL0())
+        apic_WriteMSR(MSR_TSC_DEADLINE, (ULONG)tsc, (ULONG)(tsc >> 32));
+    else
+        apic_WriteMSRUser(MSR_TSC_DEADLINE, (ULONG)tsc, (ULONG)(tsc >> 32));
+}
+
+/* TRUE while a previous xAPIC IPI is still being delivered (never on x2APIC) */
+static inline BOOL apic_IPIBusy(IPTR base)
+{
+    if (apicX2Mode)
+        return FALSE;
+    return (*((volatile ULONG *)(base + APIC_ICRL)) & ICR_DS) != 0;
+}
+
+/*
+ * Send an IPI. dest is the target's local APIC ID, ignored when cmd carries
+ * a destination shorthand. On xAPIC this is two stores - see kernel_ipi.c
+ * for why the caller keeps interrupts off across them.
+ */
+static inline void apic_SendIPI(IPTR base, ULONG dest, ULONG cmd)
+{
+    if (apicX2Mode)
+    {
+        /* x2APIC MSR writes are not ordered against earlier stores */
+        asm volatile("mfence; lfence" : : : "memory");
+        if (apic_IsCPL0())
+            apic_WriteMSR(MSR_X2APIC_ICR, cmd, dest);
+        else
+            apic_WriteMSRUser(MSR_X2APIC_ICR, cmd, dest);
+    }
+    else
+    {
+        if ((cmd & (0x03 << ICRB_DSH)) == 0)
+            *((volatile ULONG *)(base + APIC_ICRH)) = dest << APIC_ID_SHIFT;
+        *((volatile ULONG *)(base + APIC_ICRL)) = cmd;
+    }
+}
 
 #endif /* !APIC_IA32_H */

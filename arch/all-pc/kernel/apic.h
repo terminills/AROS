@@ -1,7 +1,7 @@
 #ifndef KERNEL_APIC_H
 #define KERNEL_APIC_H
 /*
-    Copyright © 1995-2026, The AROS Development Team. All rights reserved.
+    Copyright ï¿½ 1995-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: Generic AROS APIC definitions.
@@ -88,11 +88,25 @@ void core_APIC_Calibrate(struct APICData *data, apicid_t cpuNum);
 void  core_APIC_AckIntr(void);
 void core_APIC_Finalize(IPTR _APICBase);
 
+/*
+ * The local APIC base, the same on every CPU. Cached by core_APIC_Probe():
+ * the interrupt paths ask for it on every IPI and heartbeat, and reading
+ * IA32_APIC_BASE is an MSR exit under a hypervisor.
+ */
+extern IPTR apicLAPICBase;
+/* Nonzero when the local APICs run in x2APIC mode (see apic_ia32.h) */
+extern UBYTE apicX2Mode;
+
 /* This is callable in supervisor only */
 static inline IPTR core_APIC_GetBase(void)
 {
+    if (apicLAPICBase)
+        return apicLAPICBase;
     return rdmsri(0x1B) & APIC_BASE_MASK;
 }
+
+void core_APIC_X2Probe(void);
+void core_APIC_X2Enable(void);
 
 struct APICData *core_APIC_Probe(void);
 

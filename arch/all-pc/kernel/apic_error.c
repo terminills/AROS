@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2017-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 #define __KERNEL_NOLIBBASE__
@@ -30,8 +30,8 @@ int core_APICErrorHandle(struct ExceptionContext *regs, struct KernelBase *Kerne
 
     // IN order to read APIC_ESR register one has to first write it with anything (zero is fine)
     // This forces update of the contents and new error codes may be read
-    APIC_REG(__LAPICBase, APIC_ESR) = error_code;
-    error_code = APIC_REG(__LAPICBase, APIC_ESR);
+    apic_Write(__LAPICBase, APIC_ESR, error_code);
+    error_code = apic_Read(__LAPICBase, APIC_ESR);
 
     bug("[Kernel:APIC-IA32.%03u] %s: APIC Error interrupt! Error code=%08x\n", cpunum, __func__, error_code);
 
@@ -65,23 +65,23 @@ int core_APICSpuriousHandle(struct ExceptionContext *regs, struct KernelBase *Ke
     {
         bug("[Kernel:APIC-IA32.%03u] %s: IRR = %08x%08x%08x%08x%08x%08x%08x%08x\n",
             cpunum, __func__,
-            APIC_REG(__LAPICBase, APIC_IRR+0x70), APIC_REG(__LAPICBase, APIC_IRR+0x60),
-            APIC_REG(__LAPICBase, APIC_IRR+0x50), APIC_REG(__LAPICBase, APIC_IRR+0x40),
-            APIC_REG(__LAPICBase, APIC_IRR+0x30), APIC_REG(__LAPICBase, APIC_IRR+0x20),
-            APIC_REG(__LAPICBase, APIC_IRR+0x10), APIC_REG(__LAPICBase, APIC_IRR+0x00));
+            apic_Read(__LAPICBase, APIC_IRR+0x70), apic_Read(__LAPICBase, APIC_IRR+0x60),
+            apic_Read(__LAPICBase, APIC_IRR+0x50), apic_Read(__LAPICBase, APIC_IRR+0x40),
+            apic_Read(__LAPICBase, APIC_IRR+0x30), apic_Read(__LAPICBase, APIC_IRR+0x20),
+            apic_Read(__LAPICBase, APIC_IRR+0x10), apic_Read(__LAPICBase, APIC_IRR+0x00));
         bug("[Kernel:APIC-IA32.%03u] %s: ISR = %08x%08x%08x%08x%08x%08x%08x%08x\n",
             cpunum, __func__,
-            APIC_REG(__LAPICBase, APIC_ISR+0x70), APIC_REG(__LAPICBase, APIC_ISR + 0x60),
-            APIC_REG(__LAPICBase, APIC_ISR + 0x50), APIC_REG(__LAPICBase, APIC_ISR + 0x40),
-            APIC_REG(__LAPICBase, APIC_ISR + 0x30), APIC_REG(__LAPICBase, APIC_ISR + 0x20),
-            APIC_REG(__LAPICBase, APIC_ISR + 0x10), APIC_REG(__LAPICBase, APIC_ISR + 0x00));
+            apic_Read(__LAPICBase, APIC_ISR+0x70), apic_Read(__LAPICBase, APIC_ISR + 0x60),
+            apic_Read(__LAPICBase, APIC_ISR + 0x50), apic_Read(__LAPICBase, APIC_ISR + 0x40),
+            apic_Read(__LAPICBase, APIC_ISR + 0x30), apic_Read(__LAPICBase, APIC_ISR + 0x20),
+            apic_Read(__LAPICBase, APIC_ISR + 0x10), apic_Read(__LAPICBase, APIC_ISR + 0x00));
 
         /* When doing a warm-reboot, APIC_TIMER_VEC gets set to 0xFF which is the vector of APIC_EXCEPT_SPURIOUS
            If APIC timer actually fires, this generates a "fake" spurious interrup, one in which ISR is set.
            In such case ISR needs to be reset via EOI, otherwise no further processing of exception happens
          */
-        if (APIC_REG(__LAPICBase, APIC_ISR+0x70) & 0x80000000)
-            APIC_REG(__LAPICBase, APIC_EOI) = 0;
+        if (apic_Read(__LAPICBase, APIC_ISR+0x70) & 0x80000000)
+            apic_Write(__LAPICBase, APIC_EOI, 0);
 
         if (ssp)
             UserState(ssp);

@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2011-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 2011-2026, The AROS Development Team. All rights reserved.
 
     Desc: Common trap handling routines for x86 CPU
 */
@@ -116,13 +116,16 @@ void cpu_Trap(struct ExceptionContext *regs, unsigned long error_code, unsigned 
     }
 
     /*
-     * If its an APIC exception, but not Syscall, send EOI
+     * If its an APIC exception, but not Syscall, send EOI - except for IPIs,
+     * which core_IPIHandle() acknowledges itself (the reschedule IPI before
+     * it switches tasks).
      */
-    if ((irq_number >= X86_CPU_EXCEPT_COUNT) && (irq_number < APIC_EXCEPT_SYSCALL))
+    if ((irq_number >= X86_CPU_EXCEPT_COUNT) && (irq_number < APIC_EXCEPT_SYSCALL) &&
+        !((irq_number >= APIC_EXCEPT_IPI_NOP) && (irq_number <= APIC_EXCEPT_IPI_CAUSE)))
     {
         D(bug("[Kernel] %s(%u): Sending EOI to LAPIC on CPU%03x\n", __func__, irq_number, KrnGetCPUNumber());)
         IPTR __APICBase = core_APIC_GetBase();
-        APIC_REG(__APICBase, APIC_EOI) = 0;
+        apic_Write(__APICBase, APIC_EOI, 0);
     }
 
 trapDone:

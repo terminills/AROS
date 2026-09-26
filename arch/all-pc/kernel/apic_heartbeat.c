@@ -45,14 +45,24 @@ int APICHeartbeatServer(struct ExceptionContext *regs, struct KernelBase *Kernel
 #endif
         ULONG icrval;
 
-        // Update LAPIC tick
-        apicData->cores[cpuNum].cpu_LAPICTick += APIC_REG(__LAPICBase, APIC_TIMER_ICR);
-
         icrval = (apicData->cores[cpuNum].cpu_TimerFreq + 500) / 1000;
-        D(bug("[Kernel:APIC.%03u] %s: reloading ICR with %u\n", cpuNum, __func__, icrval);)
 
-        // Relaunch LAPIC timer
-        APIC_REG(__LAPICBase, APIC_TIMER_ICR) = icrval;
+        /*
+         * Relaunch the timer for the next millisecond. The LAPIC tick adds
+         * the count just loaded rather than reading it back - a read is one
+         * more hypervisor exit per tick.
+         */
+        if (apicTSCDeadline)
+        {
+            D(bug("[Kernel:APIC.%03u] %s: next TSC deadline\n", cpuNum, __func__);)
+            apic_ArmTSCDeadline(apic_RDTSC() + (apicData->cores[cpuNum].cpu_TSCFreq + 500) / 1000);
+        }
+        else
+        {
+            D(bug("[Kernel:APIC.%03u] %s: reloading ICR with %u\n", cpuNum, __func__, icrval);)
+            apic_Write(__LAPICBase, APIC_TIMER_ICR, icrval);
+        }
+        apicData->cores[cpuNum].cpu_LAPICTick += icrval;
 
 #if defined(__AROSEXEC_SMP__)
         if ((now - apicData->cores[cpuNum].cpu_LastCPULoadTime) > apicData->cores[cpuNum].cpu_TSCFreq)

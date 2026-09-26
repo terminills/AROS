@@ -12,6 +12,7 @@
 #define __KERNEL_NOLIBBASE__
 #include <proto/kernel.h>
 #include <proto/exec.h>
+#include <proto/arossupport.h>
 #include <proto/acpica.h>
 
 #include <acpica/acnames.h>
@@ -22,11 +23,13 @@
 #endif
 
 #include <inttypes.h>
+#include <string.h>
 
 #include "kernel_base.h"
 #include "kernel_intern.h"
 #include "kernel_objects.h"
 #include "kernel_debug.h"
+#include "kernel_globals.h"
 #include "kernel_syscall.h"
 #include "kernel_timer.h"
 #include "kernel_ipi.h"
@@ -58,6 +61,74 @@
 extern int core_APICErrorHandle(struct ExceptionContext *, void *, void *);
 
 extern int APICHeartbeatServer(struct ExceptionContext *regs, struct KernelBase *KernelBase, struct ExecBase *SysBase);
+
+UBYTE apicX2Mode;
+UBYTE apicTSCDeadline;
+IPTR apicLAPICBase;
+
+ULONG apic_X2ReadUser(ULONG reg)
+{
+    APTR ssp = SuperState();
+    ULONG val = apic_X2Read(reg);
+
+    if (ssp)
+        UserState(ssp);
+    return val;
+}
+
+void apic_WriteMSRUser(ULONG msr, ULONG lo, ULONG hi)
+{
+    APTR ssp = SuperState();
+
+    apic_WriteMSR(msr, lo, hi);
+    if (ssp)
+        UserState(ssp);
+}
+
+/* Switch this CPU's local APIC to x2APIC mode. Supervisor only. */
+void core_APIC_X2Enable(void)
+{
+    ULONG lo, hi;
+
+    asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(MSR_LAPIC_BASE));
+    if (!(lo & APIC_X2APIC))
+    {
+        /* xAPIC -> x2APIC directly is allowed while the APIC is enabled */
+        lo |= APIC_ENABLE | APIC_X2APIC;
+        asm volatile("wrmsr" : : "c"(MSR_LAPIC_BASE), "a"(lo), "d"(hi) : "memory");
+    }
+}
+
+/*
+ * Choose the register interface, once, on the boot CPU before it touches the
+ * APIC and before any other CPU runs: x2APIC when the CPU has it (or firmware
+ * already switched to it, when the MMIO page no longer works), unless the
+ * command line says "nox2apic". Secondary CPUs follow in smp_Entry().
+ * Supervisor only.
+ */
+void core_APIC_X2Probe(void)
+{
+    ULONG a = 1, b, c, d, lo, hi;
+    struct TagItem *cmdTags;
+
+    asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(MSR_LAPIC_BASE));
+    if (lo & APIC_X2APIC)
+    {
+        apicX2Mode = 1;
+        return;
+    }
+
+    asm volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+    if (!(c & CPUID_FEAT_ECX_X2APIC))
+        return;
+
+    cmdTags = LibFindTagItem(KRN_CmdLine, BootMsg);
+    if (cmdTags && strstr((const char *)cmdTags->ti_Data, "nox2apic"))
+        return;
+
+    core_APIC_X2Enable();
+    apicX2Mode = 1;
+}
 
 /* APIC Interrupt Controller Functions ... ***************************/
 
@@ -244,7 +315,7 @@ BOOL APICInt_AckIntr(APTR icPrivate, icinstid_t icInstance, irqid_t intNum)
     /* Write zero to EOI of APIC */
     apic_base = core_APIC_GetBase();
 
-    APIC_REG(apic_base, APIC_EOI) = 0;
+    apic_Write(apic_base, APIC_EOI, 0);
 
     return TRUE;
 }
@@ -279,11 +350,13 @@ static ULONG ia32_ipi_send(IPTR __APICBase, ULONG target, ULONG cmd)
 
     /*
      * Send the IPI.
-     * First we write target APIC ID into high command register.
-     * Writing to the low register triggers the IPI itself.
+     * On xAPIC the target APIC ID goes into the high command register first,
+     * and writing the low register triggers the IPI itself; on x2APIC both
+     * are one write, and there is no delivery status to wait for.
      */
-    APIC_REG(__APICBase, APIC_ICRH) = target << 24;
-    APIC_REG(__APICBase, APIC_ICRL) = cmd;
+    apic_SendIPI(__APICBase, target, cmd);
+    if (apicX2Mode)
+        return 0;
 
     DIPI(bug("[Kernel:APIC-IA32.%03u] %s: Waiting for IPI to complete ", cpuNum, __func__));
 
@@ -296,7 +369,7 @@ static ULONG ia32_ipi_send(IPTR __APICBase, ULONG target, ULONG cmd)
             bug(".");
         }
 #endif
-        status_ipisend = APIC_REG(__APICBase, APIC_ICRL) & ICR_DS;
+        status_ipisend = apic_IPIBusy(__APICBase) ? ICR_DS : 0;
         /* Delivery status resets to 0 when delivery is done */
         if (status_ipisend == 0)
             break;
@@ -535,15 +608,15 @@ static UQUAD ia32_lapic_calibrate_pit(apicid_t cpuNum, IPTR __APICBase)
 
     samples = iter = PIT_SAMPLECOUNT;
 
-    APIC_REG(__APICBase, APIC_TIMER_ICR) = APIC_CRMAXVAL;
+    apic_Write(__APICBase, APIC_TIMER_ICR, APIC_CRMAXVAL);
 
     for (i = 0; i < PIT_SAMPLECOUNT; i++)
     {
-        lapic_initial = APIC_REG(__APICBase, APIC_TIMER_CCR);
+        lapic_initial = apic_Read(__APICBase, APIC_TIMER_CCR);
 
         pit_final   = pit_wait(11931);
 
-        lapic_final = APIC_REG(__APICBase, APIC_TIMER_CCR);
+        lapic_final = apic_Read(__APICBase, APIC_TIMER_CCR);
 
         /* Ignore results that are invalid, or wrap around. */
         if ((pit_final >= PIT_WAITTICKS) && (lapic_initial > lapic_final))
@@ -767,7 +840,7 @@ static AROS_INTH1(APICResetHandler, struct KernelBase *, KernelBase)
     {
         /* Cause the heartbeat to fire its last time .. */
         IPTR __APICBase = core_APIC_GetBase();
-        APIC_REG(__APICBase, APIC_TIMER_ICR) = 0x0;
+        apic_Write(__APICBase, APIC_TIMER_ICR, 0x0);
 
         if (ssp)
             UserState(ssp);
@@ -780,7 +853,7 @@ static AROS_INTH1(APICResetHandler, struct KernelBase *, KernelBase)
     {
         /* Now disable heartbeat timer */
         IPTR __APICBase = core_APIC_GetBase();
-        APIC_REG(__APICBase, APIC_TIMER_VEC) = 0xFF;
+        apic_Write(__APICBase, APIC_TIMER_VEC, 0xFF);
 
         if (ssp)
             UserState(ssp);
@@ -807,8 +880,8 @@ void core_APIC_Calibrate(struct APICData *apic, apicid_t cpuNum)
      */
 
     /* Set the timer to one-shot mode, no interrupt, 1:1 divisor */
-    APIC_REG(__APICBase, APIC_TIMER_VEC) = LVT_MASK | APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_HEARTBEAT);
-    APIC_REG(__APICBase, APIC_TIMER_DIV) = TIMER_DIV_1;
+    apic_Write(__APICBase, APIC_TIMER_VEC, LVT_MASK | APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_HEARTBEAT));
+    apic_Write(__APICBase, APIC_TIMER_DIV, TIMER_DIV_1);
 
     DCALIB(bug("[Kernel:APIC-IA32.%03u] %s: Calibrating timers ...\n", cpuNum, __func__));
 
@@ -928,7 +1001,24 @@ void core_APIC_Calibrate(struct APICData *apic, apicid_t cpuNum)
         pdata->kb_PDFlags |= PLATFORMF_HAVEHEARTBEAT;
     }
 
-    APIC_REG(__APICBase, APIC_TIMER_DIV) = TIMER_DIV_1;
+    apic_Write(__APICBase, APIC_TIMER_DIV, TIMER_DIV_1);
+
+    /*
+     * Heartbeat on the TSC-deadline timer when the CPU has it and we know
+     * the TSC rate, unless the command line says "notscdeadline". Decided
+     * once, by the boot CPU; the others follow.
+     */
+    if (cpuNum == 0)
+    {
+        ULONG a = 1, b, c, d;
+        struct TagItem *cmdTags = LibFindTagItem(KRN_CmdLine, BootMsg);
+
+        asm volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+        apicTSCDeadline = (c & CPUID_FEAT_ECX_TSCDEADLINE) &&
+                          (apic->cores[0].cpu_TSCFreq > 1000000) &&
+                          !(cmdTags && strstr((const char *)cmdTags->ti_Data, "notscdeadline"));
+        bug("[Kernel:APIC-IA32] Heartbeat timer: %s\n", apicTSCDeadline ? "TSC deadline" : "LAPIC count");
+    }
 
     if ((apic->flags & APF_TIMER) &&
         ((KrnIsSuper()) || ((ssp = SuperState()) != NULL)))
@@ -949,16 +1039,31 @@ void core_APIC_Calibrate(struct APICData *apic, apicid_t cpuNum)
         // TODO: Adjust based on the amount of work the APIC can do at its given frequency.
         schedData->Granularity = 1;
         schedData->Quantum = 5;
-        APIC_REG(__APICBase, APIC_TIMER_ICR) = (apic->cores[cpuNum].cpu_TimerFreq);
-#else
-        APIC_REG(__APICBase, APIC_TIMER_ICR) = (apic->cores[cpuNum].cpu_TimerFreq + 25) / 50;
 #endif
-        APIC_REG(__APICBase, APIC_TIMER_VEC) = APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_HEARTBEAT); // | LVT_TMM_PERIOD;
+        if (apicTSCDeadline)
+        {
+            /* The LVT mode first: a deadline written before it is ignored */
+            apic_Write(__APICBase, APIC_TIMER_VEC, LVT_TMM_TSCDEADLINE | APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_HEARTBEAT));
+#if defined(__AROSEXEC_SMP__)
+            apic_ArmTSCDeadline(apic_RDTSC() + apic->cores[cpuNum].cpu_TSCFreq);
+#else
+            apic_ArmTSCDeadline(apic_RDTSC() + (apic->cores[cpuNum].cpu_TSCFreq + 25) / 50);
+#endif
+        }
+        else
+        {
+#if defined(__AROSEXEC_SMP__)
+            apic_Write(__APICBase, APIC_TIMER_ICR, (apic->cores[cpuNum].cpu_TimerFreq));
+#else
+            apic_Write(__APICBase, APIC_TIMER_ICR, (apic->cores[cpuNum].cpu_TimerFreq + 25) / 50);
+#endif
+            apic_Write(__APICBase, APIC_TIMER_VEC, APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_HEARTBEAT)); // | LVT_TMM_PERIOD;
+        }
     }
     else
     {
-        APIC_REG(__APICBase, APIC_TIMER_ICR) = apic->cores[cpuNum].cpu_TimerFreq;
-        APIC_REG(__APICBase, APIC_TIMER_VEC) = LVT_MASK | LVT_TMM_PERIOD | APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_HEARTBEAT);
+        apic_Write(__APICBase, APIC_TIMER_ICR, apic->cores[cpuNum].cpu_TimerFreq);
+        apic_Write(__APICBase, APIC_TIMER_VEC, LVT_MASK | LVT_TMM_PERIOD | APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_HEARTBEAT));
     }
 
     DCALIB(bug("[Kernel:APIC-IA32.%03u] %s: Calibration complete\n", cpuNum, __func__);)
@@ -967,7 +1072,7 @@ void core_APIC_Calibrate(struct APICData *apic, apicid_t cpuNum)
 /* Configure the APIC */
 void core_APIC_Config(IPTR __APICBase, apicid_t cpuNum)
 {
-    ULONG apic_ver = APIC_REG(__APICBase, APIC_VERSION);
+    ULONG apic_ver = apic_Read(__APICBase, APIC_VERSION);
     ULONG maxlvt = APIC_LVT(apic_ver);
 
     D(bug("[Kernel:APIC-IA32.%03u] %s(%p)\n", cpuNum, __func__, __APICBase);)
@@ -978,9 +1083,16 @@ void core_APIC_Config(IPTR __APICBase, apicid_t cpuNum)
         maxlvt = 2;
 #endif
 
-    /* Use flat interrupt model with logical destination ID = 1 */
-    APIC_REG(__APICBase, APIC_DFR) = DFR_FLAT;
-    APIC_REG(__APICBase, APIC_LDR) = 1 << LDR_ID_SHIFT;
+    /*
+     * Use flat interrupt model with logical destination ID = 1. x2APIC has
+     * no DFR and a read-only LDR (it is always cluster mode); nothing here
+     * addresses CPUs logically, IPIs and IOAPIC/MSI routes are physical.
+     */
+    if (!apicX2Mode)
+    {
+        apic_Write(__APICBase, APIC_DFR, DFR_FLAT);
+        apic_Write(__APICBase, APIC_LDR, 1 << LDR_ID_SHIFT);
+    }
 
     D(bug("[Kernel:APIC-IA32.%03u] %s: APIC IRQ delivery mode configured\n", cpuNum, __func__);)
 
@@ -990,11 +1102,11 @@ void core_APIC_Config(IPTR __APICBase, apicid_t cpuNum)
      *     Focus Check = disabled
      *     EOI broadcast suppresion = disabled
      */
-    APIC_REG(__APICBase, APIC_SVR) = SVR_ASE|APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_SPURIOUS);
+    apic_Write(__APICBase, APIC_SVR, SVR_ASE|APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_SPURIOUS));
 
     D(
-        bug("[Kernel:APIC-IA32.%03u] %s: Initial LINT0 = %08x\n", cpuNum, __func__, APIC_REG(__APICBase, APIC_LINT0_VEC));
-        bug("[Kernel:APIC-IA32.%03u] %s: Initial LINT1 = %08x\n", cpuNum, __func__, APIC_REG(__APICBase, APIC_LINT1_VEC));
+        bug("[Kernel:APIC-IA32.%03u] %s: Initial LINT0 = %08x\n", cpuNum, __func__, apic_Read(__APICBase, APIC_LINT0_VEC));
+        bug("[Kernel:APIC-IA32.%03u] %s: Initial LINT1 = %08x\n", cpuNum, __func__, apic_Read(__APICBase, APIC_LINT1_VEC));
     )
 
     /*
@@ -1005,38 +1117,38 @@ void core_APIC_Config(IPTR __APICBase, apicid_t cpuNum)
      * otherwise LAPIC may throw an error.
      */
     if (cpuNum == 0)
-        APIC_REG(__APICBase, APIC_LINT0_VEC) = LVT_MT_EXT;
+        apic_Write(__APICBase, APIC_LINT0_VEC, LVT_MT_EXT);
     else
-        APIC_REG(__APICBase, APIC_LINT0_VEC) = LVT_MASK | LVT_VEC_MASK;
+        apic_Write(__APICBase, APIC_LINT0_VEC, LVT_MASK | LVT_VEC_MASK);
 
-    APIC_REG(__APICBase, APIC_LINT1_VEC) = LVT_MT_NMI;
+    apic_Write(__APICBase, APIC_LINT1_VEC, LVT_MT_NMI);
 
 #ifdef CONFIG_LEGACY
     /* Due to the Pentium erratum 3AP. */
     if (maxlvt > 3)
     {
-         APIC_REG(__APICBase, APIC_ESR) = 0;
-         APIC_REG(__APICBase, APIC_ESR) = 0;
+         apic_Write(__APICBase, APIC_ESR, 0);
+         apic_Write(__APICBase, APIC_ESR, 0);
     }
 #endif
 
     /* Disable performance counter overflow interrupts, if supported */
-    if (((APIC_REG(__APICBase, APIC_VERSION)>>16) & 0xFF) >= 4)
-        APIC_REG(__APICBase, APIC_PCOUNT_VEC) = LVT_MASK;
+    if (((apic_Read(__APICBase, APIC_VERSION)>>16) & 0xFF) >= 4)
+        apic_Write(__APICBase, APIC_PCOUNT_VEC, LVT_MASK);
 
-    D(bug("[Kernel:APIC-IA32.%03u] %s: APIC ESR before enabling vector: %08x\n", cpuNum, __func__, APIC_REG(__APICBase, APIC_ESR)));
+    D(bug("[Kernel:APIC-IA32.%03u] %s: APIC ESR before enabling vector: %08x\n", cpuNum, __func__, apic_Read(__APICBase, APIC_ESR)));
 
     /* Set APIC error interrupt to fixed vector interrupt "APIC_IRQ_ERROR",  on APIC error */
-    APIC_REG(__APICBase, APIC_ERROR_VEC) = APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_ERROR);
+    apic_Write(__APICBase, APIC_ERROR_VEC, APIC_CPU_EXCEPT_TO_VECTOR(APIC_EXCEPT_ERROR));
 
     /* spec says clear errors after enabling vector. */
     if (maxlvt > 3)
     {
-         APIC_REG(__APICBase, APIC_ESR) = 0;
-         APIC_REG(__APICBase, APIC_ESR) = 0;
+         apic_Write(__APICBase, APIC_ESR, 0);
+         apic_Write(__APICBase, APIC_ESR, 0);
     }
 
-    D(bug("[Kernel:APIC-IA32.%03u] %s: APIC ESR after enabling vector: %08x\n", cpuNum, __func__, APIC_REG(__APICBase, APIC_ESR)));
+    D(bug("[Kernel:APIC-IA32.%03u] %s: APIC ESR after enabling vector: %08x\n", cpuNum, __func__, apic_Read(__APICBase, APIC_ESR)));
 }
 
 void core_APIC_Enable(IPTR __APICBase, apicid_t cpuNum)
@@ -1044,22 +1156,27 @@ void core_APIC_Enable(IPTR __APICBase, apicid_t cpuNum)
     D(bug("[Kernel:APIC-IA32.%03u] %s(%p)\n", cpuNum, __func__, __APICBase);)
 
     /* Clear error status register using back-to-back writes */
-    APIC_REG(__APICBase, APIC_ESR) = 0;
-    APIC_REG(__APICBase, APIC_ESR) = 0;
+    apic_Write(__APICBase, APIC_ESR, 0);
+    apic_Write(__APICBase, APIC_ESR, 0);
 
     /* Ack any pending interrupts */
-    APIC_REG(__APICBase, APIC_EOI) = 0;
+    apic_Write(__APICBase, APIC_EOI, 0);
 
-    /* Send an Init Level De-Assert to synchronize arbitration ID's. */
-    APIC_REG(__APICBase, APIC_ICRH) = 0;
-    APIC_REG(__APICBase, APIC_ICRL) =  ICR_DSH_ALL | ICR_INT_LEVELTRIG | ICR_DM_INIT;
-    while (APIC_REG(__APICBase, APIC_ICRL) & ICR_DS)
-        ;
+    /*
+     * Send an Init Level De-Assert to synchronize arbitration ID's.
+     * x2APIC does not support (or need) it.
+     */
+    if (!apicX2Mode)
+    {
+        apic_SendIPI(__APICBase, 0, ICR_DSH_ALL | ICR_INT_LEVELTRIG | ICR_DM_INIT);
+        while (apic_IPIBusy(__APICBase))
+            ;
+    }
 
-    D(bug("[Kernel:APIC-IA32.%03u] %s: Initial TPR: %08x\n", cpuNum, __func__, APIC_REG(__APICBase, APIC_TPR));)
+    D(bug("[Kernel:APIC-IA32.%03u] %s: Initial TPR: %08x\n", cpuNum, __func__, apic_Read(__APICBase, APIC_TPR));)
 
     /* Set Task Priority to 'accept all interrupts' */
-    APIC_REG(__APICBase, APIC_TPR) = 0;
+    apic_Write(__APICBase, APIC_TPR, 0);
 }
 
 /* Initialize the APIC */
@@ -1148,29 +1265,32 @@ void core_APIC_Init(struct APICData *apic, apicid_t cpuNum)
 void core_APIC_Finalize(IPTR _APICBase)
 {
     /* disable heartbeat timer */
-    APIC_REG(_APICBase, APIC_TIMER_VEC) = 0xFF;
-    APIC_REG(_APICBase, APIC_TIMER_ICR) = 0x10000;
+    apic_Write(_APICBase, APIC_TIMER_VEC, 0xFF);
+    apic_Write(_APICBase, APIC_TIMER_ICR, 0x10000);
 
     /* Clear error status register using back-to-back writes */
-    APIC_REG(_APICBase, APIC_ESR) = 0;
-    APIC_REG(_APICBase, APIC_ESR) = 0;
+    apic_Write(_APICBase, APIC_ESR, 0);
+    apic_Write(_APICBase, APIC_ESR, 0);
 
-    APIC_REG(_APICBase, APIC_LINT1_VEC) = LVT_MT_NMI;
-    APIC_REG(_APICBase, APIC_LINT0_VEC) = 0;
+    apic_Write(_APICBase, APIC_LINT1_VEC, LVT_MT_NMI);
+    apic_Write(_APICBase, APIC_LINT0_VEC, 0);
 
     /* disable spurious */
-    APIC_REG(_APICBase, APIC_SVR) = 0;
+    apic_Write(_APICBase, APIC_SVR, 0);
 
     /* Ack any pending interrupts */
-    APIC_REG(_APICBase, APIC_EOI) = 0;
+    apic_Write(_APICBase, APIC_EOI, 0);
 }
 
 apicid_t core_APIC_GetID(IPTR _APICBase)
 {
     apicid_t _apic_id;
 
-    /* The actual ID is in 8 most significant bits */
-    _apic_id = APIC_REG(_APICBase, APIC_ID) >> APIC_ID_SHIFT;
+    /* The actual ID is in 8 most significant bits; x2APIC has the whole register */
+    if (apicX2Mode)
+        _apic_id = apic_Read(_APICBase, APIC_ID);
+    else
+        _apic_id = apic_Read(_APICBase, APIC_ID) >> APIC_ID_SHIFT;
     DID(bug("[Kernel:APIC-IA32] %s: %03u\n", __func__, _apic_id));
 
     return _apic_id;
@@ -1181,7 +1301,7 @@ ULONG core_APIC_Wake(APTR wake_apicstartrip, apicid_t wake_apicid, IPTR __APICBa
     ULONG status_ipisend, status_ipirecv;
     ULONG start_count;
 #ifdef CONFIG_LEGACY
-    ULONG apic_ver = APIC_REG(__APICBase, APIC_VERSION);
+    ULONG apic_ver = apic_Read(__APICBase, APIC_VERSION);
 #endif
     apicid_t cpuNo = KrnGetCPUNumber();
     DWAKE(
@@ -1233,12 +1353,15 @@ ULONG core_APIC_Wake(APTR wake_apicstartrip, apicid_t wake_apicid, IPTR __APICBa
     /* Deassert INIT after a small delay */
     krnClockSourceUdelay(10 * 1000);
 
-    /* Deassert INIT to all - Intel docs says we should use shorthand here! */
-    status_ipisend = ia32_ipi_send(__APICBase, wake_apicid, ICR_DSH_ALL | ICR_INT_LEVELTRIG | ICR_DM_INIT);
-    if (status_ipisend)
+    /* Deassert INIT to all - Intel docs says we should use shorthand here! x2APIC has no INIT deassert. */
+    if (!apicX2Mode)
     {
-        bug("[Kernel:APIC-IA32.%03u] %s: Error deasserting INIT\n", cpuNo, __func__);
-        return status_ipisend;
+        status_ipisend = ia32_ipi_send(__APICBase, wake_apicid, ICR_DSH_ALL | ICR_INT_LEVELTRIG | ICR_DM_INIT);
+        if (status_ipisend)
+        {
+            bug("[Kernel:APIC-IA32.%03u] %s: Error deasserting INIT\n", cpuNo, __func__);
+            return status_ipisend;
+        }
     }
 
     /* memory barrier */
@@ -1263,7 +1386,7 @@ ULONG core_APIC_Wake(APTR wake_apicstartrip, apicid_t wake_apicid, IPTR __APICBa
         DWAKE(bug("[Kernel:APIC-IA32.%03u] %s: Attempting STARTUP .. %u\n", cpuNo, __func__, start_count));
 
         /* Clear any pending error condition */
-        APIC_REG(__APICBase, APIC_ESR) = 0;
+        apic_Write(__APICBase, APIC_ESR, 0);
 
         /*
          * Send STARTUP IPI.
@@ -1277,10 +1400,10 @@ ULONG core_APIC_Wake(APTR wake_apicstartrip, apicid_t wake_apicid, IPTR __APICBa
 #ifdef CONFIG_LEGACY
         /* Pentium erratum 3AP quirk */
         if (APIC_LVT(apic_ver) > 3)
-            APIC_REG(__APICBase, APIC_ESR) = 0;
+            apic_Write(__APICBase, APIC_ESR, 0);
 #endif
 
-        status_ipirecv = APIC_REG(__APICBase, APIC_ESR) & 0xEF;
+        status_ipirecv = apic_Read(__APICBase, APIC_ESR) & 0xEF;
 
         /*
          * EXPERIMENTAL:

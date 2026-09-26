@@ -53,9 +53,13 @@
  * __save_flags/__cli/__restore_flags rather than Disable()/Enable() because
  * this is reached from interrupt context with interrupts already off and
  * must leave them exactly as found.
+ *
+ * In x2APIC mode the destination and command are one 64-bit MSR write and
+ * there is no delivery status to wait for, so the window does not exist
+ * there; apic_SendIPI()/apic_IPIBusy() pick the interface.
  */
 #define IPI_ICR_BEGIN(flags)    do { __save_flags(flags); __cli();                                 \
-                                     while (APIC_REG(__APICBase, APIC_ICRL) & ICR_DS) asm volatile("pause"); \
+                                     while (apic_IPIBusy(__APICBase)) asm volatile("pause");                  \
                                 } while (0)
 #define IPI_ICR_END(flags)      __restore_flags(flags)
 
@@ -83,7 +87,7 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
             D(bug("[Kernel:IPI] waiting for DS bit to be clear\n"));
             IPI_ICR_BEGIN(flags);
             D(bug("[Kernel:IPI] sending IPI cmd %08x\n", cmd));
-            APIC_REG(__APICBase, APIC_ICRL) = cmd;
+            apic_SendIPI(__APICBase, 0, cmd);
             IPI_ICR_END(flags);
         }
         else if ((IPTR)cpu_mask == TASKAFFINITY_ALL_BUT_SELF)
@@ -94,7 +98,7 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
             D(bug("[Kernel:IPI] waiting for DS bit to be clear\n"));
             IPI_ICR_BEGIN(flags);
             D(bug("[Kernel:IPI] sending IPI cmd %08x\n", cmd));
-            APIC_REG(__APICBase, APIC_ICRL) = cmd;
+            apic_SendIPI(__APICBase, 0, cmd);
             IPI_ICR_END(flags);
         }
         else
@@ -111,13 +115,12 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
                     if (cpunum == i)
                     {
                         D(bug("[Kernel:IPI] sending IPI cmd %08x to destination %08x (self-ipi)\n", cmd, (apicPrivate->cores[i].cpu_LocalID << 24)));
-                        APIC_REG(__APICBase, APIC_ICRL) = cmd | ICR_DSH_SELF;
+                        apic_SendIPI(__APICBase, 0, cmd | ICR_DSH_SELF);
                     }
                     else
                     {
                         D(bug("[Kernel:IPI] sending IPI cmd %08x to destination %08x\n", cmd, (apicPrivate->cores[i].cpu_LocalID << 24)));
-                        APIC_REG(__APICBase, APIC_ICRH) = (apicPrivate->cores[i].cpu_LocalID << 24);
-                        APIC_REG(__APICBase, APIC_ICRL) = cmd;
+                        apic_SendIPI(__APICBase, apicPrivate->cores[i].cpu_LocalID, cmd);
                     }
                     IPI_ICR_END(flags);
                 }
@@ -491,10 +494,15 @@ int core_IPIHandle(struct ExceptionContext *regs, void *data1, struct KernelBase
     
     D(bug("[Kernel:IPI.CPU.%03u] %s: IPI%02d\n", cpunum, __func__, ipi_number));
 
+    /*
+     * Each IPI is acknowledged here, exactly once - cpu_Trap() leaves IPI
+     * vectors alone. A second EOI with nothing in service is harmless, but
+     * when an IPI nests inside another interrupt it retires THAT one.
+     */
     switch (ipi_number)
     {
         case IPI_RESCHEDULE:
-            APIC_REG(__APICBase, APIC_EOI) = 0;
+            apic_Write(__APICBase, APIC_EOI, 0);
             // If IPI was called when CPU was in user mode, and not in forbid state,
             // perform task switch - otherwise set delayed schedule flag.
             if (INTR_FROMUSERMODE && (TDNESTCOUNT_GET < 0))
@@ -513,7 +521,11 @@ int core_IPIHandle(struct ExceptionContext *regs, void *data1, struct KernelBase
 
         case IPI_CALL_HOOK:
             core_IPICallHookHandle(regs, KernelBase);
-            APIC_REG(__APICBase, APIC_EOI) = 0;
+            apic_Write(__APICBase, APIC_EOI, 0);
+            break;
+
+        default:
+            apic_Write(__APICBase, APIC_EOI, 0);
             break;
     }
 
