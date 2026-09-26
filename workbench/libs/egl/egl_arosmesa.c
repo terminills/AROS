@@ -290,6 +290,9 @@ static void create_configs(_EGLDisplay *dpy)
     _eglSetConfigKey(cfg, EGL_GREEN_SIZE, 8);
     _eglSetConfigKey(cfg, EGL_BLUE_SIZE, 8);
     _eglSetConfigKey(cfg, EGL_ALPHA_SIZE, 8);
+    /* The colour buffer's total depth: clients ask for it (EGL_BUFFER_SIZE
+       is matched as "at least"), and _eglInitConfig leaves it 0. */
+    _eglSetConfigKey(cfg, EGL_BUFFER_SIZE, 32);
     _eglSetConfigKey(cfg, EGL_DEPTH_SIZE, 24);
     _eglSetConfigKey(cfg, EGL_STENCIL_SIZE, 8);
 
