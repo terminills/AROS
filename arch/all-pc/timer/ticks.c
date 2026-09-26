@@ -126,9 +126,10 @@ static inline void ClockLockRelease(struct TimerBase *TimerBase, void *lock)
  *
  * With an invariant TSC (constant rate, running in every C-state) the clock
  * is instead read with RDTSC: the lock is then held for a few instructions.
- * The PIT remains the alarm (Timer0Setup() still reloads it) and remains the
- * clock during the first quarter second, while the TSC rate is measured
- * against it, and for good on CPUs without an invariant TSC.
+ * The PIT remains the alarm (Timer0Setup() still reloads it), and remains the
+ * clock on CPUs without an invariant TSC. The TSC rate comes from CPUID when
+ * the CPU or the hypervisor states it, else from a 50 ms PIT channel-2
+ * measurement at startup.
  *
  * TSC -> EClock conversion: the base advances in whole seconds (tb_TSCHz TSC
  * ticks are exactly tb_eclock_rate EClock ticks), so only the sub-second
@@ -143,31 +144,122 @@ static inline UQUAD tsc_read(void)
     return ((UQUAD)hi << 32) | lo;
 }
 
+static inline void cpuid(ULONG leaf, ULONG *a, ULONG *b, ULONG *c, ULONG *d)
+{
+    asm volatile("cpuid" : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
+                         : "a"(leaf), "c"(0));
+}
+
+/*
+ * The TSC rate from CPUID, exactly, when the CPU or hypervisor states it:
+ * leaf 0x15 (TSC/crystal ratio and the crystal frequency) on the CPU, else
+ * the hypervisor leaf 0x40000010 (TSC kHz; KVM/QEMU, VMware, VirtualBox).
+ * 0 when neither does.
+ */
+static UQUAD tsc_hz_from_cpuid(const char **source)
+{
+    ULONG eax, ebx, ecx, edx, max;
+
+    cpuid(0, &max, &ebx, &ecx, &edx);
+    if (max >= 0x15)
+    {
+        cpuid(0x15, &eax, &ebx, &ecx, &edx);
+        if (eax && ebx && ecx)
+        {
+            *source = "CPUID 0x15";
+            return ((UQUAD)ecx * ebx) / eax;
+        }
+    }
+
+    cpuid(1, &eax, &ebx, &ecx, &edx);
+    if (ecx & (1U << 31))               /* running under a hypervisor */
+    {
+        cpuid(0x40000000, &max, &ebx, &ecx, &edx);
+        if (max >= 0x40000010)
+        {
+            cpuid(0x40000010, &eax, &ebx, &ecx, &edx);
+            if (eax)
+            {
+                *source = "hypervisor";
+                return (UQUAD)eax * 1000;
+            }
+        }
+    }
+    return 0;
+}
+
+/*
+ * The TSC rate measured against PIT channel 2 over 50 ms, gated through
+ * port 0x61 and polled - no interrupt involved, so nothing can be missed
+ * the way counting channel 0 updates during boot could. Port 0x61 is
+ * restored afterwards.
+ */
+static UQUAD tsc_hz_from_pit(void)
+{
+    const UWORD count = 59659;          /* 50 ms at 1193180 Hz */
+    UBYTE saved = inb(0x61);
+    UQUAD t0, t1;
+    ULONG spins = 0;
+
+    outb((saved & ~0x03), 0x61);        /* gate off, speaker off */
+    outb(0xB0, PIT_CONTROL);            /* channel 2, lo/hi, mode 0, binary */
+    outb(count & 0xFF, 0x42);
+    outb(count >> 8, 0x42);
+
+    t0 = tsc_read();
+    outb((saved & ~0x02) | 0x01, 0x61); /* gate on: count down */
+    while (!(inb(0x61) & 0x20))         /* OUT2 goes high at terminal count */
+    {
+        if (++spins > 100000000)
+        {
+            outb(saved, 0x61);
+            return 0;
+        }
+    }
+    t1 = tsc_read();
+    outb(saved, 0x61);
+
+    return ((t1 - t0) * 1193180ULL) / count;
+}
+
 void EClockTSCInit(struct TimerBase *TimerBase)
 {
+    struct PlatformTimer *pt = &TimerBase->tb_Platform;
+    const char *source = "PIT channel 2";
     ULONG eax, ebx, ecx, edx;
+    UQUAD hz;
 
-    TimerBase->tb_Platform.tb_TSCMode = PCTIMER_TSC_NONE;
+    pt->tb_TSCMode = PCTIMER_TSC_NONE;
 
     /* CPUID 0x80000007 EDX bit 8: invariant TSC */
-    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                         : "a"(0x80000000));
-    if (eax < 0x80000007)
-    {
-        bug("[Timer] clock: PIT (no invariant TSC)\n");
-        return;
-    }
-    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                         : "a"(0x80000007));
+    cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
+    if (eax >= 0x80000007)
+        cpuid(0x80000007, &eax, &ebx, &ecx, &edx);
+    else
+        edx = 0;
     if (!(edx & (1 << 8)))
     {
         bug("[Timer] clock: PIT (no invariant TSC)\n");
         return;
     }
 
-    TimerBase->tb_Platform.tb_TSCBase = tsc_read();
-    TimerBase->tb_Platform.tb_TicksBase = TimerBase->tb_ticks_total;
-    TimerBase->tb_Platform.tb_TSCMode = PCTIMER_TSC_CALIBRATE;
+    hz = tsc_hz_from_cpuid(&source);
+    if (!hz)
+        hz = tsc_hz_from_pit();
+    if (hz < 10000000)
+    {
+        bug("[Timer] clock: PIT (TSC rate %lu Hz implausible)\n",
+            (unsigned long)hz);
+        return;
+    }
+
+    pt->tb_TSCHz = hz;
+    pt->tb_TSCBase = tsc_read();
+    pt->tb_TicksBase = TimerBase->tb_ticks_total;
+    pt->tb_TSCMode = PCTIMER_TSC_ACTIVE;
+    /* One line, once: which clock a system runs on (and where its rate came
+       from) is the first thing to know when comparing timing reports */
+    bug("[Timer] clock: TSC %lu kHz (%s)\n", (unsigned long)(hz / 1000), source);
 }
 
 /* EClock ticks now, from the TSC. Caller holds the clock lock. */
@@ -217,38 +309,6 @@ static void EClockTSCUpdate(struct TimerBase *TimerBase)
 }
 
 /*
- * While calibrating, after a PIT-driven update: once a quarter second of PIT
- * time has passed, fix the TSC rate and switch the clock to the TSC.
- * Caller holds the clock lock.
- */
-static void EClockTSCCalibrate(struct TimerBase *TimerBase)
-{
-    struct PlatformTimer *pt = &TimerBase->tb_Platform;
-    UQUAD ticks = TimerBase->tb_ticks_total - pt->tb_TicksBase;
-    UQUAD now;
-
-    if (ticks < TimerBase->tb_eclock_rate / 4)
-        return;
-
-    now = tsc_read();
-    pt->tb_TSCHz = ((now - pt->tb_TSCBase) * TimerBase->tb_eclock_rate) / ticks;
-    if (pt->tb_TSCHz < 10000000)
-    {
-        /* Implausible (under 10 MHz): stay on the PIT */
-        pt->tb_TSCMode = PCTIMER_TSC_NONE;
-        bug("[Timer] clock: PIT (TSC rate %lu Hz implausible)\n",
-            (unsigned long)pt->tb_TSCHz);
-        return;
-    }
-    pt->tb_TSCBase = now;
-    pt->tb_TicksBase = TimerBase->tb_ticks_total;
-    pt->tb_TSCMode = PCTIMER_TSC_ACTIVE;
-    /* One line, once: which clock a system runs on is the first thing to
-       know when comparing timing reports between machines */
-    bug("[Timer] clock: TSC %lu kHz\n", (unsigned long)(pt->tb_TSCHz / 1000));
-}
-
-/*
  * Calculate difference and add it to our current EClock value.
  * PIT counters actually count backwards. This is why everything here looks reversed.
  * Caller holds the clock lock.
@@ -295,9 +355,6 @@ void EClockUpdate(struct TimerBase *TimerBase)
     EClockAdd(time, TimerBase);                 /* Increment our time counters  */
     TimerBase->tb_prev_tick = time;             /* Remember last counter value as start of new interval */
     D(bug("[Timer] %s:      new = %04x\n", __func__, TimerBase->tb_prev_tick));
-
-    if (TimerBase->tb_Platform.tb_TSCMode == PCTIMER_TSC_CALIBRATE)
-        EClockTSCCalibrate(TimerBase);
 
     ClockLockRelease(TimerBase, lock);
 }
