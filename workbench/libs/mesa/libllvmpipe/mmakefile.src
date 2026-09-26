@@ -78,7 +78,8 @@ LLVMPPIPE_SOURCE_NAMES := \
             lp_texture_handle
 
 LLVMPPIPE_SOURCES_C := \
-            $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,$(LLVMPPIPE_SOURCE_NAMES))
+            $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,$(LLVMPPIPE_SOURCE_NAMES)) \
+            $(SRCDIR)/$(CURDIR)/lp_aros_affinity
 
 #MM mesa3d-linklib-llvmpipe : workbench-libs-llvm mesa3d-linklib-galliumvm mesa3d-linklib-mesautil mesa3d-linklib-compiler-generated mesa3d-linklib-mesa-generated linklibs-galliumauxiliary
 
