@@ -49,6 +49,7 @@ void FlushUnit(LIBBASETYPEPTR, struct e1000Unit *, UBYTE, BYTE);
 BOOL AddressFilter(struct e1000Base *, struct e1000Unit *, UBYTE *);
 VOID CopyPacket(struct e1000Base *, struct e1000Unit *, struct IOSana2Req *, UWORD, UWORD, struct eth_frame *);
 VOID ReportEvents(struct e1000Base *, struct e1000Unit *, ULONG);
+struct IOSana2Req *TakeTypedRequest(struct MsgPort *, ULONG);
 struct TypeStats *FindTypeStats(struct e1000Base *, struct e1000Unit *, struct MinList *, ULONG);
 
 BOOL AddMulticastRange(LIBBASETYPEPTR, struct e1000Unit *, const UBYTE *, const UBYTE *);

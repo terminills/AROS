@@ -1310,7 +1310,7 @@ BOOL e1000func_clean_rx_irq(struct net_device *unit,
     struct e1000_rx_desc *rx_desc, *next_rxd;
     D(struct e1000_rx_buffer *buffer_info, *next_buffer;)
     struct Opener *opener, *opener_tail;
-    struct IOSana2Req *request, *request_tail;
+    struct IOSana2Req *request;
     struct eth_frame *frame;
 
     unsigned int i, total_rx_bytes=0, total_rx_packets=0;
@@ -1433,20 +1433,16 @@ BOOL e1000func_clean_rx_irq(struct net_device *unit,
             /* Offer packet to every opener */
             while(opener != opener_tail)
             {
-                request = (APTR)opener->read_port.mp_MsgList.lh_Head;
-                request_tail = (APTR)&opener->read_port.mp_MsgList.lh_Tail;
                 accepted = FALSE;
 
-                /* Offer packet to each request until it's accepted */
-                while((request != request_tail) && !accepted)
+                /* Hand the packet to this opener's first request of its type,
+                   taken off the read port under the port's lock (unit.c) */
+                request = TakeTypedRequest(&opener->read_port, packet_type);
+                if (request != NULL)
                 {
-                    if (request->ios2_PacketType == packet_type)
-                    {
-                        D(bug("[%s] %s: copy packet for opener ..\n", unit->e1ku_name, __func__);)
-                        CopyPacket(LIBBASE, unit, request, length, packet_type, frame);
-                        accepted = TRUE;
-                    }
-                    request = (struct IOSana2Req *)request->ios2_Req.io_Message.mn_Node.ln_Succ;
+                    D(bug("[%s] %s: copy packet for opener ..\n", unit->e1ku_name, __func__);)
+                    CopyPacket(LIBBASE, unit, request, length, packet_type, frame);
+                    accepted = TRUE;
                 }
 
                 if(accepted)
@@ -1460,11 +1456,10 @@ BOOL e1000func_clean_rx_irq(struct net_device *unit,
             {
                 unit->e1ku_stats.UnknownTypesReceived++;
 
-                if(!IsMsgPortEmpty(unit->e1ku_request_ports[ADOPT_QUEUE]))
+                request = (APTR)GetMsg(unit->e1ku_request_ports[ADOPT_QUEUE]);
+                if (request != NULL)
                 {
-                    CopyPacket(LIBBASE, unit,
-                        (APTR)unit->e1ku_request_ports[ADOPT_QUEUE]->
-                        mp_MsgList.lh_Head, length, packet_type, frame);
+                    CopyPacket(LIBBASE, unit, request, length, packet_type, frame);
                     D(bug("[%s] %s: packet copied to orphan queue\n", unit->e1ku_name, __func__);)
                 }
             }
