@@ -229,3 +229,6 @@
 [submodule "external/aros-web"]
 	path = external/aros-web
 	url = https://github.com/terminills/aros-web.git
+[submodule "external/aros-emulators"]
+	path = external/aros-emulators
+	url = https://github.com/terminills/aros-emulators.git
