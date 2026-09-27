@@ -289,7 +289,8 @@ void core_CancelCallIPIs(APTR hookEntry, IPTR matchArg)
     if (!KernelBase)
         return;
     pdata = KernelBase->kb_PlatformData;
-    if (!pdata || !pdata->kb_APIC)
+    /* smp_Initialize() only sets the hook lists up with a second CPU */
+    if (!pdata || !pdata->kb_APIC || pdata->kb_APIC->apic_count < 2)
         return;
     masklongs = (31 + pdata->kb_APIC->apic_count) / 32;
 
