@@ -2,8 +2,8 @@
 #MM- test : test-smp
 #MM- test-quick : test-smp-quick
 #
-#MM- test-smp : test-smp-pthread test-smp-latency test-smp-stress test-smp-trace test-smp-smp test-smp-smp-smallpt test-smp-preempt test-smp-sigrace test-smp-sem test-smp-sched test-smp-doio test-smp-lists test-smp-clock test-smp-proc test-smp-affinity test-smp-condvar
-#MM- test-smp-quick : test-smp-pthread-quick test-smp-latency-quick test-smp-stress-quick test-smp-trace-quick test-smp-smp-quick test-smp-smp-smallpt-quick test-smp-preempt-quick test-smp-sigrace-quick test-smp-sem-quick test-smp-sched-quick test-smp-doio-quick test-smp-lists-quick test-smp-clock-quick test-smp-proc-quick test-smp-affinity-quick test-smp-condvar-quick
+#MM- test-smp : test-smp-pthread test-smp-latency test-smp-stress test-smp-trace test-smp-smp test-smp-smp-smallpt test-smp-preempt test-smp-sigrace test-smp-sem test-smp-sched test-smp-doio test-smp-lists test-smp-clock test-smp-proc test-smp-affinity test-smp-condvar test-smp-multiwake
+#MM- test-smp-quick : test-smp-pthread-quick test-smp-latency-quick test-smp-stress-quick test-smp-trace-quick test-smp-smp-quick test-smp-smp-smallpt-quick test-smp-preempt-quick test-smp-sigrace-quick test-smp-sem-quick test-smp-sched-quick test-smp-doio-quick test-smp-lists-quick test-smp-clock-quick test-smp-proc-quick test-smp-affinity-quick test-smp-condvar-quick test-smp-multiwake-quick
 
 include $(SRCDIR)/config/aros.cfg
 
@@ -69,3 +69,8 @@ USER_CFLAGS := $(PARANOIA_CFLAGS)
     progname=SMP-CondVar uselibs="pthread"
 
 %common
+
+%build_prog mmake=test-smp-multiwake \
+    files=smpmultiwake targetdir=$(EXEDIR) \
+    progname=SMP-MultiWake \
+    uselibs="pthread"
