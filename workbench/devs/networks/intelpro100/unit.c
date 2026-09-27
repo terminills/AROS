@@ -1592,6 +1592,7 @@ static VOID TXEndInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
    struct IOSana2Req *request;
    ULONG *tcb, *fragment, dma_size, action;
    struct TypeStats *tracker;
+   BOOL mcast_end;
 
    /* Retire sent packets and configuration commands */
 
@@ -1607,9 +1608,18 @@ static VOID TXEndInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
    {
       action = LELong(tcb[PROCB_CONTROL]) & PROCB_CONTROLF_ACTION;
 
-      if(action == PROACT_TX || action == PROACT_CONFIGURE
-         && (unit->link_cb != NULL
-         || (tcb[PROCB_CF5] & PROCB_CF5F_ALLMCAST) != 0))
+      /* A multicast update ends with the configuration command that the
+         multicast CB links to. Any other configuration command retired
+         meanwhile - such as the one ConfigureAdapter() queued, which has
+         no request - must not end it: taking it for the end replied the
+         update's request early and relinked the ring into a loop */
+
+      mcast_end = action == PROACT_CONFIGURE && unit->link_cb != NULL
+         && tcb == (ULONG *)(UPINT)LELong(unit->multicast_cb[PROCB_NEXT]);
+
+      if(action == PROACT_TX || mcast_end
+         || action == PROACT_CONFIGURE
+         && (tcb[PROCB_CF5] & PROCB_CF5F_ALLMCAST) != 0)
       {
          request = (APTR)RemHead((APTR)&unit->tx_requests);
 
@@ -1649,7 +1659,7 @@ static VOID TXEndInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
          {
             /* Mark end of multicast update */
 
-            if(unit->link_cb != NULL)
+            if(mcast_end)
             {
                unit->link_cb[PROCB_NEXT] = MakeLELong((ULONG)(UPINT)tcb);
                unit->flags &= ~UNITF_MCASTBUFFERINUSE;
