@@ -23,6 +23,7 @@
 #include <exec/resident.h>
 #include <exec/io.h>
 #include <exec/ports.h>
+#include <hardware/intbits.h>
 
 #include <aros/libcall.h>
 #include <aros/macros.h>
@@ -45,6 +46,7 @@
 #include <proto/battclock.h>
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "via-rhine.h"
 #include "unit.h"
