@@ -163,6 +163,29 @@ BOOL core_Schedule(void)
     on SMP builds, if exec has set TS_SPIN,
     switch it to the spinning list.
 */
+#if defined(__AROSEXEC_SMP__)
+/*
+ * The scheduler can run inside a syscall entered with interrupts enabled
+ * (Reschedule() from a task). While it holds a task's tc_SpinLock an
+ * interrupt on this CPU whose handler Signal()s that task would spin on a
+ * lock its own CPU holds (e1000 Rx IRQ during core_Dispatch, SMP=8), so
+ * interrupts stay off here for as long as a task lock is held - as they are
+ * for every other tc_SpinLock holder, which runs under Disable().
+ */
+static inline IPTR sched_IntsOff(void)
+{
+    IPTR flags;
+
+    asm volatile("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void sched_IntsRestore(IPTR flags)
+{
+    asm volatile("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+#endif
+
 void core_Switch(void)
 {
     cpuid_t cpuNo;
@@ -171,6 +194,7 @@ void core_Switch(void)
     BOOL doSwitch = TRUE;
 #if defined(__AROSEXEC_SMP__)
     BOOL parkedByWait = FALSE;
+    IPTR intFlags = 0;
 #endif
     struct ETask * taskEtask = NULL;
 
@@ -223,6 +247,20 @@ void core_Switch(void)
         parkedByWait = TRUE;
     else
     {
+        /*
+         * Every other writer of (tc_State, list membership) holds the
+         * task's tc_SpinLock (settaskpri.c, and X86_HandleReschedTask).
+         * Without it a reschedule request on another CPU could read the
+         * TS_READY written below before the node is on TaskReady, take it
+         * off a list it is not on and queue it itself - and then the
+         * Enqueue below put it on TaskReady a second time, a cycle that
+         * Enqueue() then walks forever holding TaskReadySpinLock (SMP-
+         * MultiWake). Nothing on this CPU holds it here: exec's locked
+         * sections run under Disable(), and a Wait() that does arrives as
+         * parkedByWait.
+         */
+        intFlags = sched_IntsOff();
+        KrnSpinLock(&task->tc_SpinLock, NULL, SPINLOCK_MODE_WRITE);
         KrnSpinLock(&PrivExecBase(SysBase)->TaskRunningSpinLock, NULL,
                     SPINLOCK_MODE_WRITE);
         REMOVE(&task->tc_Node);
@@ -307,6 +345,13 @@ void core_Switch(void)
         KrnSpinUnLock(&PrivExecBase(SysBase)->TaskWaitSpinLock);
 #endif
     }
+#if defined(__AROSEXEC_SMP__)
+    if (!parkedByWait)
+    {
+        KrnSpinUnLock(&task->tc_SpinLock);
+        sched_IntsRestore(intFlags);
+    }
+#endif
     if (showAlert)
         Alert(showAlert);
 }
@@ -316,6 +361,10 @@ struct Task *core_Dispatch(void)
 {
     struct Task *newtask;
     struct Task *task = GET_THIS_TASK;
+#if defined(__AROSEXEC_SMP__)
+    BOOL newtaskLocked = FALSE;
+    IPTR intFlags;
+#endif
 #if defined(__AROSEXEC_SMP__) || (DEBUG > 0)
     cpuid_t cpuNo = KrnGetCPUNumber();
 #endif
@@ -323,6 +372,7 @@ struct Task *core_Dispatch(void)
     DSCHED(bug("[Kernel:%03u]" DEBUGFUNCCOLOR_SET " %s()" DEBUGCOLOR_RESET "\n", cpuNo, __func__);)
 
 #if defined(__AROSEXEC_SMP__)
+    intFlags = sched_IntsOff();
     KrnSpinLock(&PrivExecBase(SysBase)->TaskReadySpinLock, NULL,
                 SPINLOCK_MODE_WRITE);
 #endif
@@ -331,6 +381,16 @@ struct Task *core_Dispatch(void)
 #if defined(__AROSEXEC_SMP__)
         if (!(PrivExecBase(SysBase)->IntFlags & EXECF_CPUAffinity) || (GetIntETask(newtask) && core_APIC_CPUInMask(cpuNo, GetIntETask(newtask)->iet_CpuAffinity)))
         {
+            /*
+             * The task lock keeps (tc_State, list) together until the task
+             * is TS_RUN on TaskRunning (see core_Switch). We already hold
+             * TaskReadySpinLock, and the order everywhere else is task lock
+             * first, so only try it: a task whose lock is busy is being
+             * changed on another CPU - leave it and take the next.
+             */
+            if (!KrnSpinTryLock(&newtask->tc_SpinLock, SPINLOCK_MODE_WRITE))
+                continue;
+            newtaskLocked = TRUE;
 #endif
             REMOVE(&newtask->tc_Node);
             break;
@@ -340,6 +400,8 @@ struct Task *core_Dispatch(void)
     }
 #if defined(__AROSEXEC_SMP__)
     KrnSpinUnLock(&PrivExecBase(SysBase)->TaskReadySpinLock);
+    if (!newtaskLocked)
+        sched_IntsRestore(intFlags);
 #endif
 
     if ((!newtask) && (task) && (task->tc_State != TS_WAIT))
@@ -416,6 +478,15 @@ bug("----> such unspinning should not take place!" DEBUGCOLOR_RESET "\n");
             KrnSpinUnLock(&PrivExecBase(SysBase)->TaskWaitSpinLock);
 #endif
         }
+#if defined(__AROSEXEC_SMP__)
+        /* tc_State and the list now agree; core_Switch (below) takes it again */
+        if (newtaskLocked)
+        {
+            KrnSpinUnLock(&newtask->tc_SpinLock);
+            newtaskLocked = FALSE;
+            sched_IntsRestore(intFlags);
+        }
+#endif
 
         if (!launchtask)
         {
