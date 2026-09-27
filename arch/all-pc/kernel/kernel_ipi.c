@@ -141,11 +141,12 @@ void core_DoIPI(uint8_t ipi_number, void *cpu_mask, struct KernelBase *KernelBas
  * (Disable() before the list spinlock, and never holding Free and Busy at
  * once) is load-bearing, and two copies would drift.
  */
+static void core_IPICallHookHandle(struct ExceptionContext *regs, struct KernelBase *KernelBase);
+
 static struct IPIHook *core_IPIHookAlloc(struct KernelBase *KernelBase)
 {
     struct PlatformData *pdata = KernelBase->kb_PlatformData;
-    struct APICData *apicPrivate = pdata->kb_APIC;
-    struct IPIHook *ipi = NULL, *n = NULL;
+    struct IPIHook *ipi = NULL;
     D(int cpunum = KrnGetCPUNumber();)
 
     do
@@ -158,22 +159,16 @@ static struct IPIHook *core_IPIHookAlloc(struct KernelBase *KernelBase)
         if (ipi == NULL)
         {
             D(bug("[Kernel:IPI.CPU.%03u] %s: Failed to allocate IPIHook entry\n", cpunum, __func__));
-            Disable();
-            KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
-            ForeachNodeSafe(&pdata->kb_BusyIPIHooks, ipi, n)
-            {
-                if (!memcmp(ipi->ih_CPUDone, ipi->ih_CPURequested, sizeof(ULONG) * ((31 + apicPrivate->apic_count)/32)))
-                {
-                    D(bug("[Kernel:IPI.CPU.%03u] %s: Busy IPI @ %p appears to be finished?\n", cpunum, __func__, ipi));
-                }
-                else
-                {
-                    D(bug("[Kernel:IPI.CPU.%03u] %s: Busy IPI @ %p\n", cpunum, __func__, ipi));
-                }
-            }
-            KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
-            Enable();
-            ipi = NULL;
+            /*
+             * The pool is empty, and entries only come back when their
+             * target CPUs drain them. Some may be waiting on THIS CPU,
+             * which cannot take the IPI if the caller is inside Disable():
+             * two CPUs storming Signal()s at each other under Disable()
+             * then both spun here forever (SMP-SigRace phase 3). So drain
+             * our own inbound queue inline while we wait - safe, as the
+             * drain holds no list lock while it runs a hook.
+             */
+            core_IPICallHookHandle(NULL, KernelBase);
             /* Tell the CPU we are idling around a lock... */
             asm volatile("pause");
         }
