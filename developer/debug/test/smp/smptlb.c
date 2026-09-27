@@ -10,8 +10,10 @@
     the translation), remaps the window to buffer B, and has every thread read
     again: each must now see B.
 
-    Usage: SMP-TLB [ROUNDS/N]
+    Usage: SMP-TLB [ROUNDS/N] [SMALL/S]
       ROUNDS   remaps to try, alternating A and B (default 20)
+      SMALL    remap a 64 KiB window instead, which KrnMapGlobal() maps
+               with 4 KiB pages: every page must be flushed on every CPU
 */
 
 #include <aros/debug.h>
@@ -25,10 +27,12 @@
 #include <pthread.h>
 #include <stdio.h>
 
-#define ARG_TEMPLATE "ROUNDS/N"
+#define ARG_TEMPLATE "ROUNDS/N,SMALL/S"
 #define MAX_CPUS     64
 #define WINDOW       0x3000000000ULL     /* 192 GiB: above the identity map */
+#define WINDOW_4K    0x3100000000ULL     /* apart from the 2 MiB window */
 #define SIZE_2M      0x200000UL
+#define SIZE_SMALL   0x10000UL           /* 16 pages of 4 KiB */
 #define PAT_A        0x11111111UL
 #define PAT_B        0x22222222UL
 
@@ -37,6 +41,7 @@ APTR KernelBase;
 static struct
 {
     volatile ULONG *window;
+    ULONG           words;               /* window size in ULONGs */
     volatile int    phase;               /* bumped by main for each read pass */
     volatile int    stop;
     volatile int    done[MAX_CPUS];      /* phase each reader has finished */
@@ -58,7 +63,7 @@ static void *reader(void *arg)
 
             /* Read repeatedly, so this CPU's TLB holds the translation */
             for (i = 0; i < 1000; i++)
-                v = t.window[(i * 1024) & ((SIZE_2M / 4) - 1)];
+                v = t.window[(i * 1024) & (t.words - 1)];
             t.seen[id] = v;
             last = ph;
             t.done[id] = ph;
@@ -79,9 +84,10 @@ static void fill(ULONG *p, ULONG v)
 
 int main(void)
 {
-    IPTR args[1] = { 0 };
+    IPTR args[2] = { 0, 0 };
     struct RDArgs *rda = ReadArgs(ARG_TEMPLATE, args, NULL);
-    ULONG rounds = 20, cpus = 1, r, stale = 0, i;
+    ULONG rounds = 20, cpus = 1, r, stale = 0, i, size;
+    IPTR window;
     APTR raw;
     ULONG *bufA, *bufB;
     pthread_t th[MAX_CPUS];
@@ -93,6 +99,8 @@ int main(void)
             rounds = *(ULONG *)args[0];
         FreeArgs(rda);
     }
+    size = args[1] ? SIZE_SMALL : SIZE_2M;
+    window = args[1] ? WINDOW_4K : WINDOW;
     KernelBase = OpenResource("kernel.resource");
     if (KernelBase)
         cpus = KrnGetCPUCount();
@@ -114,16 +122,18 @@ int main(void)
     bufB = (ULONG *)((IPTR)bufA + SIZE_2M);
     fill(bufA, PAT_A);
     fill(bufB, PAT_B);
-    t.window = (volatile ULONG *)(IPTR)WINDOW;
+    t.window = (volatile ULONG *)window;
+    t.words = size / 4;
 
-    if (KrnMapGlobal((APTR)(IPTR)WINDOW, bufA, SIZE_2M, MAP_Readable | MAP_Writable) != 0)
+    if (KrnMapGlobal((APTR)window, bufA, size, MAP_Readable | MAP_Writable) != 0)
     {
         bug("[smptlb] FAIL: KrnMapGlobal refused the window\n");
         FreeMem(raw, 3 * SIZE_2M);
         return RETURN_FAIL;
     }
 
-    bug("[smptlb] begin: %lu CPUs, %lu remaps\n", (unsigned long)cpus, (unsigned long)rounds);
+    bug("[smptlb] begin: %lu CPUs, %lu remaps of %lu KiB\n", (unsigned long)cpus,
+        (unsigned long)rounds, (unsigned long)(size >> 10));
     for (i = 0; i < cpus; i++)
     {
         pthread_attr_t attr;
@@ -144,7 +154,7 @@ int main(void)
         ULONG want = (r & 1) ? PAT_B : PAT_A;
 
         if (r > 0 &&
-            KrnMapGlobal((APTR)(IPTR)WINDOW, (r & 1) ? bufB : bufA, SIZE_2M,
+            KrnMapGlobal((APTR)window, (r & 1) ? bufB : bufA, size,
                          MAP_Readable | MAP_Writable) != 0)
         {
             bug("[smptlb] FAIL: remap %lu refused\n", (unsigned long)r);
@@ -169,8 +179,9 @@ int main(void)
     for (i = 0; i < cpus; i++)
         pthread_join(th[i], NULL);
 
-    printf("SMP-TLB: %lu remaps on %lu CPUs, %lu stale reads\n",
-           (unsigned long)rounds, (unsigned long)cpus, (unsigned long)stale);
+    printf("SMP-TLB: %lu remaps of %lu KiB on %lu CPUs, %lu stale reads\n",
+           (unsigned long)rounds, (unsigned long)(size >> 10), (unsigned long)cpus,
+           (unsigned long)stale);
     if (stale)
         bug("[smptlb] FAIL: %lu stale reads\n", (unsigned long)stale);
     else
