@@ -1031,16 +1031,19 @@ static BOOL StatusInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
 
    if(ints != 0)
    {
+      /* Acknowledge interrupts before handling them: on SMP a Cause()d
+         softint can run on another CPU straight away, and a command that
+         completes after it has looked would have its interrupt cleared by
+         a later acknowledgement, leaving the command never retired */
+
+      unit->ByteOut(unit->card, PROREG_INTSTATUS, ints);
+
       /* Handle interrupts */
 
       if((ints & PROINTF_GENERAL) != 0)
          Cause(&unit->tx_end_int);
       if((ints & PROINTF_RXDONE) != 0)
          Cause(&unit->rx_int);
-
-      /* Acknowledge interrupts */
-
-      unit->ByteOut(unit->card, PROREG_INTSTATUS, ints);
    }
 
    return FALSE;
