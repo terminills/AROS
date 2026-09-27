@@ -270,47 +270,69 @@ void core_CommitCallIPI(struct CallIPIEntry *cie, int cpu, struct Hook *hook,
  * Exec_CancelSignalIPIs() once the task is terminal, before its memory is
  * freed.
  *
- * Why no separate "wait for the executing call" loop, unlike arm-native: on pc
- * core_IPICallHookHandle() holds kb_BusyIPIHooksLock ACROSS the CALLHOOKPKT(),
- * so a core that is mid-hook still owns this lock. Acquiring it therefore
- * already waits that core out, and once we hold it no core can start a new
- * hook. The lock IS the barrier.
+ * The drain calls hooks with no list lock held (core_IPICallHookHandle), so
+ * holding kb_BusyIPIHooksLock no longer waits a mid-hook core out. A matching
+ * entry that no CPU has claimed never ran and goes straight back to the free
+ * list; one that is claimed but not done is executing on another core right
+ * now, so drop the lock, let it finish (it takes the lock to mark itself done
+ * and frees the entry), and look again. Signal entries target one CPU, so a
+ * claim means that call is running; a matching hook sees the task terminal and
+ * returns at once.
  *
- * An entry we unlink here was allocated by core_ClaimCallIPI() and never ran,
- * so returning it straight to the free list is the same bookkeeping the drain
- * would have done, minus the CPUDone/SyncLock steps which only apply to a call
- * that actually executed. Async-only by construction: sync callers block in
- * core_DoCallIPI() until completion, so a sync entry cannot outlive its caller
- * and can never be one of ours.
+ * Async-only by construction: sync callers block in core_DoCallIPI() until
+ * completion, so a sync entry cannot outlive its caller and can never be one
+ * of ours.
  */
 void core_CancelCallIPIs(APTR hookEntry, IPTR matchArg)
 {
     struct KernelBase *KernelBase = getKernelBase();
     struct PlatformData *pdata;
     struct IPIHook *ipi, *n;
+    ULONG masklongs, i;
+    BOOL running;
 
     if (!KernelBase)
         return;
     pdata = KernelBase->kb_PlatformData;
     if (!pdata || !pdata->kb_APIC)
         return;
+    masklongs = (31 + pdata->kb_APIC->apic_count) / 32;
 
-    Disable();
-    KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
-    ForeachNodeSafe(&pdata->kb_BusyIPIHooks, ipi, n)
+    do
     {
-        if ((APTR)ipi->ih_Hook.h_Entry == hookEntry &&
-            ipi->ih_Async &&
-            ipi->ih_Args[1] == matchArg)
+        running = FALSE;
+
+        Disable();
+        KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+        ForeachNodeSafe(&pdata->kb_BusyIPIHooks, ipi, n)
         {
+            BOOL claimed = FALSE;
+
+            if ((APTR)ipi->ih_Hook.h_Entry != hookEntry ||
+                !ipi->ih_Async ||
+                ipi->ih_Args[1] != matchArg)
+                continue;
+
+            for (i = 0; i < masklongs; i++)
+                if (ipi->ih_CPUClaimed[i])
+                    claimed = TRUE;
+
+            if (claimed)
+            {
+                running = TRUE;
+                continue;
+            }
             REMOVE(ipi);
             KrnSpinLock(&pdata->kb_FreeIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
             ADDTAIL(&pdata->kb_FreeIPIHooks, ipi);
             KrnSpinUnLock(&pdata->kb_FreeIPIHooksLock);
         }
-    }
-    KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
-    Enable();
+        KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
+        Enable();
+
+        if (running)
+            asm volatile("pause");
+    } while (running);
 }
 
 int core_DoCallIPI(struct Hook *hook, void *cpu_mask, int async, int nargs, IPTR *args, APTR _KB)
