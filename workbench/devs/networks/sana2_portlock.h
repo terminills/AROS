@@ -109,6 +109,35 @@ static inline struct IOSana2Req *Sana2TakeMatchingRequest(
 }
 
 /*
+ * Take this request off the port if it is still queued there. For AbortIO():
+ * a request the driver has already taken is in the hardware's hands and
+ * must complete normally. Telling the two apart by ln_Type does not work -
+ * a taken request is still NT_MESSAGE to WaitIO() and CheckIO() until it is
+ * replied - so ask the port.
+ */
+static inline BOOL Sana2TakeRequest(struct ExecBase *SysBase,
+    struct MsgPort *port, struct IOSana2Req *request)
+{
+    struct Node *node;
+    BOOL found = FALSE;
+
+    Sana2PortLock(SysBase, port);
+    for (node = port->mp_MsgList.lh_Head; node->ln_Succ != NULL;
+         node = node->ln_Succ)
+    {
+        if (node == (struct Node *)request)
+        {
+            Remove(node);
+            found = TRUE;
+            break;
+        }
+    }
+    Sana2PortUnlock(SysBase, port);
+
+    return found;
+}
+
+/*
  * Put a taken request back at the head of its port: when the opener's packet
  * filter rejected the packet, or the hardware had no room to send it, the
  * request stays queued for the next attempt.
@@ -208,6 +237,8 @@ static inline void Sana2ReplyEventRequests(struct ExecBase *SysBase,
 #define TakeMatchingRequest(port, packet_type, lengthtypes, maxlength) \
     Sana2TakeMatchingRequest(SysBase, (port), (packet_type), (lengthtypes), \
         (maxlength))
+#define TakeRequest(port, request) \
+    Sana2TakeRequest(SysBase, (port), (request))
 #define RequeueRequest(port, request) \
     Sana2RequeueRequest(SysBase, (port), (request))
 #define ReplyEventRequests(port, events) \

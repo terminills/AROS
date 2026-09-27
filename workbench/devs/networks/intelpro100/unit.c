@@ -1385,7 +1385,6 @@ static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
          {
             error = 0;
             request = (APTR)GetMsg(port);
-            request->ios2_Req.io_Message.mn_Node.ln_Type = NT_FREEMSG;
 
             switch(request->ios2_Req.io_Command)
             {

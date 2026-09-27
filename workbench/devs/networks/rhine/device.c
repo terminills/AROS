@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2000-2011 Neil Cafferkey
+Copyright (C) 2000-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -29,6 +29,7 @@ MA 02111-1307, USA.
 #include <proto/exec.h>
 #include <clib/alib_protos.h>
 #include <proto/utility.h>
+#include "../sana2_portlock.h"
 
 #include "device.h"
 
@@ -433,16 +434,31 @@ VOID DevBeginIO(REG(a1, struct IOSana2Req *request),
 VOID DevAbortIO(REG(a1, struct IOSana2Req *request),
    REG(BASE_REG, struct DevBase *base))
 {
-   Disable();
+   struct DevUnit *unit;
+   struct Opener *opener;
+   BOOL found = FALSE;
+   UBYTE i;
+
+   /* Only a request still waiting on one of our ports can be aborted: one
+      the unit has taken is being sent and completes normally */
+
    if(request->ios2_Req.io_Message.mn_Node.ln_Type == NT_MESSAGE &&
       (request->ios2_Req.io_Flags & IOF_QUICK) == 0)
    {
-      Remove((APTR)request);
-      request->ios2_Req.io_Error = IOERR_ABORTED;
-      request->ios2_WireError = S2WERR_GENERIC_ERROR;
-      ReplyMsg((APTR)request);
+      unit = (APTR)request->ios2_Req.io_Unit;
+      for(i = 0; i < REQUEST_QUEUE_COUNT && !found; i++)
+         found = TakeRequest(unit->request_ports[i], request);
+      opener = request->ios2_BufferManagement;
+      if(!found && opener != NULL)
+         found = TakeRequest(&opener->read_port, request);
+
+      if(found)
+      {
+         request->ios2_Req.io_Error = IOERR_ABORTED;
+         request->ios2_WireError = S2WERR_GENERIC_ERROR;
+         ReplyMsg((APTR)request);
+      }
    }
-   Enable();
 
    return;
 }
