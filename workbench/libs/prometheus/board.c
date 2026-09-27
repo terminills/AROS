@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2016, The AROS Development Team. All rights reserved.
+    Copyright (C) 2005-2026, The AROS Development Team. All rights reserved.
 */
 
 
@@ -289,6 +289,18 @@ static UPINT GetOwner(struct LibBase *base, PCIBoard *board)
          old_str = HIDD_PCIDevice_Obtain(board->aros_board, new_str);
          if (!old_str)
          {
+            /* Prometheus drivers expect a board they own to decode its
+               BARs and master the bus, as on the original bridge: without
+               bus mastering the card never fetches its command blocks */
+            struct TagItem enable_tags[] =
+            {
+               { aHidd_PCIDevice_isIO,     TRUE },
+               { aHidd_PCIDevice_isMEM,    TRUE },
+               { aHidd_PCIDevice_isMaster, TRUE },
+               { TAG_DONE,                 0    }
+            };
+
+            OOP_SetAttrs(board->aros_board, enable_tags);
             board->owner = new_owner;
             count++;
          }
