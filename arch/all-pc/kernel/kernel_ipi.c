@@ -249,6 +249,7 @@ void core_CommitCallIPI(struct CallIPIEntry *cie, int cpu, struct Hook *hook,
     ipi->ih_Async = 1;
 
     bzero(ipi->ih_CPUDone, sizeof(ULONG) * ((31 + apicPrivate->apic_count) / 32));
+    bzero(ipi->ih_CPUClaimed, sizeof(ULONG) * ((31 + apicPrivate->apic_count) / 32));
     bzero(ipi->ih_CPURequested, sizeof(ULONG) * ((31 + apicPrivate->apic_count) / 32));
     bit_test_and_set_long(ipi->ih_CPURequested, cpu);
 
@@ -367,6 +368,7 @@ int core_DoCallIPI(struct Hook *hook, void *cpu_mask, int async, int nargs, IPTR
 
         /* Clear CPU done mask */
         bzero(ipi->ih_CPUDone, sizeof(ULONG)*((31 + apicPrivate->apic_count) / 32));
+        bzero(ipi->ih_CPUClaimed, sizeof(ULONG)*((31 + apicPrivate->apic_count) / 32));
 
         /* Copy CPU mask */
         if (cpu_mask && cpu_mask != (void*)TASKAFFINITY_ANY && cpu_mask != (void*)TASKAFFINITY_ALL_BUT_SELF)
@@ -409,81 +411,113 @@ int core_DoCallIPI(struct Hook *hook, void *cpu_mask, int async, int nargs, IPTR
             KrnSpinLock(&ipi->ih_SyncLock, NULL, SPINLOCK_MODE_WRITE);
             KrnSpinUnLock(&ipi->ih_SyncLock);
             D(bug("[Kernel:IPI.CPU.%03u] %s: Synchronous IPI completed\n", cpunum, __func__));
+
+            /* The drain left a synchronous entry to us (core_IPICallHookHandle) */
+            Disable();
+            KrnSpinLock(&pdata->kb_FreeIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+            ADDTAIL(&pdata->kb_FreeIPIHooks, ipi);
+            KrnSpinUnLock(&pdata->kb_FreeIPIHooksLock);
+            Enable();
         }
     }
 
     return ret;
 }
 
+/*
+ * Run this CPU's queued hook calls.
+ *
+ * The hook is called with no list lock held. On pc the hook is usually
+ * signal_hook, which runs the full Signal(), and a Signal() to a task that
+ * has meanwhile moved to a third CPU queues an IPI of its own through
+ * core_DoCallIPI() - which takes kb_BusyIPIHooksLock. With the drain
+ * holding that lock across the call, the CPU spun forever on a lock it
+ * already held, interrupts off, and every other CPU that tried to send an
+ * IPI queued up behind it (seven CPUs signalling one waiter that is allowed
+ * on all of them and running on one: SMP-MultiWake).
+ *
+ * So each entry is claimed under the lock (ih_CPUClaimed, which also keeps
+ * a second IPI_CALL_HOOK from running an entry twice on this CPU), called
+ * unlocked, and marked done under the lock afterwards. An entry is only
+ * freed once every requested CPU is done, and this CPU's done bit is set
+ * after its call returns, so the entry cannot be recycled under a running
+ * hook. The list is rescanned after every call: it may have changed, and
+ * the hook may have queued more work for this CPU.
+ */
 static void core_IPICallHookHandle(struct ExceptionContext *regs, struct KernelBase *KernelBase)
 {
     struct PlatformData *pdata = KernelBase->kb_PlatformData;
-    struct IPIHook *ipi = NULL;
-    struct IPIHook *n = NULL;
     struct APICData *apicPrivate = pdata->kb_APIC;
+    ULONG masklongs = (31 + apicPrivate->apic_count) / 32;
     int cpunum = KrnGetCPUNumber();
 
     D(bug("[Kernel:IPI.CPU.%03u] %s\n", cpunum, __func__));
 
-    KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
-
-    ForeachNodeSafe(&pdata->kb_BusyIPIHooks, ipi, n)
+    for (;;)
     {
-        D(bug("[Kernel:IPI.CPU.%03u] %s: Checking node %p\n", cpunum, __func__, ipi));
-        if (KrnCPUInMask(cpunum, ipi->ih_CPURequested))
+        struct IPIHook *ipi = NULL, *n = NULL, *found = NULL;
+        BOOL complete = FALSE;
+
+        KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+        ForeachNodeSafe(&pdata->kb_BusyIPIHooks, ipi, n)
         {
-            
-            /*
+            if (KrnCPUInMask(cpunum, ipi->ih_CPURequested) &&
+                !KrnCPUInMask(cpunum, ipi->ih_CPUClaimed))
+            {
+                bit_test_and_set_long(ipi->ih_CPUClaimed, cpunum);
+                found = ipi;
+                break;
+            }
+        }
+        KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
+
+        if (!found)
+            break;
+
+        /*
             In case of asynchronous hook, the object we pass is IPIHook itself. Dangerous, but we needed to copy the
             original Hook since it could have existed on stack of caller...
-            */
-            if (ipi->ih_Async)
-            {
-                D(bug("[Kernel:IPI.CPU.%03u] %s: Calling HOOK Entry %p with Data %p\n", cpunum, __func__,
-                    ipi->ih_Hook.h_Entry, &ipi->ih_Hook));
+        */
+        D(bug("[Kernel:IPI.CPU.%03u] %s: Calling HOOK Entry %p with Data %p\n", cpunum, __func__,
+            found->ih_Hook.h_Entry, found->ih_Async ? (APTR)&found->ih_Hook : found->ih_Hook.h_Data));
+        CALLHOOKPKT(&found->ih_Hook, NULL, 0);
 
-                CALLHOOKPKT(&ipi->ih_Hook, NULL, 0);
+        KrnSpinLock(&pdata->kb_BusyIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+
+        /* Mark this CPU as done */
+        bit_test_and_set_long(found->ih_CPUDone, cpunum);
+
+        /* Check if all requested CPUs have handled the IPI */
+        if (!memcmp(found->ih_CPUDone, found->ih_CPURequested, sizeof(ULONG) * masklongs))
+        {
+            D(bug("[Kernel:IPI.CPU.%03u] %s: IPIHook completed. Releasing it\n", cpunum, __func__));
+            REMOVE(found);
+            complete = TRUE;
+        }
+        KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
+
+        if (complete)
+        {
+            if (found->ih_Async)
+            {
+                /* Put it on FreeList - never holding Free and Busy at once */
+                KrnSpinLock(&pdata->kb_FreeIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
+                ADDTAIL(&pdata->kb_FreeIPIHooks, found);
+                KrnSpinUnLock(&pdata->kb_FreeIPIHooksLock);
             }
             else
             {
-                D(bug("[Kernel:IPI.CPU.%03u] %s: Calling HOOK Entry %p with Data %p\n", cpunum, __func__,
-                    ipi->ih_Hook.h_Entry, ipi->ih_Hook.h_Data));
-
-                CALLHOOKPKT(&ipi->ih_Hook, NULL, 0);
+                /*
+                 * The sender is waiting on the sync lock and frees the
+                 * entry itself once it has it: freeing it here first let
+                 * another CPU take and re-initialise the entry before this
+                 * unlock, which then released the new user's lock.
+                 */
+                D(bug("[Kernel:IPI.CPU.%03u] %s: Releasing sync lock\n", cpunum, __func__));
+                KrnSpinUnLock(&found->ih_SyncLock);
             }
-
-            /* This part operates on locked IPIHook */
-            KrnSpinLock(&ipi->ih_Lock, NULL, SPINLOCK_MODE_WRITE);
-
-            /* Mark this CPU as done */
-            bit_test_and_set_long(ipi->ih_CPUDone, cpunum);
-
-            /* Check if all requested CPUs have handled the IPI */
-            if (!memcmp(ipi->ih_CPUDone, ipi->ih_CPURequested, sizeof(ULONG) * ((31 + apicPrivate->apic_count)/32)))
-            {
-                D(bug("[Kernel:IPI.CPU.%03u] %s: IPIHook completed. Releasing it\n", cpunum, __func__));
-                int async = ipi->ih_Async;
-
-                /* Yes, remove this ipi from BusyList */
-                REMOVE(ipi);
-
-                /* Put it on FreeList */
-                KrnSpinLock(&pdata->kb_FreeIPIHooksLock, NULL, SPINLOCK_MODE_WRITE);
-                ADDTAIL(&pdata->kb_FreeIPIHooks, ipi);
-                KrnSpinUnLock(&pdata->kb_FreeIPIHooksLock);
-
-                if (!async)
-                {
-                    D(bug("[Kernel:IPI.CPU.%03u] %s: Releasing sync lock\n", cpunum, __func__));
-                    KrnSpinUnLock(&ipi->ih_SyncLock);
-                }
-            }
-            /* End of IPIHook critical section */
-            KrnSpinUnLock(&ipi->ih_Lock);
         }
     }
-
-    KrnSpinUnLock(&pdata->kb_BusyIPIHooksLock);
 }
 
 int core_IPIHandle(struct ExceptionContext *regs, void *data1, struct KernelBase *KernelBase)

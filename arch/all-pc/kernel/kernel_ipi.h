@@ -105,6 +105,7 @@ struct IPIHook
     IPTR            ih_Args[IPI_CALL_HOOK_MAX_ARGS];
     uint32_t *      ih_CPUDone;
     uint32_t *      ih_CPURequested;
+    uint32_t *      ih_CPUClaimed;      /* CPUs that have started the call (see core_IPICallHookHandle) */
     int             ih_Async;
     spinlock_t      ih_Lock;
     spinlock_t      ih_SyncLock;
