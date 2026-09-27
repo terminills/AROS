@@ -10,6 +10,10 @@
 
 #include "kernel_base.h"
 #include "kernel_intern.h"
+#if defined(__AROSEXEC_SMP__)
+#include "kernel_ipi.h"
+#include "apic.h"
+#endif
 
 #define MAP_2M_SHIFT 21
 #define MAP_2M_SIZE  (1UL << MAP_2M_SHIFT)
@@ -144,6 +148,51 @@ static int map_global_2m(void *virt, void *phys, uint32_t length,
     return 0;
 }
 
+#if defined(__AROSEXEC_SMP__)
+/*
+ * All CPUs share these page tables, and each caches translations of them:
+ * a changed entry must be flushed on every CPU, not only the caller's (a
+ * BAR remapped uncached, say, must not keep a write-back translation on
+ * another core). invlpg rather than a CR3 reload, because the entries
+ * replaced may have been global. Runs from the IPI drain on each other CPU.
+ */
+static AROS_UFH3(IPTR, tlbflush_hook,
+    AROS_UFHA(struct IPIHook *, hook, A0),
+    AROS_UFHA(APTR, object, A2),
+    AROS_UFHA(APTR, message, A1))
+{
+    AROS_USERFUNC_INIT
+
+    IPTR vcur = hook->ih_Args[0], vend = hook->ih_Args[1];
+
+    for (; vcur < vend; vcur += MAP_2M_SIZE)
+        asm volatile ("invlpg (%0)" :: "r"(vcur) : "memory");
+
+    return 0;
+
+    AROS_USERFUNC_EXIT
+}
+
+/* Flush [virt, virt+length) on every other running CPU, and wait for it */
+static void tlb_shootdown(struct KernelBase *KernelBase, void *virt, uint32_t length)
+{
+    struct PlatformData *pdata = KernelBase->kb_PlatformData;
+    struct Hook h;
+    IPTR args[2];
+
+    /* Nothing to do (and nobody to wait for) until a second CPU runs */
+    if (!pdata || !pdata->kb_APIC || pdata->kb_APIC->apic_count < 2)
+        return;
+
+    args[0] = (IPTR)virt & ~(IPTR)MAP_2M_MASK;
+    args[1] = ((IPTR)virt + length + MAP_2M_MASK) & ~(IPTR)MAP_2M_MASK;
+    h.h_Entry = (HOOKFUNC)tlbflush_hook;
+    h.h_SubEntry = NULL;
+    h.h_Data = NULL;
+    core_DoCallIPI(&h, (void *)TASKAFFINITY_ALL_BUT_SELF, 0, 2, args, KernelBase);
+}
+#endif
+
 /* See rom/kernel/mapglobal.c for documentation. */
 AROS_LH4I(int, KrnMapGlobal,
     AROS_LHA(void *, virt, A0),
@@ -164,6 +213,10 @@ AROS_LH4I(int, KrnMapGlobal,
     }
 
     ret = map_global_2m(virt, phys, length, flags);
+#if defined(__AROSEXEC_SMP__)
+    if (ret == 0)
+        tlb_shootdown(KernelBase, virt, length);
+#endif
 
     if (ssp)
         UserState(ssp);
