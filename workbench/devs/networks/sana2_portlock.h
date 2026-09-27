@@ -28,7 +28,16 @@
 #include <proto/exec.h>
 #include <proto/kernel.h>
 
-static inline APTR Sana2PortKernelBase(void)
+/*
+ * Some drivers reach exec through their device base ("#define SysBase
+ * (base->sys_base)"), so the helpers take the caller's exec base: the
+ * wrapper macros below expand SysBase at the call site, where the driver's
+ * own definition applies.
+ */
+#pragma push_macro("SysBase")
+#undef SysBase
+
+static inline APTR Sana2PortKernelBase(struct ExecBase *SysBase)
 {
     static APTR kernelbase;
 
@@ -37,12 +46,13 @@ static inline APTR Sana2PortKernelBase(void)
     return kernelbase;
 }
 
-static inline void PortLock(struct MsgPort *port)
+static inline void Sana2PortLock(struct ExecBase *SysBase,
+    struct MsgPort *port)
 {
     Disable();
 #if defined(__AROSPLATFORM_SMP__)
     {
-        APTR KernelBase = Sana2PortKernelBase();
+        APTR KernelBase = Sana2PortKernelBase(SysBase);
 #if defined(__AROSEXEC_SMP__)
         KrnSpinLock(&port->mp_SpinLock, NULL, SPINLOCK_MODE_WRITE);
 #else
@@ -52,11 +62,12 @@ static inline void PortLock(struct MsgPort *port)
 #endif
 }
 
-static inline void PortUnlock(struct MsgPort *port)
+static inline void Sana2PortUnlock(struct ExecBase *SysBase,
+    struct MsgPort *port)
 {
 #if defined(__AROSPLATFORM_SMP__)
     {
-        APTR KernelBase = Sana2PortKernelBase();
+        APTR KernelBase = Sana2PortKernelBase(SysBase);
 #if defined(__AROSEXEC_SMP__)
         KrnSpinUnLock(&port->mp_SpinLock);
 #else
@@ -72,12 +83,13 @@ static inline void PortUnlock(struct MsgPort *port)
  * or NULL. With lengthtypes, any request for an 802.3 length-field type
  * (<= maxlength) also takes an 802.3 packet.
  */
-static inline struct IOSana2Req *TakeMatchingRequest(struct MsgPort *port,
+static inline struct IOSana2Req *Sana2TakeMatchingRequest(
+    struct ExecBase *SysBase, struct MsgPort *port,
     ULONG packet_type, BOOL lengthtypes, ULONG maxlength)
 {
     struct IOSana2Req *request, *found = NULL;
 
-    PortLock(port);
+    Sana2PortLock(SysBase, port);
     for (request = (APTR)port->mp_MsgList.lh_Head;
          request->ios2_Req.io_Message.mn_Node.ln_Succ != NULL;
          request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ)
@@ -91,7 +103,7 @@ static inline struct IOSana2Req *TakeMatchingRequest(struct MsgPort *port,
             break;
         }
     }
-    PortUnlock(port);
+    Sana2PortUnlock(SysBase, port);
 
     return found;
 }
@@ -101,12 +113,13 @@ static inline struct IOSana2Req *TakeMatchingRequest(struct MsgPort *port,
  * filter rejected the packet, or the hardware had no room to send it, the
  * request stays queued for the next attempt.
  */
-static inline void RequeueRequest(struct MsgPort *port,
+static inline void Sana2RequeueRequest(struct ExecBase *SysBase,
+    struct MsgPort *port,
     struct IOSana2Req *request)
 {
-    PortLock(port);
+    Sana2PortLock(SysBase, port);
     AddHead(&port->mp_MsgList, (APTR)request);
-    PortUnlock(port);
+    Sana2PortUnlock(SysBase, port);
 }
 
 /*
@@ -162,14 +175,15 @@ static inline BOOL Sana2TxGateLeave(struct Sana2TxGate *gate)
  * Take every request on the port whose ios2_WireError has any of events set,
  * mark it with events and reply it - the replies after the lock is released.
  */
-static inline void ReplyEventRequests(struct MsgPort *port, ULONG events)
+static inline void Sana2ReplyEventRequests(struct ExecBase *SysBase,
+    struct MsgPort *port, ULONG events)
 {
     struct IOSana2Req *request, *next_request;
     struct List matched;
 
     NEWLIST(&matched);
 
-    PortLock(port);
+    Sana2PortLock(SysBase, port);
     for (request = (APTR)port->mp_MsgList.lh_Head;
          (next_request = (APTR)request->ios2_Req.io_Message.mn_Node.ln_Succ) != NULL;
          request = next_request)
@@ -181,10 +195,22 @@ static inline void ReplyEventRequests(struct MsgPort *port, ULONG events)
             AddTail(&matched, (APTR)request);
         }
     }
-    PortUnlock(port);
+    Sana2PortUnlock(SysBase, port);
 
     while ((request = (APTR)RemHead(&matched)) != NULL)
         ReplyMsg((APTR)request);
 }
+
+#pragma pop_macro("SysBase")
+
+#define PortLock(port) Sana2PortLock(SysBase, (port))
+#define PortUnlock(port) Sana2PortUnlock(SysBase, (port))
+#define TakeMatchingRequest(port, packet_type, lengthtypes, maxlength) \
+    Sana2TakeMatchingRequest(SysBase, (port), (packet_type), (lengthtypes), \
+        (maxlength))
+#define RequeueRequest(port, request) \
+    Sana2RequeueRequest(SysBase, (port), (request))
+#define ReplyEventRequests(port, events) \
+    Sana2ReplyEventRequests(SysBase, (port), (events))
 
 #endif /* SANA2_PORTLOCK_H */
