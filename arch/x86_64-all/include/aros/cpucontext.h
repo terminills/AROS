@@ -2,7 +2,7 @@
 #define AROS_X86_64_CPUCONTEXT_H
 
 /*
-    Copyright © 1995-2022, The AROS Development Team. All rights reserved.
+    Copyright © 1995-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: CPU context definition for x86-64 processors
@@ -95,5 +95,14 @@ enum enECFlags
     ECF_FPFXS           = 1<<1,         /* FXSAVE context is present                            */
     ECF_FPXS            = 1<<2,         /* XSAVE context is present                             */
 };
+
+/*
+ * KrnGetSystemAttr() attributes describing the page fault being handled,
+ * for exception handlers added with KrnAddExceptionHandler() on vector 14.
+ * They are recorded per CPU when the fault is taken, so a handler reads the
+ * values of its own fault. x86 only: other architectures return -1.
+ */
+#define KATTR_X86FaultAddress   (TAG_USER + 0x03F10000) /* [.G] (IPTR)  - faulting address (CR2)              */
+#define KATTR_X86FaultError     (TAG_USER + 0x03F10001) /* [.G] (IPTR)  - page fault error code               */
 
 #endif

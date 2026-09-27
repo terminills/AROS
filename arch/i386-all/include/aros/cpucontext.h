@@ -86,4 +86,13 @@ enum enECFlags
     ECF_FPXS            = 1<<3,         /* XSAVE context is present	                        */
 };
 
+/*
+ * KrnGetSystemAttr() attributes describing the page fault being handled,
+ * for exception handlers added with KrnAddExceptionHandler() on vector 14.
+ * They are recorded per CPU when the fault is taken, so a handler reads the
+ * values of its own fault. x86 only: other architectures return -1.
+ */
+#define KATTR_X86FaultAddress   (TAG_USER + 0x03F10000) /* [.G] (IPTR)  - faulting address (CR2)              */
+#define KATTR_X86FaultError     (TAG_USER + 0x03F10001) /* [.G] (IPTR)  - page fault error code               */
+
 #endif

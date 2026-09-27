@@ -91,6 +91,24 @@ void cpu_Trap(struct ExceptionContext *regs, unsigned long error_code, unsigned 
 {
     D(bug("[Kernel] %s(%u)\n", __func__, irq_number));
 
+    /*
+     * Record the page fault for this CPU's handlers before they run: CR2 is
+     * lost if a handler faults in turn, and the error code is not in the
+     * ExceptionContext. KrnGetSystemAttr(KATTR_X86FaultAddress/Error)
+     * returns them.
+     */
+    if (irq_number == 14 && KernelBase && KernelBase->kb_PlatformData &&
+        KernelBase->kb_PlatformData->kb_APIC)
+    {
+        struct CPUData *core =
+            &KernelBase->kb_PlatformData->kb_APIC->cores[KrnGetCPUNumber()];
+        IPTR cr2;
+
+        asm volatile("mov %%cr2, %0" : "=r" (cr2));
+        core->cpu_FaultAddress = cr2;
+        core->cpu_FaultError = error_code;
+    }
+
     if (!krnRunExceptionHandlers(KernelBase, irq_number, regs))
     {
         if (IsKernelBaseReady(SysBase) &&

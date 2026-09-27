@@ -5,6 +5,11 @@
 */
 
 #include <aros/kernel.h>
+#if defined(__x86_64__)
+#include <aros/x86_64/cpucontext.h>
+#else
+#include <aros/i386/cpucontext.h>
+#endif
 #include <exec/execbase.h>
 #include <proto/exec.h>
 
@@ -71,6 +76,13 @@
     else if ((id == KATTR_ClockSource) && (KernelBase->kb_ClockSource))
     {
         retval = (intptr_t)KernelBase->kb_ClockSource;
+    }
+    else if (apicData && (id == KATTR_X86FaultAddress || id == KATTR_X86FaultError))
+    {
+        struct CPUData *core = &apicData->cores[KrnGetCPUNumber()];
+
+        retval = (id == KATTR_X86FaultAddress) ? (intptr_t)core->cpu_FaultAddress
+                                               : (intptr_t)core->cpu_FaultError;
     }
     
     return retval;

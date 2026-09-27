@@ -3,7 +3,7 @@
 
 include $(SRCDIR)/config/aros.cfg
 
-FILES := mmap stackcheck
+FILES := mmap stackcheck faultinfo
 
 EXEDIR := $(AROS_TESTS)/kernel
 

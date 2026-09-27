@@ -48,6 +48,8 @@ struct CPUData
     UBYTE                       cpu_PerfMaxRatio;
     UBYTE                       cpu_PerfCurRatio;
     UBYTE                       cpu_PerfCapable;
+    IPTR                        cpu_FaultAddress;   /* CR2 of the page fault being handled                */
+    IPTR                        cpu_FaultError;     /* its error code                                     */
 };
 
 struct APICData
