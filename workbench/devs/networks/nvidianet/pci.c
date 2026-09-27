@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2004-2023 Neil Cafferkey
+Copyright (C) 2004-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -587,7 +587,14 @@ static APTR AllocDMAMemHook(struct BusContext *context, UPINT size,
    if(alignment < 8)
       alignment = 8;
    size += 2 * sizeof(APTR) + alignment;
+   /* Descriptors and buffers are handed to the card as 32-bit bus
+      addresses (and followed back through them as pointers): on a
+      64-bit machine they must come from below 2 GB. */
+#ifdef MEMF_31BIT
+   original_mem = AllocMem(size, MEMF_PUBLIC | MEMF_31BIT);
+#else
    original_mem = AllocMem(size, MEMF_PUBLIC);
+#endif
    if(original_mem != NULL)
    {
       mem = (APTR)((UPINT)(original_mem + 2 * sizeof(APTR) + alignment - 1)

@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2011-2025 Neil Cafferkey
+Copyright (C) 2011-2026 Neil Cafferkey
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -407,14 +407,23 @@ static UBYTE *DMATXFunction(struct IOSana2Req *request)
    struct Opener *opener;
    struct OpenerExtra *opener_extra;
    APTR cookie;
+   UBYTE *buffer;
 
    opener = request->ios2_BufferManagement;
    opener_extra = (APTR)opener->read_port.mp_Node.ln_Name;
    cookie = request->ios2_StatData;
    request->ios2_Data = cookie;
 
-   return AROS_UFC1(UBYTE *, (APTR)opener_extra->real_dma_tx_function,
+   buffer = AROS_UFC1(UBYTE *, (APTR)opener_extra->real_dma_tx_function,
       AROS_UFCA(APTR, cookie, A0));
+
+   /* The card is given 32-bit bus addresses: a buffer above 4 GB is
+      copied into the unit's own Tx buffer instead */
+   if(sizeof(UPINT) > 4 && buffer != NULL
+      && (UQUAD)(UPINT)buffer + request->ios2_DataLength > 0xffffffffULL)
+      buffer = NULL;
+
+   return buffer;
 }
 
 

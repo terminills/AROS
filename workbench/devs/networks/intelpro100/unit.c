@@ -27,6 +27,12 @@ MA 02111-1307, USA.
 
 #include <proto/exec.h>
 #include "../sana2_portlock.h"
+
+#ifdef MEMF_31BIT
+#define DMA_MEMF MEMF_31BIT
+#else
+#define DMA_MEMF 0
+#endif
 #ifndef __amigaos4__
 #include <proto/alib.h>
 #else
@@ -181,7 +187,7 @@ struct DevUnit *CreateUnit(ULONG index, APTR card,
       /* Allocate buffer for adapter to writes statistics to */
 
       unit->stats_buffer =
-         AllocVec(sizeof(ULONG) * (STAT_COUNT + 1), MEMF_PUBLIC);
+         AllocVec(sizeof(ULONG) * (STAT_COUNT + 1), MEMF_PUBLIC | DMA_MEMF);
       if(unit->stats_buffer == NULL)
          success = FALSE;
    }
@@ -210,16 +216,19 @@ struct DevUnit *CreateUnit(ULONG index, APTR card,
          }
       }
 
-      /* Allocate and initialise packet/command descriptors */
+      /* Allocate and initialise packet/command descriptors. The card sees
+         them as 32-bit bus addresses, and the rings are walked back through
+         those links as pointers: on a 64-bit machine they must come from
+         below 2 GB. */
 
-      unit->tx_buffer = AllocVec(ETH_MAXPACKETSIZE, MEMF_PUBLIC);
+      unit->tx_buffer = AllocVec(ETH_MAXPACKETSIZE, MEMF_PUBLIC | DMA_MEMF);
       next_tcb = unit->first_tcb = unit->tcbs =
-         AllocVec(TCB_SIZE * TX_SLOT_COUNT, MEMF_PUBLIC | MEMF_CLEAR);
+         AllocVec(TCB_SIZE * TX_SLOT_COUNT, MEMF_PUBLIC | MEMF_CLEAR | DMA_MEMF);
       next_rcb = unit->rcbs =
-         AllocVec(RCB_SIZE * RX_SLOT_COUNT, MEMF_PUBLIC | MEMF_CLEAR);
+         AllocVec(RCB_SIZE * RX_SLOT_COUNT, MEMF_PUBLIC | MEMF_CLEAR | DMA_MEMF);
       unit->multicast_cb = AllocVec(PROCB_COUNT * sizeof(ULONG)
          + sizeof(UWORD) + ETH_ADDRESSSIZE * MAX_MCAST_ENTRIES,
-         MEMF_PUBLIC | MEMF_CLEAR);
+         MEMF_PUBLIC | MEMF_CLEAR | DMA_MEMF);
 
       if(next_tcb == NULL || next_rcb == NULL || unit->tx_buffer == NULL
          || unit->multicast_cb == NULL)
