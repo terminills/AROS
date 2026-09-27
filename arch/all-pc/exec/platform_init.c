@@ -212,8 +212,6 @@ void X86_SetTaskState(struct Task *changeTask, ULONG newState, BOOL dolock)
     struct List *task_list = NULL;
     D(bug("[Exec:X86] %s(0x%p,%08x)\n", __func__, changeTask, newState));
 
-    changeTask->tc_State = newState;
-
     switch (newState)
     {
         case TS_RUN:
@@ -243,16 +241,16 @@ void X86_SetTaskState(struct Task *changeTask, ULONG newState, BOOL dolock)
         default:
             break;
     }
-    if (task_list)
-    {
 #if defined(__AROSEXEC_SMP__)
-        if (dolock && task_listlock) EXEC_SPINLOCK_LOCK(task_listlock, NULL, SPINLOCK_MODE_WRITE);
+    if (dolock && task_listlock) EXEC_SPINLOCK_LOCK(task_listlock, NULL, SPINLOCK_MODE_WRITE);
 #endif
+    /* The state names the list: publish it together with the membership */
+    changeTask->tc_State = newState;
+    if (task_list)
         Enqueue(task_list, &changeTask->tc_Node);
 #if defined(__AROSEXEC_SMP__)
-        if (dolock && task_listlock) EXEC_SPINLOCK_UNLOCK(task_listlock);
+    if (dolock && task_listlock) EXEC_SPINLOCK_UNLOCK(task_listlock);
 #endif
-    }
 }
 
 /* change a specified task's state */
@@ -268,6 +266,33 @@ void X86_HandleReschedTask(struct ExceptionContext *regs)
 
     /* Move to the ready list... */
 #if defined(__AROSEXEC_SMP__)
+    /*
+     * tc_State says which list the task is on, and only its tc_SpinLock
+     * keeps the two together (settaskpri.c): hold it across the whole move,
+     * as every other writer of the pair does. Without it two cores
+     * rescheduling the same task - two Signal()s to one waiter, which drop
+     * the task lock before calling us - could both pick TaskWait from a
+     * stale tc_State, and the second Remove()d a node already on TaskReady
+     * under the wrong list's lock, closing TaskReady into a cycle.
+     *
+     * The callers ask for READY because they saw the task WAIT (or not yet
+     * added). If another core made it ready and dispatched it meanwhile it
+     * is RUNNING now and has seen the signal: leave it where it is rather
+     * than put a running task on TaskReady.
+     *
+     * The old list's lock is dropped before X86_SetTaskState() takes the
+     * new one, so list locks never nest; in between the task is on no list,
+     * which only holders of its tc_SpinLock can observe.
+     */
+    EXEC_SPINLOCK_LOCK(&reschTask->tc_SpinLock, NULL, SPINLOCK_MODE_WRITE);
+
+    if ((reschTask->tc_State == TS_RUN) &&
+        ((reschState == TS_READY) || (reschState == TS_UNSPIN)))
+    {
+        EXEC_SPINLOCK_UNLOCK(&reschTask->tc_SpinLock);
+        return;
+    }
+
     switch (reschTask->tc_State)
     {
         case TS_RUN:
@@ -294,6 +319,9 @@ void X86_HandleReschedTask(struct ExceptionContext *regs)
 #endif
         Remove(&reschTask->tc_Node);
 #if defined(__AROSEXEC_SMP__)
+    if (task_listlock)
+        EXEC_SPINLOCK_UNLOCK(task_listlock);
+
     switch (reschState)
     {
         case TS_UNSPIN:
@@ -323,16 +351,17 @@ void X86_HandleReschedTask(struct ExceptionContext *regs)
         case TS_READY:
         case TS_SPIN:
 #endif
-            X86_SetTaskState(reschTask, reschState, (BOOL)(reschTask->tc_State != reschState));
 #if defined(__AROSEXEC_SMP__)
+            X86_SetTaskState(reschTask, reschState, TRUE);
             break;
         case TS_REMOVED:
                 reschTask->tc_State = TS_TOMBSTONED;
             break;
     }
 
-    if (task_listlock)
-        EXEC_SPINLOCK_UNLOCK(task_listlock);
+    EXEC_SPINLOCK_UNLOCK(&reschTask->tc_SpinLock);
+#else
+            X86_SetTaskState(reschTask, reschState, (BOOL)(reschTask->tc_State != reschState));
 #endif
 
     return;
