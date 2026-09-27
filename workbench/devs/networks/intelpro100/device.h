@@ -190,6 +190,7 @@ struct DevUnit
    UWORD bus;
    UWORD eeprom_addr_size;
    struct Sana2TxGate tx_gate;   /* one Tx producer at a time on SMP */
+   struct Sana2TxGate rx_gate;   /* one Rx consumer at a time on SMP */
 };
 
 

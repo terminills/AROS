@@ -76,6 +76,7 @@ static BOOL AddressFilter(struct DevUnit *unit, UBYTE *address,
 static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code));
 static VOID TXEndInt(REG(a1, struct DevUnit *unit),
    REG(a5, APTR int_code));
+static VOID RetireTX(struct DevUnit *unit);
 static VOID ReportEvents(struct DevUnit *unit, ULONG events,
    struct DevBase *base);
 static VOID UnitTask(struct DevUnit *);
@@ -1080,98 +1081,109 @@ static VOID RXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
    struct TypeStats *tracker;
 
    base = unit->device;
-   last_rcb = unit->last_rcb;
-   rcb = (ULONG *)(UPINT)LELong(last_rcb[PROCB_NEXT]);
 
-   dma_size = RCB_SIZE;
-   CachePostDMA(rcb, &dma_size, 0);
-   while(((rx_status_le = rcb[PROCB_CONTROL])
-      & MakeLELong(PROCB_CONTROLF_DONE)) != 0)
+   /* One Rx consumer at a time: on SMP a second Cause() can run this on
+      another CPU while the first pass is still walking the ring */
+   if(!Sana2TxGateEnter(&unit->rx_gate))
+      return;
+
+   do
    {
-      if((rx_status_le & MakeLELong(PROCB_CONTROLF_OK)) != 0)
+      last_rcb = unit->last_rcb;
+      rcb = (ULONG *)(UPINT)LELong(last_rcb[PROCB_NEXT]);
+
+      dma_size = RCB_SIZE;
+      CachePostDMA(rcb, &dma_size, 0);
+      while(((rx_status_le = rcb[PROCB_CONTROL])
+         & MakeLELong(PROCB_CONTROLF_DONE)) != 0)
       {
-         is_orphan = TRUE;
-         rx_info = LELong(rcb[PROCB_RXINFO]);
-         packet_size = rx_info & PROCB_RXINFOF_FRAMESIZE;
-         buffer = (UBYTE *)(rcb + PROCB_BUFFER);
-
-         if(AddressFilter(unit, buffer + ETH_PACKET_DEST, base))
+         if((rx_status_le & MakeLELong(PROCB_CONTROLF_OK)) != 0)
          {
-            packet_type = BEWord(*((UWORD *)(buffer + ETH_PACKET_TYPE)));
+            is_orphan = TRUE;
+            rx_info = LELong(rcb[PROCB_RXINFO]);
+            packet_size = rx_info & PROCB_RXINFOF_FRAMESIZE;
+            buffer = (UBYTE *)(rcb + PROCB_BUFFER);
 
-            opener = (APTR)unit->openers.mlh_Head;
-            opener_tail = (APTR)&unit->openers.mlh_Tail;
-
-            /* Offer packet to every opener */
-
-            while(opener != opener_tail)
+            if(AddressFilter(unit, buffer + ETH_PACKET_DEST, base))
             {
-               accepted = FALSE;
+               packet_type = BEWord(*((UWORD *)(buffer + ETH_PACKET_TYPE)));
 
-               /* First matching request, taken off the read port under its lock */
-               request = TakeMatchingRequest(&opener->read_port, packet_type, FALSE, 0);
-               if(request != NULL)
+               opener = (APTR)unit->openers.mlh_Head;
+               opener_tail = (APTR)&unit->openers.mlh_Tail;
+
+               /* Offer packet to every opener */
+
+               while(opener != opener_tail)
                {
-                  CopyPacket(unit, request, packet_size, packet_type, buffer, base);
-                  accepted = TRUE;
+                  accepted = FALSE;
+
+                  /* First matching request, taken off the read port under its lock */
+                  request = TakeMatchingRequest(&opener->read_port, packet_type, FALSE, 0);
+                  if(request != NULL)
+                  {
+                     CopyPacket(unit, request, packet_size, packet_type, buffer, base);
+                     accepted = TRUE;
+                  }
+
+                  if(accepted)
+                     is_orphan = FALSE;
+                  opener = (APTR)opener->node.mln_Succ;
                }
 
-               if(accepted)
-                  is_orphan = FALSE;
-               opener = (APTR)opener->node.mln_Succ;
-            }
+               /* If packet was unwanted, give it to S2_READORPHAN request */
 
-            /* If packet was unwanted, give it to S2_READORPHAN request */
-
-            if(is_orphan)
-            {
-               unit->stats.UnknownTypesReceived++;
-               request = (APTR)GetMsg(unit->request_ports[ADOPT_QUEUE]);
-               if(request != NULL)
+               if(is_orphan)
                {
-                  CopyPacket(unit, request, packet_size, packet_type, buffer,
-                     base);
+                  unit->stats.UnknownTypesReceived++;
+                  request = (APTR)GetMsg(unit->request_ports[ADOPT_QUEUE]);
+                  if(request != NULL)
+                  {
+                     CopyPacket(unit, request, packet_size, packet_type, buffer,
+                        base);
+                  }
                }
-            }
 
-            /* Update remaining statistics */
+               /* Update remaining statistics */
 
-            tracker =
-               FindTypeStats(unit, &unit->type_trackers, packet_type, base);
-            if(tracker != NULL)
-            {
-               tracker->stats.PacketsReceived++;
-               tracker->stats.BytesReceived += packet_size;
+               tracker =
+                  FindTypeStats(unit, &unit->type_trackers, packet_type, base);
+               if(tracker != NULL)
+               {
+                  tracker->stats.PacketsReceived++;
+                  tracker->stats.BytesReceived += packet_size;
+               }
             }
          }
+         else
+         {
+            unit->stats.BadData++;
+            ReportEvents(unit, S2EVENT_ERROR | S2EVENT_HARDWARE | S2EVENT_RX,
+               base);
+         }
+
+         rcb[PROCB_CONTROL] = MakeLELong(PROCB_CONTROLF_SUSPEND);
+         rcb[PROCB_RXINFO] =
+            MakeLELong(ETH_MAXPACKETSIZE << PROCB_RXINFOB_BUFFERSIZE);
+
+         /* Clear suspend flag from previous CB without touching bits that
+            adapter may be writing to; and resume execution */
+
+         *(((UBYTE *)last_rcb + PROCB_CONTROL) + 3) = 0;
+         dma_size = RCB_SIZE;
+         CachePreDMA(last_rcb, &dma_size, 0);
+         if(TRUE)
+            unit->LEWordOut(unit->card, PROREG_COMMAND, PRO_RUCMD_RESUME);
+
+         last_rcb = rcb;
+         rcb = (ULONG *)(UPINT)LELong(rcb[PROCB_NEXT]);
       }
-      else
-      {
-         unit->stats.BadData++;
-         ReportEvents(unit, S2EVENT_ERROR | S2EVENT_HARDWARE | S2EVENT_RX,
-            base);
-      }
 
-      rcb[PROCB_CONTROL] = MakeLELong(PROCB_CONTROLF_SUSPEND);
-      rcb[PROCB_RXINFO] =
-         MakeLELong(ETH_MAXPACKETSIZE << PROCB_RXINFOB_BUFFERSIZE);
-
-      /* Clear suspend flag from previous CB without touching bits that
-         adapter may be writing to; and resume execution */
-
-      *(((UBYTE *)last_rcb + PROCB_CONTROL) + 3) = 0;
-      dma_size = RCB_SIZE;
-      CachePreDMA(last_rcb, &dma_size, 0);
-      if(TRUE)
-         unit->LEWordOut(unit->card, PROREG_COMMAND, PRO_RUCMD_RESUME);
-
-      last_rcb = rcb;
-      rcb = (ULONG *)(UPINT)LELong(rcb[PROCB_NEXT]);
+      unit->last_rcb = last_rcb;
    }
+   while(Sana2TxGateLeave(&unit->rx_gate));
 
    /* Return */
 
-   unit->last_rcb = last_rcb;
    return;
 }
 
@@ -1348,7 +1360,10 @@ static BOOL AddressFilter(struct DevUnit *unit, UBYTE *address,
 
 static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
 {
-   /* One Tx producer at a time; see Sana2TxGate */
+   /* One Tx worker at a time; see Sana2TxGate. TXEndInt() comes through
+      here too: retiring and queueing share the ring, the in-flight list
+      and the unit flags, and on SMP the two softints can otherwise run
+      on two CPUs at once */
    if(!Sana2TxGateEnter(&unit->tx_gate))
       return;
 
@@ -1368,6 +1383,9 @@ static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
 
       base = unit->device;
       port = unit->request_ports[WRITE_QUEUE];
+
+      /* Retire what the card has finished before adding to the ring */
+      RetireTX(unit);
 
       while(proceed && !IsMsgPortEmpty(port))
       {
@@ -1585,6 +1603,13 @@ static VOID TXInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
 
 static VOID TXEndInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
 {
+   TXInt(unit, int_code);
+}
+
+
+
+static VOID RetireTX(struct DevUnit *unit)
+{
    UWORD data_size, packet_size;
    UBYTE *buffer;
    struct DevBase *base;
@@ -1681,11 +1706,6 @@ static VOID TXEndInt(REG(a1, struct DevUnit *unit), REG(a5, APTR int_code))
    CachePreDMA(unit->tcbs, &dma_size, 0);
 
    unit->first_tcb = tcb;
-
-   /* Restart downloads if they had stopped */
-
-   if(unit->request_ports[WRITE_QUEUE]->mp_Flags == PA_IGNORE)
-      Cause(&unit->tx_int);
 
    return;
 }
