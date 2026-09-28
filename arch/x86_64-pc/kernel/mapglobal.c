@@ -160,7 +160,7 @@ static void set_pde_2m(struct PDE2M *slot, IPTR phys, KRN_MapAttr flags)
  * or MMIO mappings cannot be replaced by accident.
  */
 static int map_global_4k(void *virt, void *phys, uint32_t length,
-    KRN_MapAttr flags)
+    KRN_MapAttr flags, BOOL *replaced)
 {
     struct CPUMMUConfig *MMU = &__KernBootPrivate->MMU;
     struct PML4E *pml4 = MMU->mmu_PML4;
@@ -219,6 +219,8 @@ static int map_global_4k(void *virt, void *phys, uint32_t length,
                 pde[pde_off].base_high);
         }
 
+        if (pte[pte_off].p)
+            *replaced = TRUE;
         set_pte_4k(&pte[pte_off], pcur, flags);
         asm volatile ("invlpg (%0)" :: "r"(vcur) : "memory");
 
@@ -231,7 +233,7 @@ static int map_global_4k(void *virt, void *phys, uint32_t length,
 }
 
 static int map_global_2m(void *virt, void *phys, uint32_t length,
-    KRN_MapAttr flags)
+    KRN_MapAttr flags, BOOL *replaced)
 {
     struct CPUMMUConfig *MMU = &__KernBootPrivate->MMU;
     struct PML4E *pml4 = MMU->mmu_PML4;
@@ -278,6 +280,8 @@ static int map_global_2m(void *virt, void *phys, uint32_t length,
                 pdpe[pdpe_off].base_high);
         }
 
+        if (pde[pde_off].p)
+            *replaced = TRUE;
         set_pde_2m(&pde[pde_off], pcur, flags);
         asm volatile ("invlpg (%0)" :: "r"(vcur) : "memory");
 
@@ -354,6 +358,7 @@ AROS_LH4I(int, KrnMapGlobal,
     AROS_LIBFUNC_INIT
 
     APTR ssp = NULL;
+    BOOL replaced = FALSE;
     IPTR step;
     int ret;
 
@@ -372,14 +377,19 @@ AROS_LH4I(int, KrnMapGlobal,
     KrnSpinLock(&mapglobal_lock, NULL, SPINLOCK_MODE_WRITE);
 #endif
     if (step == MAP_2M_SIZE)
-        ret = map_global_2m(virt, phys, length, flags);
+        ret = map_global_2m(virt, phys, length, flags, &replaced);
     else
-        ret = map_global_4k(virt, phys, length, flags);
+        ret = map_global_4k(virt, phys, length, flags, &replaced);
 #if defined(__AROSEXEC_SMP__)
     KrnSpinUnLock(&mapglobal_lock);
 
-    /* After the unlock: the shootdown waits for every other CPU */
-    if (ret == 0)
+    /*
+     * Only a changed present entry can be cached by another CPU: no TLB or
+     * paging-structure cache entry is made from a not-present one (Intel SDM
+     * 4.10.4.3), so filling a hole - demand paging - needs no shootdown.
+     * After the unlock: the shootdown waits for every other CPU.
+     */
+    if (ret == 0 && replaced)
         tlb_shootdown(KernelBase, virt, length, step);
 #endif
 
