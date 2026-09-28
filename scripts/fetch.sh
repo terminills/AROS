@@ -150,9 +150,9 @@ curl_http() {
     local urlsrc
     local ret
     local state=0
+    local triedorig=0
 
     local protocol
-    local unresolved_tried=false
 
     if echo "$tryurl" | grep "prdownloads.sourceforge.net" >/dev/null; then
         if ! echo "$tryurl" | grep "/download" >/dev/null; then
@@ -194,13 +194,16 @@ curl_http() {
             continue
         fi
 
-        # A redirect may end at a presigned URL (S3-style object storage, as
-        # behind freedesktop GitLab's package registry) whose signature covers
-        # the request method, so the URL resolved with HEAD above is refused
-        # for GET. Once, let GET follow the redirects from the original URL.
-        if [ "$unresolved_tried" = false ] && [ "$curlsrc" != "$tryurl$curlext" ]; then
-            unresolved_tried=true
+        # The HEAD probe above resolved the redirect for us, but some hosts
+        # answer it with a signed, single use URL - GitLab serves package
+        # files from object storage that way, and the signature covers the
+        # probe request, so fetching it again with GET is refused. Retry the
+        # original URL once and let curl follow the redirect itself. Only on
+        # an HTTP error (22), so a stalled transfer still resumes instead.
+        if [ $ret -eq 22 ] && [ $triedorig -eq 0 ] && [ "$curlsrc" != "$tryurl$curlext" ]; then
+            triedorig=1
             curlsrc="$tryurl$curlext"
+            rm -f "$curloutput"
             continue
         fi
 
