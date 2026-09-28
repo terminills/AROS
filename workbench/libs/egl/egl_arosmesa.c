@@ -447,6 +447,27 @@ const _EGLDriver _eglDriver = {
     .SwapBuffers          = egl_arosmesa_swapbuffers,
 };
 
+/*
+ * eglGetProcAddress as egl.library exports it. Mesa's version answers
+ * client-API names from the glapi linked into egl.library itself, which
+ * is not the GL implementation: GL lives in mesa3dgl behind gl.library,
+ * so a gl* lookup came back NULL. Ask gl.library for everything that is
+ * not an EGL function.
+ */
+__eglMustCastToProperFunctionPointerType AROS_eglGetProcAddress(const char *procname)
+{
+    if (procname && strncmp(procname, "egl", 3) != 0)
+    {
+        if (!GLBase)
+            GLBase = OpenLibrary("gl.library", 20L);
+        if (GLBase)
+            return (__eglMustCastToProperFunctionPointerType)
+                glAGetProcAddress((const GLubyte *)procname);
+        return NULL;
+    }
+    return eglGetProcAddress(procname);
+}
+
 static VOID CloseMesa()
 {
     if (GLBase)
