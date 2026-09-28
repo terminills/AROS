@@ -426,7 +426,18 @@ int core_DoCallIPI(struct Hook *hook, void *cpu_mask, int async, int nargs, IPTR
         if (!async)
         {
             D(bug("[Kernel:IPI.CPU.%03u] %s: Synchronous IPI, waiting for completion\n", cpunum, __func__));
-            KrnSpinLock(&ipi->ih_SyncLock, NULL, SPINLOCK_MODE_WRITE);
+            /*
+             * Run the calls queued for this CPU while waiting. The caller
+             * may have interrupts off (a page-fault handler mapping memory
+             * and shooting down TLBs), and another CPU may be doing the same
+             * towards us: each would wait forever for an IPI the other
+             * cannot take.
+             */
+            while (!KrnSpinTryLock(&ipi->ih_SyncLock, SPINLOCK_MODE_WRITE))
+            {
+                core_IPICallHookHandle(NULL, KernelBase);
+                asm volatile("pause");
+            }
             KrnSpinUnLock(&ipi->ih_SyncLock);
             D(bug("[Kernel:IPI.CPU.%03u] %s: Synchronous IPI completed\n", cpunum, __func__));
 
