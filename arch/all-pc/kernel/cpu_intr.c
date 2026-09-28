@@ -430,6 +430,20 @@ SAVE_XMM_INTO_AREA(localarea)
                 case 21:
                 case 29:
                 case 30:
+                    /*
+                     * A page fault that a registered handler services
+                     * (demand paging, an emulator's guest memory) is routine
+                     * and can come thousands of times a second: keep the
+                     * serial dump for faults with no handler to take them.
+                     * If the handlers decline it, the alert still shows it.
+                     */
+                    if (int_number == 14 &&
+                        !IsListEmpty((struct List *)&KernelBase->kb_Exceptions[14]))
+                    {
+                        pdata->kb_LastException = int_number;
+                        pdata->kb_LastExceptionError = error_code;
+                        break;
+                    }
                     bug("[Kernel]" DEBUGCOLOR_SET " %s(%u): Exception error code %08X" DEBUGCOLOR_RESET "\n", __func__, int_number, error_code);
                     pdata->kb_LastException = int_number;
                     pdata->kb_LastExceptionError = error_code;
