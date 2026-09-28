@@ -198,11 +198,16 @@ static void StarterFunc(void)
 
     // destroy all non-NULL TLS key values
     // since the destructors can set the keys themselves, we have to do multiple iterations
+    // Newest key first: a later key's destructor may use storage owned by an
+    // earlier key. GCC's emutls keeps each thread's thread_local variables
+    // behind the first key it creates, and libstdc++ runs thread_local
+    // destructors from a key created later; destroying in creation order
+    // freed the variables before their destructors ran.
     ObtainSemaphoreShared(&tls_sem);
     for (j = 0; foundkey && j < PTHREAD_DESTRUCTOR_ITERATIONS; j++)
     {
         foundkey = FALSE;
-        for (i = 0; i < PTHREAD_KEYS_MAX; i++)
+        for (i = PTHREAD_KEYS_MAX - 1; i >= 0; i--)
         {
             if (tlskeys[i].used && tlskeys[i].destructor && inf->tlsvalues[i])
             {
