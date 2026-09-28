@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 #ifndef __EXEC_PLATFORM_H
 #define __EXEC_PLATFORM_H
@@ -72,127 +72,183 @@ extern void Kernel_53_KrnSpinUnLock(spinlock_t *, void *);
  */
 #define EXEC_MEMORY_BARRIER()   asm volatile("" ::: "memory")
 
+/*
+ * A task allowed on any CPU can be preempted between loading this CPU's
+ * ScheduleData and using it, and resume on another CPU: it then reads or
+ * changes the first CPU's state - its running task, its Forbid() count.
+ * Make each such access with interrupts off. Tasks run with IOPL 3 (KrnCli
+ * is a plain cli), so this works outside supervisor mode too.
+ */
+#define EXEC_PERCPU_ENTER() \
+    ({ unsigned long __f; \
+       /* step over the caller's red zone: the push is unknown to the compiler */ \
+       asm volatile("lea -128(%%rsp),%%rsp; pushf; pop %0; lea 128(%%rsp),%%rsp; cli" \
+                    : "=r"(__f) :: "memory"); \
+       __f; })
+#define EXEC_PERCPU_EXIT(f) \
+    do { if ((f) & (1 << 9)) asm volatile("sti" ::: "memory"); } while (0)
+
 #if defined(AROS_NO_ATOMIC_OPERATIONS)
 #define IDNESTCOUNT_INC \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->IDNestCnt++; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define IDNESTCOUNT_DEC \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->IDNestCnt--; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define TDNESTCOUNT_INC \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->TDNestCnt++; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define TDNESTCOUNT_DEC \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->TDNestCnt--; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDQUANTUM_CLEAR \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->ScheduleFlags &= ~TLSSF_Quantum; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDQUANTUM_SET \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->ScheduleFlags |= TLSSF_Quantum; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDSWITCH_CLEAR \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->ScheduleFlags &= ~TLSSF_Switch; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDSWITCH_SET \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->ScheduleFlags |= TLSSF_Switch; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDDISPATCH_CLEAR \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->ScheduleFlags &= ~TLSSF_Dispatch; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDDISPATCH_SET \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->ScheduleFlags |= TLSSF_Dispatch; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #else /* !AROS_NO_ATOMIC_OPERATIONS */
 #define IDNESTCOUNT_INC \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_INC_B(__schd->IDNestCnt); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define IDNESTCOUNT_DEC \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_DEC_B(__schd->IDNestCnt); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define TDNESTCOUNT_INC \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_INC_B(__schd->TDNestCnt); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define TDNESTCOUNT_DEC \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_DEC_B(__schd->TDNestCnt); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDQUANTUM_CLEAR \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_AND_L(__schd->ScheduleFlags, ~TLSSF_Quantum); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDQUANTUM_SET \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_OR_L(__schd->ScheduleFlags, TLSSF_Quantum); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDSWITCH_CLEAR \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_AND_L(__schd->ScheduleFlags, ~TLSSF_Switch); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDSWITCH_SET \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_OR_L(__schd->ScheduleFlags, TLSSF_Switch); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDDISPATCH_CLEAR \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_AND_L(__schd->ScheduleFlags, ~TLSSF_Dispatch); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDDISPATCH_SET \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __AROS_ATOMIC_OR_L(__schd->ScheduleFlags, TLSSF_Dispatch); \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #endif /* !AROS_NO_ATOMIC_OPERATIONS */
 /*
@@ -206,74 +262,94 @@ extern void Kernel_53_KrnSpinUnLock(spinlock_t *, void *);
 #define EXEC_BLOCK_DISPATCH_DEC         TDNESTCOUNT_DEC
 #define SCHEDQUANTUM_SET(val) \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->Quantum = val; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define SCHEDQUANTUM_GET \
     ({ \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         UWORD __ret = 0; \
         if (__schd) \
             __ret = (__schd->Quantum); \
+        EXEC_PERCPU_EXIT(__pcf); \
          __ret;  \
    })
 #define SCHEDELAPSED_SET(val) \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->Elapsed = val; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define SCHEDELAPSED_GET \
     ({ \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         UWORD __ret = 0; \
         if (__schd) \
             __ret = (__schd->Elapsed); \
+        EXEC_PERCPU_EXIT(__pcf); \
          __ret;  \
    })
 #define IDNESTCOUNT_GET \
     ({ \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         LONG __ret = 0; \
         if (__schd) \
             __ret = (__schd->IDNestCnt); \
+        EXEC_PERCPU_EXIT(__pcf); \
          __ret;  \
    })
 #define IDNESTCOUNT_SET(val) \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->IDNestCnt = val; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define TDNESTCOUNT_GET \
     ({ \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         LONG __ret = 0; \
         if (__schd) \
             __ret = (__schd->TDNestCnt); \
+        EXEC_PERCPU_EXIT(__pcf); \
         __ret;  \
     })
 #define TDNESTCOUNT_SET(val) \
     do { \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
             __schd->TDNestCnt = val; \
+        EXEC_PERCPU_EXIT(__pcf); \
     } while(0)
 #define FLAG_SCHEDQUANTUM_ISSET \
     ({ \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         BOOL __ret = FALSE; \
         if (__schd) \
             __ret = (__schd->ScheduleFlags & TLSSF_Quantum); \
+        EXEC_PERCPU_EXIT(__pcf); \
         __ret;  \
     })
 #define FLAG_SCHEDSWITCH_ISSET \
     ({ \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         BOOL __ret = FALSE; \
         if (__schd) \
             __ret = (__schd->ScheduleFlags & TLSSF_Switch); \
+        EXEC_PERCPU_EXIT(__pcf); \
         __ret;  \
     })
 #define FLAG_SCHEDDISPATCH_ISSET \
@@ -286,14 +362,17 @@ extern void Kernel_53_KrnSpinUnLock(spinlock_t *, void *);
     })
 #define GET_THIS_TASK \
     ({ \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         struct Task *__ret = NULL; \
         if (__schd) \
             __ret = __schd->RunningTask; \
+        EXEC_PERCPU_EXIT(__pcf); \
         __ret;  \
     })
 #define SET_THIS_TASK(x)         \
     ({ \
+        unsigned long __pcf = EXEC_PERCPU_ENTER(); \
         struct X86SchedulerPrivate  *__schd = TLS_GET(ScheduleData); \
         if (__schd) \
         { \
@@ -302,6 +381,7 @@ extern void Kernel_53_KrnSpinUnLock(spinlock_t *, void *);
             AddHead(&PrivExecBase(SysBase)->TaskRunning, (struct Node *)(x)); \
             EXEC_SPINLOCK_UNLOCK(&PrivExecBase(SysBase)->TaskRunningSpinLock);  \
         } \
+        EXEC_PERCPU_EXIT(__pcf); \
     })
 
 #else /* !__AROSEXEC_SMP__ */
