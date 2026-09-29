@@ -377,13 +377,16 @@ CREATEPSEUDOSTACK
 #endif
 
 #if (__WORDSIZE==64)
-    /* Preserve first four XMM registers */
-    asm volatile (
-        "       movaps %%xmm0, (%0)\n"
-        "       movaps %%xmm1, 16(%0)\n"
-        "       movaps %%xmm2, 32(%0)\n"
-        "       movaps %%xmm3, 48(%0)\n"
-        ::"r"(regs->FXSData));
+    /*
+     * Preserve the interrupted code's whole SSE state (x87, MXCSR, XMM0-15).
+     * Interrupt handlers and soft interrupts are ordinary compiled C, and the
+     * compiler uses any XMM register for copies and arithmetic; with only
+     * XMM0-3 saved, a handler that touched XMM4-15 returned into a task with
+     * those registers changed under it (Chromium's viz compositor faulted
+     * reading pixels with a corrupted XMM6 index mask while audio played).
+     * The entry stub reserves a 512-byte, 16-byte aligned area for this.
+     */
+    asm volatile ("fxsave (%0)" :: "r"(regs->FXSData) : "memory");
 #endif
 
 #if DEBUG_XMM
@@ -620,19 +623,13 @@ SAVE_XMM_INTO_AREA(localarea)
     __asm__ __volatile__("cli");
 
 #if (__WORDSIZE==64)
-    /* Restore first four XMM registers. They could have been modified by any interrupt handler.
-       Interrupt handler or soft interrupt code is required to preserve XMM registers 5-15. */
+    /* Restore the SSE state saved on entry; any handler may have used any XMM register. */
     /* If we are here, we are either exiting from a nested interrupt or we are exiting to user mode
        but without task switch. If task switch happened, we had already exited in cpu_Dispatch via
        core_LeaveInterrupt with first restoring all XMM/YMM registers from cpu context. If this
        was a SC_SUPERVISOR call, we had already exited via core_Supervisor. In such case registers were
        not restored, but whole flow was inside of kernel which is guaranteed not to use XMM/YMM */
-    asm volatile (
-        "       movaps (%0), %%xmm0\n"
-        "       movaps 16(%0), %%xmm1\n"
-        "       movaps 32(%0), %%xmm2\n"
-        "       movaps 48(%0), %%xmm3\n"
-        ::"r"(regs->FXSData));
+    asm volatile ("fxrstor (%0)" :: "r"(regs->FXSData) : "memory");
 #endif
 
 #if DEBUG_XMM

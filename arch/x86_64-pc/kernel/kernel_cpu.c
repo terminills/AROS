@@ -230,16 +230,11 @@ void cpu_Switch(struct ExceptionContext *regs)
                 bug("[Kernel:%03u]" DEBUGCOLOR_SET " %s: !!!!! MISSING et_RegFrame !!!!!" DEBUGCOLOR_RESET "\n", cpunum, __func__);
             }
 
-            /* Restore first four XMM registers. They could have been modified by any interrupt handler.
-               Interrupt handler or soft interrupt code is required to preserve XMM registers 5-15. */
-            /* Registers are restored here so that their correct values are written into cpu context and
-               can be restored later in cpu_Dispatch */
-            asm volatile (
-                "       movaps (%0), %%xmm0\n"
-                "       movaps 16(%0), %%xmm1\n"
-                "       movaps 32(%0), %%xmm2\n"
-                "       movaps 48(%0), %%xmm3\n"
-                ::"r"(regs->FXSData));
+            /* Restore the interrupted task's SSE state saved on interrupt entry: any
+               handler or soft interrupt may have used any XMM register since. It is
+               restored here so that the correct values are written into the cpu
+               context below and restored later in cpu_Dispatch. */
+            asm volatile ("fxrstor (%0)" :: "r"(regs->FXSData) : "memory");
 
 #if DEBUG_XMM
 SETLOCALAREA
