@@ -45,17 +45,33 @@ AROS_LH3I(void, KrnSetProtection,
     AROS_LIBFUNC_INIT
 
     APTR ssp = NULL;
+    UQUAD rflags = 0;
 
+    /*
+     * SuperState() leaves its return frame on this CPU's kernel stack and
+     * carries on at ring 0 on the task's stack. Preempted there, the frame
+     * is overwritten by the next task's interrupts (or the task resumes on
+     * another CPU), and UserState() returns through garbage - the task can
+     * come back still in ring 0. Keep interrupts off until UserState().
+     */
     if (!Kernel_13_KrnIsSuper()) {
+        rflags = __builtin_ia32_readeflags_u64();
+        asm volatile("cli" ::: "memory");
         ssp = SuperState();
-        if (!ssp)
+        if (!ssp) {
+            if (rflags & (1 << 9))
+                asm volatile("sti" ::: "memory");
             return;
+        }
     }
 
     protect_pages(address, length, flags);
 
-    if (ssp)
+    if (ssp) {
         UserState(ssp);
+        if (rflags & (1 << 9))
+            asm volatile("sti" ::: "memory");
+    }
 
     AROS_LIBFUNC_EXIT
 }
