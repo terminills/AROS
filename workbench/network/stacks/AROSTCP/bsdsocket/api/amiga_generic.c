@@ -816,13 +816,18 @@ countSockets(struct SocketBase *libPtr, struct socket *so)
     return count;
 }
 
-LONG __CloseSocket(LONG fd, struct SocketBase *libPtr)
+/*
+ * Close descriptor fd in libPtr's table and return an errno value (0 on
+ * success). It does not require the caller to be libPtr's opener: fd.library's
+ * close hook runs it on behalf of whichever task called posixc close() on a
+ * socket descriptor, and that is routinely not the task that created it.
+ */
+LONG closeSocketIn(LONG fd, struct SocketBase *libPtr)
 {
     register int error;
     struct socket *so;
     struct soevent *se;
 
-    CHECK_TASK();
     ObtainSyscallSemaphore(libPtr);
 
     if(fd < 0) {
@@ -892,6 +897,15 @@ LONG __CloseSocket(LONG fd, struct SocketBase *libPtr)
 
 Return:
     ReleaseSyscallSemaphore(libPtr);
+    return error;
+}
+
+LONG __CloseSocket(LONG fd, struct SocketBase *libPtr)
+{
+    register int error;
+
+    CHECK_TASK();
+    error = closeSocketIn(fd, libPtr);
     API_STD_RETURN(error, 0);
 }
 

@@ -44,7 +44,7 @@
 /* fd.library base, opened once at api_init().  Shared (single instance). */
 struct Library *FDBase = NULL;
 
-LONG __CloseSocket(LONG fd, struct SocketBase *libPtr);
+LONG closeSocketIn(LONG fd, struct SocketBase *libPtr);
 
 /*
  * The fd.library data for a socket descriptor is the struct socket * itself.
@@ -153,10 +153,10 @@ static LONG fdh_sock_close(APTR data, LONG fd, LONG *perror)
 
     /* Close exactly this descriptor.  With dup()'d descriptors several fds
        share one socket, so closing must target the requested fd (which
-       __CloseSocket() drops from the table, decrements the socket refcount
+       closeSocketIn() drops from the table, decrements the socket refcount
        and frees the fd.library reservation) - not just any fd for the
        socket. */
-    error = __CloseSocket(fd, p);
+    error = closeSocketIn(fd, p);
     if (error) { *perror = error; return -1; }
     return 0;
 }
