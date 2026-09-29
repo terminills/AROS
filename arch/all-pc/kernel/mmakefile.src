@@ -71,6 +71,7 @@ FILES    := \
              ictl \
              smp_exec \
              kernel_mmap \
+             kernel_intr \
              kernel_scheduler \
              kernel_timer \
              _displayalert \
