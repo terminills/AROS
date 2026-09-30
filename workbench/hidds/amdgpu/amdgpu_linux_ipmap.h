@@ -20,6 +20,13 @@ struct AmdgpuLinuxIp {
     const char *name;
 };
 
+struct AmdgpuIpBase;
+
+/* The Linux implementation that drives this version of the block (e.g.
+   "psp_v11_0"), or NULL if Linux has none. */
+const char *amdgpu_linux_ip_impl(UBYTE block, const struct AmdgpuIpBase *ip);
+
+#ifdef AMDGPU_LINUX_IPMAP_TABLE
 static const struct AmdgpuLinuxIp amdgpu_linux_ipmap[] = {
     { AMDGPU_LINUX_GC, 9, 0, 1, "gfx_v9_0" },
     { AMDGPU_LINUX_GC, 9, 1, 0, "gfx_v9_0" },
@@ -285,5 +292,6 @@ static const struct AmdgpuLinuxIp amdgpu_linux_ipmap[] = {
     { AMDGPU_LINUX_MES, 12, 1, 0, "mes_v12_1" },
     { 0, 0, 0, 0, NULL }
 };
+#endif
 
 #endif /* AMDGPU_LINUX_IPMAP_H */

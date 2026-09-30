@@ -19,6 +19,7 @@
 #define AMDGPU_PCIIDS_TABLES
 #include "amdgpu_pciids.h"
 #include "amdgpu_mmhub.h"
+#define AMDGPU_LINUX_IPMAP_TABLE
 #include "amdgpu_linux_ipmap.h"
 
 static const struct AmdgpuPciId amdgpu_ids[] = {
@@ -190,10 +191,12 @@ static BOOL ip_common_init(struct AmdgpuDevice *ad)
  * fixed per-family register maps for them, which this driver does not have
  * yet, so every hardware block is skipped there. */
 
-static const char *linux_ip_name(UBYTE block, const struct AmdgpuIpBase *ip)
+const char *amdgpu_linux_ip_impl(UBYTE block, const struct AmdgpuIpBase *ip)
 {
     const struct AmdgpuLinuxIp *e;
 
+    if (!ip || !ip->valid)
+        return NULL;
     for (e = amdgpu_linux_ipmap; e->name; e++)
         if (e->block == block && e->major == ip->major &&
             e->minor == ip->minor && e->revision == ip->revision)
@@ -201,22 +204,25 @@ static const char *linux_ip_name(UBYTE block, const struct AmdgpuIpBase *ip)
     return NULL;
 }
 
-/* Linux keys GMC and MES off the GC version, the rest off their own. */
+/* A block runs when this driver has the Linux implementation its version
+   maps to (the names in `have`, NULL-terminated). Linux keys GMC and MES off
+   the GC version and the rest off their own, so `key` may differ from `ip`. */
 static BOOL gate_block(struct AmdgpuDevice *ad, const char *block,
-                       const struct AmdgpuIpBase *ip, BOOL implemented,
-                       UBYTE linux_block, const struct AmdgpuIpBase *linux_key)
+                       const struct AmdgpuIpBase *ip, UBYTE linux_block,
+                       const struct AmdgpuIpBase *key, const char * const *have)
 {
     const char *impl;
 
-    if (implemented)
-        return TRUE;
     if (!ip->valid) {
         bug("[amdgpu] %s: %s not found by IP discovery (family %s: Linux uses "
             "fixed per-family register maps there) — skipped\n", ad->name, block,
             ad->family ? ad->family : "?");
         return FALSE;
     }
-    impl = linux_ip_name(linux_block, linux_key ? linux_key : ip);
+    impl = amdgpu_linux_ip_impl(linux_block, key ? key : ip);
+    for (; impl && *have; have++)
+        if (!strcmp(impl, *have))
+            return TRUE;
     bug("[amdgpu] %s: %s %u.%u.%u not implemented yet (Linux: %s) — skipped\n",
         ad->name, block, ip->major, ip->minor, ip->revision,
         impl ? impl : "no match in amdgpu_discovery.c");
@@ -225,39 +231,48 @@ static BOOL gate_block(struct AmdgpuDevice *ad, const char *block,
 
 static BOOL nbio_supported(struct AmdgpuDevice *ad)
 {
-    /* soc24 common init: only GFX12 parts */
-    return gate_block(ad, "NBIO", &ad->ip.nbio,
-                      ad->ip.gc.valid && ad->ip.gc.major == 12, AMDGPU_LINUX_NBIO, NULL);
+    static const char * const have[] = { "nbio_v2_3", "nbif_v6_3_1", NULL };
+    return gate_block(ad, "NBIO", &ad->ip.nbio, AMDGPU_LINUX_NBIO, NULL, have);
 }
 
 static BOOL gmc_supported(struct AmdgpuDevice *ad)
 {
-    return gate_block(ad, "MMHUB", &ad->ip.mmhub,
-                      amdgpu_mmhub_regs(ad) != NULL, AMDGPU_LINUX_GMC, &ad->ip.gc);
+    if (amdgpu_mmhub_regs(ad))
+        return TRUE;
+    if (!ad->ip.mmhub.valid) {
+        bug("[amdgpu] %s: MMHUB not found by IP discovery (family %s) — skipped\n",
+            ad->name, ad->family ? ad->family : "?");
+        return FALSE;
+    }
+    bug("[amdgpu] %s: MMHUB %u.%u.%u has no register map yet (Linux: %s) — skipped\n",
+        ad->name, ad->ip.mmhub.major, ad->ip.mmhub.minor, ad->ip.mmhub.revision,
+        amdgpu_linux_ip_impl(AMDGPU_LINUX_GMC, &ad->ip.gc) ?
+            amdgpu_linux_ip_impl(AMDGPU_LINUX_GMC, &ad->ip.gc) : "?");
+    return FALSE;
 }
 
 static BOOL psp_supported(struct AmdgpuDevice *ad)
 {
-    return gate_block(ad, "PSP (MP0)", &ad->ip.psp,
-                      ad->ip.psp.valid && ad->ip.psp.major == 14, AMDGPU_LINUX_PSP, NULL);
+    static const char * const have[] = { "psp_v14_0", NULL };
+    return gate_block(ad, "PSP (MP0)", &ad->ip.psp, AMDGPU_LINUX_PSP, NULL, have);
 }
 
 static BOOL smu_supported(struct AmdgpuDevice *ad)
 {
-    return gate_block(ad, "SMU (MP1)", &ad->ip.smu,
-                      ad->ip.smu.valid && ad->ip.smu.major == 14, AMDGPU_LINUX_SMU, NULL);
+    static const char * const have[] = { "smu_v14_0", NULL };
+    return gate_block(ad, "SMU (MP1)", &ad->ip.smu, AMDGPU_LINUX_SMU, NULL, have);
 }
 
 static BOOL gfx_supported(struct AmdgpuDevice *ad)
 {
-    return gate_block(ad, "GC", &ad->ip.gc,
-                      ad->ip.gc.valid && ad->ip.gc.major == 12, AMDGPU_LINUX_GC, NULL);
+    static const char * const have[] = { "gfx_v12_0", NULL };
+    return gate_block(ad, "GC", &ad->ip.gc, AMDGPU_LINUX_GC, NULL, have);
 }
 
 static BOOL sdma_supported(struct AmdgpuDevice *ad)
 {
-    return gate_block(ad, "SDMA", &ad->ip.sdma0,
-                      ad->ip.sdma0.valid && ad->ip.sdma0.major == 7, AMDGPU_LINUX_SDMA, NULL);
+    static const char * const have[] = { "sdma_v7_0", NULL };
+    return gate_block(ad, "SDMA", &ad->ip.sdma0, AMDGPU_LINUX_SDMA, NULL, have);
 }
 
 static BOOL dcn_supported(struct AmdgpuDevice *ad)
