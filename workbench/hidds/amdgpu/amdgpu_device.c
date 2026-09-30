@@ -253,7 +253,7 @@ static BOOL gmc_supported(struct AmdgpuDevice *ad)
 
 static BOOL psp_supported(struct AmdgpuDevice *ad)
 {
-    static const char * const have[] = { "psp_v14_0", NULL };
+    static const char * const have[] = { "psp_v11_0", "psp_v14_0", NULL };
     return gate_block(ad, "PSP (MP0)", &ad->ip.psp, AMDGPU_LINUX_PSP, NULL, have);
 }
 

@@ -169,7 +169,61 @@ static BOOL psp_find_subbin(const UBYTE *fw, ULONG fwsize, ULONG type,
     return FALSE;
 }
 
-/* One psp_v14_0 bootloader load_component: zero and reuse the same 1 MiB private
+/* Locate one bootloader component in either SOS file layout, as Linux
+ * psp_init_sos_microcode() does. Header v2.x (PSP 13+) is a descriptor table
+ * (psp_find_subbin). Header v1.x (PSP 11/12) has fixed legacy descriptors of
+ * {fw_version, offset_bytes, size_bytes} after the 32-byte common header:
+ *   +32 sos, then v1.1 toc/kdb, v1.2 res/kdb, v1.3 toc/kdb/spl/rl;
+ * the sys driver is the start of the payload, sos.offset_bytes long, and
+ * every offset is relative to the payload (ucode_array_offset_bytes). */
+static BOOL psp_sos_part(const UBYTE *fw, ULONG fwsize, ULONG type,
+                         const UBYTE **out_data, ULONG *out_size)
+{
+    UWORD major, minor;
+    ULONG uoff, off = 0, size = 0;
+
+    if (fwsize < 44)
+        return FALSE;
+    major = le16(fw + 8);
+    minor = le16(fw + 10);
+    if (major >= 2)
+        return psp_find_subbin(fw, fwsize, type, out_data, out_size);
+    if (major != 1)
+        return FALSE;
+
+    uoff = le32(fw + 24);
+    switch (type) {
+    case PSP_FW_TYPE_SYS_DRV:
+        off = 0;
+        size = le32(fw + 36);                   /* sos.offset_bytes */
+        break;
+    case PSP_FW_TYPE_SOS:
+        off = le32(fw + 36);
+        size = le32(fw + 40);
+        break;
+    case PSP_FW_TYPE_KDB:                       /* v1.1, v1.2, v1.3 */
+        if (minor < 1 || fwsize < 68)
+            return FALSE;
+        off = le32(fw + 60);
+        size = le32(fw + 64);
+        break;
+    case PSP_FW_TYPE_SPL:                       /* v1.3 */
+        if (minor < 3 || fwsize < 80)
+            return FALSE;
+        off = le32(fw + 72);
+        size = le32(fw + 76);
+        break;
+    default:
+        return FALSE;
+    }
+    if (!size || (UQUAD)uoff + off + size > fwsize)
+        return FALSE;
+    *out_data = fw + uoff + off;
+    *out_size = size;
+    return TRUE;
+}
+
+/* One psp_v11_0 / psp_v14_0 bootloader load_component: zero and reuse the same 1 MiB private
  * GART window Linux uses for fw_pri_buf, hand its MC address (>>20) to the PSP,
  * and wait for ready again. */
 static BOOL psp_load_component(struct AmdgpuDevice *ad, UQUAD vram_start,
@@ -1013,9 +1067,9 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
                   (unsigned long)size_bytes, (unsigned long)fwsize));
             ok = FALSE;
         }
-        if (ipv_major != 14) {
-            D(bug("[amdgpu-psp] WARN ip_version_major=%u (expected 14 for Navi 44)\n",
-                  ipv_major));
+        if (ipv_major != ad->ip.psp.major) {
+            D(bug("[amdgpu-psp] WARN ip_version_major=%u, but MP0 is %u.%u.%u\n",
+                  ipv_major, ad->ip.psp.major, ad->ip.psp.minor, ad->ip.psp.revision));
             ok = FALSE;
         }
         if (ok)
@@ -1149,6 +1203,9 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
             ULONG hs = le32(fw + 4), cnt = le32(fw + 32), i, s;
             BOOL ok = TRUE;
 
+            if (le16(fw + 8) < 2)
+                cnt = 0;        /* v1.x: fixed descriptors, no table to list */
+
             D(bug("[amdgpu-psp] === WAKE: KDB->SYSDRV->SOS via vram_start 0x%08lx%08lx ===\n",
                   (unsigned long)(vram_start >> 32),
                   (unsigned long)(vram_start & 0xFFFFFFFFUL)));
@@ -1164,7 +1221,7 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
             for (s = 0; s < sizeof(seq) / sizeof(seq[0]) && ok; s++) {
                 const UBYTE *sd;
                 ULONG ss;
-                if (!psp_find_subbin(fw, fwsize, seq[s].type, &sd, &ss)) {
+                if (!psp_sos_part(fw, fwsize, seq[s].type, &sd, &ss)) {
                     D(bug("[amdgpu-psp] %s not in container — skipping\n", seq[s].name));
                     continue;
                 }
@@ -1186,8 +1243,14 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
                           (unsigned long)sol));
                     /* sOS is up — open the KM command ring to it, then PSP-load
                      * the IMU so the PSP powers the (write-blocked) GFX block. */
-                    if (psp_ring_create(ad, vram_start))
-                        psp_load_gfx_firmware(ad, vram_start, fw, fwsize);
+                    if (psp_ring_create(ad, vram_start)) {
+                        if (ad->ip.psp.major == 14)
+                            psp_load_gfx_firmware(ad, vram_start, fw, fwsize);
+                        else
+                            bug("[amdgpu-psp] PSP %u.%u.%u: ring up; TMR setup and IP "
+                                "microcode loading are not ported for it yet\n",
+                                ad->ip.psp.major, ad->ip.psp.minor, ad->ip.psp.revision);
+                    }
                 } else
                     D(bug("[amdgpu-psp] sequence accepted but sign-of-life still 0 — sOS not "
                           "signing on (investigate: order/component/TMR)\n"));
