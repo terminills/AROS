@@ -683,71 +683,87 @@ static void __bootstrap(unsigned int magic, void *mb)
      *   supervisor, panic and ring 1 stacks      3 x 64 KiB      192 KiB
      *   PML4 + PDP                                2 x 4 KiB         8 KiB
      *   PDE for the 2 MiB-page identity map    262144 x 8 B    2048 KiB
-     *   4 KiB split page pool                  32 x 512 x 8 B   128 KiB
+     *   4 KiB split page pool                4096 x 512 x 8 B 16384 KiB
      *   GDT, IDT, TLS, one TSS per core (<= 256)              <  64 KiB
      *   relocated taglist, memory map, VBE
      *   info, command line, BSS tracker                       <  64 KiB
      *
-     * plus page alignment: under 2.5 MiB, so 4 MiB leaves a wide margin.
-     * A fixed 256 MiB was demanded here for a while; that made any machine
-     * or VM with less than about 280 MiB, or with a fragmented map below
-     * 4 GiB, stop in the bootstrap with a message nobody could see.
-     * The kernel side trims the identity map to whatever it finds behind
-     * the kickstart (core_SetupMMU()), so the two stay consistent.
+     * plus page alignment: under 19 MiB, so 24 MiB is asked for first.
+     * GRUB 2 may load the modules near the top of 32-bit RAM, leaving
+     * only a few MiB behind them, so the reserve falls back to 4 MiB:
+     * enough for the identity map and a 32-slot split page pool, and the
+     * kernel sizes both to what it finds behind the kickstart
+     * (core_SetupMMU()). A fixed 256 MiB was demanded here for a while;
+     * that made any machine or VM with less than about 280 MiB, or with a
+     * fragmented map below 4 GiB, stop in the bootstrap.
      * 32-bit targets keep the historic small reserve.
      */
 #ifdef MULTIBOOT_64BIT
-#define KICKSTART_BOOTMEM_RESERVE (4 << 20)
+#define KICKSTART_BOOTMEM_RESERVE     (24 << 20)
+#define KICKSTART_BOOTMEM_RESERVE_MIN (4 << 20)
 #else
-#define KICKSTART_BOOTMEM_RESERVE 0x80000
+#define KICKSTART_BOOTMEM_RESERVE     0x80000
+#define KICKSTART_BOOTMEM_RESERVE_MIN 0x80000
 #endif
     ksize = ro_size + rw_size + PAGE_SIZE - 1 + KICKSTART_BOOTMEM_RESERVE;
 
-    /* Now locate the highest appropriate region */
-    while (len >= sizeof(struct mb_mmap))
+    for (;;)
     {
-        if (mmap->type == MMAP_TYPE_RAM)
+        struct mb_mmap *region = mmap;
+        unsigned long left = len;
+
+        /* Now locate the highest appropriate region */
+        while (left >= sizeof(struct mb_mmap))
         {
-            unsigned long long start = mmap->addr;
-            unsigned long long end = mmap->addr + mmap->len;
-
-            /*
-             * The region must be located in 32-bit memory and must not overlap
-             * our modules.
-             * Here we assume the following:
-             * 1. Multiboot data from GRUB is placed in low memory.
-             * 2. At least one module is placed in upper memory, above ourselves.
-             * 3. There's no usable space below our modules.
-             */
-            if ((start <= 0x100000000ULL - ksize) && (end >= mod_end + ksize))
+            if (region->type == MMAP_TYPE_RAM)
             {
-                unsigned long size;
+                unsigned long long start = region->addr;
+                unsigned long long end = region->addr + region->len;
 
-                if (start < mod_end)
-                    start = mod_end;
-
-                if (end > 0x100000000ULL)
-                    end = 0x100000000ULL;
-
-                /* Remember the region if it fits in */
-                size = end - start;
-                if (size >= ksize)
+                /*
+                 * The region must be located in 32-bit memory and must not overlap
+                 * our modules.
+                 * Here we assume the following:
+                 * 1. Multiboot data from GRUB is placed in low memory.
+                 * 2. At least one module is placed in upper memory, above ourselves.
+                 * 3. There's no usable space below our modules.
+                 */
+                if ((start <= 0x100000000ULL - ksize) && (end >= mod_end + ksize))
                 {
-                    /*
-                     * We place .data section at the start of the region, followed by .code section
-                     * at page-aligned 'kbase' address.
-                     * There must be a space beyond kickstart's read-only section, because the kickstart
-                     * will extend it in order to store boot-time configuration and own private data.
-                     */
-                    kstart = start;
-                    kbase = start + rw_size;
-                    kbase = (kbase + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+                    unsigned long size;
+
+                    if (start < mod_end)
+                        start = mod_end;
+
+                    if (end > 0x100000000ULL)
+                        end = 0x100000000ULL;
+
+                    /* Remember the region if it fits in */
+                    size = end - start;
+                    if (size >= ksize)
+                    {
+                        /*
+                         * We place .data section at the start of the region, followed by .code section
+                         * at page-aligned 'kbase' address.
+                         * There must be a space beyond kickstart's read-only section, because the kickstart
+                         * will extend it in order to store boot-time configuration and own private data.
+                         */
+                        kstart = start;
+                        kbase = start + rw_size;
+                        kbase = (kbase + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+                    }
                 }
             }
+
+            left -= region->size+4;
+            region = (struct mb_mmap *)(region->size + (unsigned long)region+4);
         }
 
-        len -= mmap->size+4;
-        mmap = (struct mb_mmap *)(mmap->size + (unsigned long)mmap+4);
+        if (kbase || ksize == ro_size + rw_size + PAGE_SIZE - 1 + KICKSTART_BOOTMEM_RESERVE_MIN)
+            break;
+
+        D(kprintf("[%s] No room for the full boot reserve, retrying with the minimum\n", str_Bootstrap);)
+        ksize = ro_size + rw_size + PAGE_SIZE - 1 + KICKSTART_BOOTMEM_RESERVE_MIN;
     }
 
     if (!kbase)

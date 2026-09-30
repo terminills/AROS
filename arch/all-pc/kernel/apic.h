@@ -27,6 +27,7 @@ struct CPUMMUConfig
     void                        *mmu_PDE;
     int                         mmu_PDEPageCount;
     int                         mmu_PDEPageUsed;
+    int                         mmu_PTEPageCount;       /* split page pool slots */
 };
 
 struct CPUData

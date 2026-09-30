@@ -16,7 +16,7 @@
 /*
  * Split-PTE pool: how many 2MB PDEs core_ProtPage() can demote to 512x 4K pages
  * for fine-grained protection. Each slot = one 2MB region, so total coverage is
- * MMU_SPLIT_PTE_PAGE_COUNT * 2MB. core_ProtKernelArea() protects the whole
+ * mmu_PTEPageCount * 2MB. core_ProtKernelArea() protects the whole
  * kickstart-module region page-by-page, so this pool must exceed that region's
  * PDE count.
  *
@@ -50,8 +50,16 @@
  * constant is correct for "however many large processes the user runs". Until
  * then this is deliberately generous, and the refusal counter below exists so
  * that running out is never again mistaken for a one-off warning.
+ *
+ * The pool comes from the boot reserve behind the kickstart, and a fixed 4096
+ * made the kernel panic whenever the bootstrap could only leave its minimum
+ * there (GRUB 2 loading the modules near the top of 32-bit RAM). The count is
+ * therefore decided in core_SetupMMU(): the preferred size when the reserve
+ * holds it, never less than the historic 32.
  */
-#define MMU_SPLIT_PTE_PAGE_COUNT 4096
+#define MMU_SPLIT_PTE_PAGE_PREFERRED 4096
+#define MMU_SPLIT_PTE_PAGE_MIN       32
+#define MMU_SPLIT_PTE_SLOT_SIZE      (sizeof(struct PTE) * 512)
 
 void core_InitMMU(struct CPUMMUConfig *MMU)
 {
@@ -187,7 +195,7 @@ void core_SetupMMU(struct CPUMMUConfig *MMU, IPTR memtop, IPTR maptop)
          * entries of the PDE table allocated here.
          */
         IPTR top = memtop;
-        IPTR needed, fixed, avail, room;
+        IPTR needed, fixed, avail, spare, must, room;
 
         if (maptop > top)
             top = maptop;
@@ -208,30 +216,50 @@ void core_SetupMMU(struct CPUMMUConfig *MMU, IPTR memtop, IPTR maptop)
             MMU->mmu_PDEPageCount = 65536;
 
         /*
-         * The PDE table is by far the largest boot-time allocation and the
-         * bootstrap only guarantees a bounded reserve behind the kickstart
-         * (KICKSTART_BOOTMEM_RESERVE). Trim the preferred window to what is
-         * actually there, keeping everything that must be covered. Later
-         * boot allocations (GDT, TSS, IDT, TLS) are small; leave room for
-         * them and for page alignment.
+         * The bootstrap only guarantees a bounded reserve behind the
+         * kickstart (KICKSTART_BOOTMEM_RESERVE, or its minimum when the
+         * memory map is tight). Fit the tables into what is actually there,
+         * in order of importance:
+         *   1. the identity map over RAM and the boot framebuffer, and the
+         *      minimum split page pool - without these we cannot run;
+         *   2. the split page pool up to its preferred size, because running
+         *      out silently drops protection changes (see core_ProtPage());
+         *   3. the identity map widened towards the preferred window.
+         * Later boot allocations (GDT, TSS, IDT, TLS) are small; leave room
+         * for them and for page alignment.
          */
         fixed = sizeof(struct PML4E) * 512 + sizeof(struct PDPE) * 512
-              + sizeof(struct PTE) * 512 * MMU_SPLIT_PTE_PAGE_COUNT
               + 8 * PAGE_SIZE;
         avail = (IPTR)BootMemLimit - AROS_ROUNDUP2((IPTR)BootMemPtr, PAGE_SIZE);
-        room  = (avail > fixed) ? (avail - fixed) / sizeof(struct PDE2M) : 0;
+        spare = (avail > fixed) ? avail - fixed : 0;
 
+        must = needed * sizeof(struct PDE2M)
+             + MMU_SPLIT_PTE_PAGE_MIN * MMU_SPLIT_PTE_SLOT_SIZE;
+        if (spare < must)
+        {
+            krnPanic(NULL, "Not enough boot memory for the MMU tables\n"
+                           "%lu MiB must be identity mapped (top 0x%p):\n"
+                           "%lu KiB needed, %lu KiB free behind the kickstart\n"
+                           "Increase reserved space in bootstrap",
+                           needed << 1, top, (must + fixed) >> 10, avail >> 10);
+        }
+        spare -= must;
+
+        MMU->mmu_PTEPageCount = MMU_SPLIT_PTE_PAGE_MIN;
+        room = spare / MMU_SPLIT_PTE_SLOT_SIZE;
+        if (room > MMU_SPLIT_PTE_PAGE_PREFERRED - MMU_SPLIT_PTE_PAGE_MIN)
+            room = MMU_SPLIT_PTE_PAGE_PREFERRED - MMU_SPLIT_PTE_PAGE_MIN;
+        MMU->mmu_PTEPageCount += room;
+        spare -= room * MMU_SPLIT_PTE_SLOT_SIZE;
+        if (MMU->mmu_PTEPageCount < MMU_SPLIT_PTE_PAGE_PREFERRED)
+        {
+            bug("[Kernel] core_SetupMMU: split page pool trimmed from %u to %u slots to fit boot memory\n",
+                MMU_SPLIT_PTE_PAGE_PREFERRED, MMU->mmu_PTEPageCount);
+        }
+
+        room = needed + spare / sizeof(struct PDE2M);
         if (MMU->mmu_PDEPageCount > room)
         {
-            if (needed > room)
-            {
-                krnPanic(NULL, "Not enough boot memory for the MMU tables\n"
-                               "%lu MiB must be identity mapped (top 0x%p),\n"
-                               "room for %lu MiB behind the kickstart\n"
-                               "Increase reserved space in bootstrap",
-                               needed << 1, top, room << 1);
-            }
-
             bug("[Kernel] core_SetupMMU: identity map trimmed from %lu MiB to %lu MiB to fit boot memory\n",
                 MMU->mmu_PDEPageCount << 1, room << 1);
             MMU->mmu_PDEPageCount = room;
@@ -250,8 +278,9 @@ void core_SetupMMU(struct CPUMMUConfig *MMU, IPTR memtop, IPTR maptop)
          * below tested MMU_SPLIT_PTE_PAGE_COUNT, so raising the macro alone
          * would have let core_ProtPage() hand out slots past the end of this
          * allocation - a heap overrun instead of the graceful 2MB-granularity
-         * degradation the guard intends. */
-        MMU->mmu_PTE  = krnAllocBootMemAligned(sizeof(struct PTE)   * 512 * MMU_SPLIT_PTE_PAGE_COUNT, PAGE_SIZE);
+         * degradation the guard intends. The count is now mmu_PTEPageCount,
+         * sized above, and the guard reads the same field. */
+        MMU->mmu_PTE  = krnAllocBootMemAligned(MMU_SPLIT_PTE_SLOT_SIZE * MMU->mmu_PTEPageCount, PAGE_SIZE);
 
         D(bug("[Kernel] Allocated PML4 0x%p, PDP 0x%p, PDE 0x%p PTE 0x%p\n", MMU->mmu_PML4, MMU->mmu_PDP, MMU->mmu_PDE, MMU->mmu_PTE));
     }
@@ -293,7 +322,7 @@ void core_ProtPage(intptr_t addr, char p, char rw, char us)
         intptr_t base = ((IPTR)pde2[pde_off].base_low << 13) | ((IPTR)pde2[pde_off].base_high << 32);
         int i;
 
-        if (MMU->mmu_PDEPageUsed >= MMU_SPLIT_PTE_PAGE_COUNT)
+        if (MMU->mmu_PDEPageUsed >= MMU->mmu_PTEPageCount)
         {
             /* EXHAUSTION IS NOT SAFE, and an earlier version of this comment
              * said it was. It is safe only when the caller merely wants a
@@ -321,8 +350,8 @@ void core_ProtPage(intptr_t addr, char p, char rw, char us)
                 next_report *= 2;
                 bug("[Kernel] core_ProtPage: split PTE pool exhausted (%u slots) at 0x%p"
                     " - PROTECTION NOT APPLIED, %u refused so far;"
-                    " raise MMU_SPLIT_PTE_PAGE_COUNT\n",
-                    (unsigned)MMU_SPLIT_PTE_PAGE_COUNT, addr, refused);
+                    " raise KICKSTART_BOOTMEM_RESERVE\n",
+                    (unsigned)MMU->mmu_PTEPageCount, addr, refused);
             }
             return;
         }
