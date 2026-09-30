@@ -1,0 +1,26 @@
+; One startup per boot, run asynchronously from the DUT Startup-Sequence.
+; This is the same USB/AROSTCP sequence validated interactively on native12.
+; Network failure must not prevent the local Shell or Wanderer from starting.
+FailAt 21
+Assign USBCLASSES: SYS:Classes/USB
+C:AddUSBClasses QUIET
+
+CD SYS:System/Network/AROSTCP
+If ERROR
+    Echo "DUT network: AROSTCP directory unavailable; local Shell remains usable."
+    Quit 20
+EndIf
+Path C S ADD
+Run QUIET AROSTCP
+C:WaitForPort AROSTCP
+If WARN
+    C:WaitForPort AROSTCP
+EndIf
+If WARN
+    C:WaitForPort AROSTCP
+EndIf
+If NOT WARN
+    Run C:NetShell
+Else
+    Echo "DUT network: AROSTCP did not become ready; inspect T:DUT-Network.log."
+EndIf

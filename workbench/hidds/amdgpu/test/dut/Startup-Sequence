@@ -1,0 +1,47 @@
+; JOB-0084 unattended DUT desktop, derived from the installed NVMe diagnostics.
+; Disk layout was verified earlier. HDToolBox remains available in Tools,
+; but must not hold up desktop/control-plane startup on every recovery boot.
+
+FailAt 21
+C:AddDataTypes QUIET
+
+MakeDir RAM:ENV RAM:T RAM:Clipboards
+Assign ENV:    RAM:ENV
+Assign T:      RAM:T
+Assign CLIPS:  RAM:Clipboards
+
+Assign KEYMAPS:  DEVS:Keymaps
+Assign LOCALE:   SYS:Locale
+Assign LIBS:     SYS:Classes ADD
+Assign FONTS:    SYS:Fonts
+Assign ENVARC:   SYS:Prefs/Env-Archive
+Assign THEMES:   SYS:Prefs/Presets/Themes >NIL:
+Assign IMAGES:   SYS:System/Images DEFER
+Assign WANDERER: SYS:System/Wanderer DEFER
+
+C:Mount DEVS:DOSDrivers/~(#?.info)
+Path "C:" "SYS:System" "S:" "SYS:Prefs" "SYS:Tools" "SYS:Utilities" QUIET
+
+Copy >NIL: ENVARC: ENV: ALL NOPRO NOREQ PAT "~(def_#?.info)"
+Assign THEME:  THEMES:AROSDefault >NIL:
+Assign IMAGES: THEME:Images PREPEND >NIL:
+
+; Cold-test the installed AMDGPU build, not an already-resident RAM candidate.
+; Remove S:DUT-AMDGPU to return to the diagnostic firmware-display startup.
+If EXISTS "S:DUT-AMDGPU"
+    Execute S:DUT-AMDGPU
+EndIf
+
+IPrefs
+Run <NIL: >NIL: QUIET ConClip
+
+If EXISTS "S:DUT-Network"
+    Run >T:DUT-Network.log <NIL: QUIET C:Execute S:DUT-Network
+EndIf
+
+If EXISTS "WANDERER:Wanderer"
+    Run >T:DUT-Wanderer.log <NIL: QUIET WANDERER:Wanderer
+EndIf
+
+Echo "DUT: Work stays mounted; Wanderer and this local Shell are available."
+C:Shell

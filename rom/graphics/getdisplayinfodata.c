@@ -470,7 +470,21 @@ static inline void CalcScreenResolution(Point *res, const struct MonitorSpec *ms
                 break;
 
             }
-            if(stdpixfmt != vHidd_StdPixFmt_Plane)
+            /* Driver-qualified descriptions use the compact
+             * DRIVER:WIDTHxHEIGHTxDEPTH@REFRESH form.  Insert depth before an
+             * optional refresh suffix instead of appending the legacy pixfmt
+             * label, keeping the complete name inside DISPLAYNAMELEN. */
+            if(strchr(sync_description, ':') != NULL) {
+                STRPTR refresh = strrchr(sync_description, '@');
+
+                if(refresh != NULL)
+                    snprintf(ni->Name, DISPLAYNAMELEN, "%.*sx%lu%s",
+                             (int)(refresh - sync_description), sync_description,
+                             (unsigned long)depth, refresh);
+                else
+                    snprintf(ni->Name, DISPLAYNAMELEN, "%sx%lu",
+                             sync_description, (unsigned long)depth);
+            } else if(stdpixfmt != vHidd_StdPixFmt_Plane)
                 snprintf(ni->Name, DISPLAYNAMELEN, "%sx%2u %s",
                          sync_description, depth, pixfmt_name);
             else

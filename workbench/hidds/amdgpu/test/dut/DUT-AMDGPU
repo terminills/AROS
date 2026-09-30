@@ -1,0 +1,13 @@
+; JOB-0084 cold15: run only from the cold-boot Startup-Sequence.
+; Installed driver reference:20ec7903f2,459784bytes,
+; SHA25663c24b364ba10ee50a10a43e313cc7890c307274ff441cd917842974ed66c2c9.
+; The probe's library open is NOT a hot-replacement test. A cold boot removes
+; prior resident instances; verify these messages and the native driver ladder.
+FailAt 21
+Echo "DUT AMDGPU cold15: opening installed DEVS:Drivers/amdgpu.hidd"
+DH0:Developer/Debug/JOB-0084-cold15-20260905/AmdgpuProbe LIBRARY=DEVS:Drivers/amdgpu.hidd
+If WARN
+    Echo "DUT AMDGPU cold15: installed driver open FAILED; no display pass claimed."
+Else
+    Echo "DUT AMDGPU cold15: installed driver opened; display acceptance still pending."
+EndIf

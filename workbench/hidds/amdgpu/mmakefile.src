@@ -1,0 +1,387 @@
+# amdgpu.hidd — AMD base driver, clean bring-up.
+# See README.md; decision: ACD-amdgpu-driver-stack-split.
+#
+# Joins the ISO as of the V620 passthrough bring-up: the module ships but
+# stays INERT — nothing opens it during a normal boot, so a stock image is
+# unaffected. The probe runs only when C:AmdgpuProbe is invoked (it opens
+# the hidd, whose ADD2INITLIB init does identify -> BAR map -> IP discovery
+# and logs to serial). Tier 1 is validated on real hardware from that log.
+
+include $(SRCDIR)/config/aros.cfg
+
+AMDGPU_SOURCES := \
+    amdgpu_init \
+    amdgpu_compositorclass \
+    amdgpu_pci \
+    amdgpu_mmio \
+    amdgpu_discovery \
+    amdgpu_device \
+    amdgpu_nbio \
+    amdgpu_query \
+    amdgpu_bo \
+    amdgpu_vram \
+    amdgpu_cs \
+    amdgpu_firmware \
+    amdgpu_psp \
+    amdgpu_smu \
+    amdgpu_reset \
+    amdgpu_atom \
+    amdgpu_modeset \
+    amdgpu_plane \
+    amdgpu_plane_native \
+    amdgpu_dcn \
+    amdgpu_display \
+    amdgpu_gmc \
+    amdgpu_gart \
+    amdgpu_gfx \
+    amdgpu_sdma \
+    amdgpu_cursor \
+    amdgpu_cursor_mirror \
+    amdgpu_libreq \
+    amdgpu_gfx_init \
+    amdgpu_gfxclass \
+    amdgpu_displayclass \
+    amdgpu_bitmapclass \
+    amdgpu_gfx_support \
+    atom_bios
+
+USER_INCLUDES := \
+    -I$(SRCDIR)/$(CURDIR) \
+    -I$(SRCDIR)/$(CURDIR)/include
+
+# The boot-mode gfx classes use per-instance attribute bases (the XSD(cl)->
+# attrBases[] indirection in amdgpu_gfx_intern.h), so suppress the global
+# attrbase symbols exactly like efigfx/vesagfx do.
+USER_CPPFLAGS := \
+    -D__OOP_NOATTRBASES__
+
+#MM- workbench-hidds-amdgpu : hidd-amdgpu hidd-amdgpu-monitor
+#MM hidd-amdgpu : includes linklibs
+
+# linklibname is REQUIRED for the ABI to be usable, not cosmetic: without it
+# genmodule exports the Device/Query LVOs from the module but emits no client
+# stubs or archive, so the linklib dir stays empty and Mesa's ac_drm seam has
+# nothing to link against. With it, callers link -lamdgpu and call the LVOs.
+%build_module mmake=hidd-amdgpu \
+    modname=amdgpu modtype=hidd \
+    files="$(AMDGPU_SOURCES)" uselibs="oop" linklibname=amdgpu
+
+# Probe trigger: opening the hidd runs its ADD2INITLIB init (PCI probe ->
+# identify -> MMIO map -> IP discovery -> Device/Query readout), which logs
+# the whole tier-1 ladder to serial. Kept a separate command so the module
+# ships inert and only a deliberate run exercises hardware.
+%build_prog mmake=hidd-amdgpu-probe \
+    progname=AmdgpuProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuProbe \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-probe : hidd-amdgpu
+
+# Read-only public ABI client. No amdgpu linklib/autoinit or driver init code.
+%build_prog mmake=hidd-amdgpu-apiquery \
+    progname=AmdgpuApiQuery \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuApiQuery \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-apiquery : includes linklibs
+
+# CP_RB_WPTR_POLL_CNTL read/set through the public register ABI (DUT-only).
+%build_prog mmake=hidd-amdgpu-cppoll \
+    progname=AmdgpuCpPoll \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuCpPoll \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-cppoll : includes linklibs
+
+# Runtime GFX clock gating switch (amdgpu_set_gfx_clock_gating, ABI 0.14).
+%build_prog mmake=hidd-amdgpu-clockgating \
+    progname=AmdgpuClockGating \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuClockGating \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-clockgating : includes linklibs
+
+# Read-only sensor client (amdgpu_query_sensors, ABI 0.13); no driver code linked.
+%build_prog mmake=hidd-amdgpu-sensors \
+    progname=AmdgpuSensors \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuSensors \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-sensors : includes linklibs
+
+# Public BO lifetime client; no amdgpu linklib/autoinit or private driver code.
+%build_prog mmake=hidd-amdgpu-boprobe \
+    progname=AmdgpuBoProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuBoProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-boprobe : includes linklibs
+
+# Resident-only managed memory accounting; no private driver or GPU submission.
+%build_prog mmake=hidd-amdgpu-memoryinfoprobe \
+    progname=AmdgpuMemoryInfoProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuMemoryInfoProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-memoryinfoprobe : includes linklibs
+
+%build_prog mmake=hidd-amdgpu-memorymapprobe \
+    progname=AmdgpuMemoryMapProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuMemoryMapProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-memorymapprobe : includes linklibs
+
+# Resident-only GTT/VRAM storage client, no private driver initialization.
+%build_prog mmake=hidd-amdgpu-gttprobe \
+    progname=AmdgpuGttProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuGttProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-gttprobe : includes linklibs
+
+# Resident-only managed CS client; never links a private hardware driver.
+%build_prog mmake=hidd-amdgpu-csprobe \
+    progname=AmdgpuCsProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuCsProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-csprobe : includes linklibs
+
+# Resident-only extended resource/IB capacity; legacy ABI remains unchanged.
+%build_prog mmake=hidd-amdgpu-csextendedprobe \
+    progname=AmdgpuCsExtendedProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuCsExtendedProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-csextendedprobe : includes linklibs
+
+# Resident-only VRAM/GTT instruction and payload execution, via managed CS.
+%build_prog mmake=hidd-amdgpu-vramvaprobe \
+    progname=AmdgpuVramVaProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuVramVaProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-vramvaprobe : includes linklibs
+
+# Resident-only immutable topology query; no private driver or MMIO access.
+%build_prog mmake=hidd-amdgpu-renderinfoprobe \
+    progname=AmdgpuRenderInfoProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuRenderInfoProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-renderinfoprobe : includes linklibs
+
+# Resident-only VA/PTE and BO binding-lifetime client; no raw GPU submission.
+%build_prog mmake=hidd-amdgpu-vaprobe \
+    progname=AmdgpuVaProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuVaProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-vaprobe : includes linklibs
+
+# Native panning and backing-store preservation test; no driver setup linked.
+%build_prog mmake=hidd-amdgpu-panprobe \
+    progname=AmdgpuPanProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuPanProbe \
+    uselibs="cybergraphics" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-panprobe : includes linklibs
+
+%build_prog mmake=hidd-amdgpu-copyprobe \
+    progname=AmdgpuCopyProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuCopyProbe \
+    uselibs="cybergraphics" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-copyprobe : includes linklibs
+
+# Native real-pointer shape/hotspot/edges/screen-switch test; no driver linked.
+%build_prog mmake=hidd-amdgpu-cursorprobe \
+    progname=AmdgpuCursorProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuCursorProbe \
+    uselibs="cybergraphics" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-cursorprobe : includes linklibs
+
+# Public window close/exposure oracle on the installed native driver.
+%build_prog mmake=hidd-amdgpu-exposeprobe \
+    progname=AmdgpuExposeProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuExposeProbe \
+    uselibs="cybergraphics" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-exposeprobe : includes linklibs
+
+# Native positive screen drag and exposed lower-screen update; no driver linked.
+%build_prog mmake=hidd-amdgpu-screenstackprobe \
+    progname=AmdgpuScreenStackProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuScreenStackProbe \
+    uselibs="cybergraphics" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-screenstackprobe : includes linklibs
+
+# Nonuniform long-stride copies on the installed driver, independent of dragging.
+%build_prog mmake=hidd-amdgpu-stripcopyprobe \
+    progname=AmdgpuStripCopyProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuStripCopyProbe \
+    uselibs="cybergraphics" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-stripcopyprobe : includes linklibs
+
+# Identical stack sequence plus fixed read-only active-plane aperture samples.
+%build_prog mmake=hidd-amdgpu-screenstackobserve \
+    progname=AmdgpuScreenStackObserve \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuScreenStackObserve \
+    uselibs="cybergraphics oop" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-screenstackobserve : includes linklibs
+
+# Bounded public allocation/retirement probe; never changes the active scanout.
+%build_prog mmake=hidd-amdgpu-vramreuseprobe \
+    progname=AmdgpuVramReuseProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/AmdgpuVramReuseProbe \
+    uselibs="cybergraphics" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-vramreuseprobe : includes linklibs
+
+# Observe only fixed cursor/pending registers; no driver initialization linked.
+%build_prog mmake=hidd-amdgpu-cursorread \
+    progname=DcnCursorRead \
+    files=$(SRCDIR)/$(CURDIR)/test/DcnCursorRead \
+    uselibs="oop" targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-cursorread : includes linklibs
+
+# GfxResetProbe — standalone GFX-reset lever tester for the fast network loop.
+# Links the driver's own probe/mmio/discovery/nbio/reset (+ smu for the mode1
+# debug mailbox) with its own main(), so it resolves the 9060 XT + register
+# segments and runs one reset lever by arg with the WRITE-TEST oracle. Ships in
+# C: like AmdgpuProbe; a deliberate run exercises the reset search.
+%build_prog mmake=hidd-amdgpu-gfxreset \
+    progname=GfxResetProbe \
+    files="test/GfxResetProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_vram amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    uselibs="oop" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-gfxreset : hidd-amdgpu
+
+# FbProbe — live display survey: asks DCN which pipe is driving the panel, which
+# VRAM address it scans out, the DSCL recout (the CURSOR's destination rect on
+# DCN4), DPP clock state and the full cursor block. Answers "which framebuffer
+# are we actually on" from the hardware instead of inferring it from driver logs,
+# and runs on demand via HttpGet + netshell -- seconds per question rather than a
+# 35-minute seed/deploy/boot cycle. Ships in C: like the other probes.
+%build_prog mmake=hidd-amdgpu-fbprobe \
+    progname=FbProbe \
+    files="test/FbProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    uselibs="oop" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-fbprobe : hidd-amdgpu
+
+# FbPattern — WRITE a test pattern into the ACTIVE scanout, derived from
+# hardware each run. Reading the derived address only shows grey, which is
+# consistent with the desktop but proves nothing; painting saturated colour bars
+# is conclusive. Visible = that address is the live framebuffer. Not visible =
+# we are looking at the wrong buffer. AT/K/N paints an arbitrary MC address so
+# other regions (e.g. the cursor surface, which sits at a DIFFERENT address than
+# the scanout) can be tested for reachability.
+%build_prog mmake=hidd-amdgpu-fbpattern \
+    progname=FbPattern \
+    files="test/FbPattern amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_vram amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    uselibs="oop" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-fbpattern : hidd-amdgpu
+
+# DcnPoke — read/write live DCN registers from the shell. The cursor cost a
+# 35-minute cycle per hypothesis, most of which only established what was NOT
+# wrong. With the NetShell bridge up this makes a register experiment take
+# seconds. Pokes the live display controller, so a bad write can scramble the
+# panel until reboot -- an acceptable and deliberate trade on a test rig.
+%build_prog mmake=hidd-amdgpu-dcnpoke \
+    progname=DcnPoke \
+    files="test/DcnPoke amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    uselibs="oop" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-dcnpoke : hidd-amdgpu
+
+# Fixed read-only Navi44 register snapshot. Deliberately links NO amdgpu
+# initialization/discovery code: do not enable PCI or write MMIO to inspect it.
+%build_prog mmake=hidd-amdgpu-gfxstateread \
+    progname=GfxStateRead \
+    files="test/GfxStateRead" \
+    uselibs="oop" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-gfxstateread : includes linklibs
+
+# Same fixed PCI/BAR guard, separate read-only DCN plane/scaler register list.
+%build_prog mmake=hidd-amdgpu-dcnstateread \
+    progname=DcnStateRead \
+    files="test/DcnStateRead" \
+    uselibs="oop" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-dcnstateread : includes linklibs
+
+%build_prog mmake=hidd-amdgpu-mesprobe \
+    progname=MesProbe \
+    files="test/MesProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    uselibs="oop" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-mesprobe : hidd-amdgpu
+
+%build_prog mmake=hidd-amdgpu-gfx2dprobe \
+    progname=Gfx2DProbe \
+    files="test/Gfx2DProbe" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-gfx2dprobe : includes linklibs
+
+%build_prog mmake=hidd-amdgpu-gfx2dconformance \
+    progname=Gfx2DConformance \
+    files="test/Gfx2DConformance" \
+    uselibs="cybergraphics" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-gfx2dconformance : includes linklibs
+
+# HttpGet — bsdsocket HTTP downloader for the fast-iteration loop: push a freshly
+# built GfxResetProbe (or any binary) over the RNDIS link into RAM: and run it,
+# no re-image/reboot. Ships in C:.
+%build_prog mmake=hidd-amdgpu-httpget \
+    progname=HttpGet \
+    files="test/HttpGet" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-httpget : includes linklibs
+
+# NetShell — reverse command shell (DUT dials the host, runs shell commands over
+# the socket via SystemTagList, streams output back). NAT-friendly remote shell
+# that replaces NanoKVM keyboard injection. Ships in C:.
+%build_prog mmake=hidd-amdgpu-netshell \
+    progname=NetShell \
+    files="test/NetShell" \
+    targetdir=$(AROS_C)
+
+#MM- hidd-amdgpu-netshell : includes linklibs
+
+# Workbench-launch loader: installed as DEVS:Monitors/amdgpu, run by AROSMonDrvs
+# during the Startup-Sequence. Opens amdgpu.hidd (post-mount) = the silicon wake,
+# and (increment 2) will register a display adopting the live DCN scanout. This is
+# what replaces the old residentpri-49 cold-start.
+MONITORDIR := $(AROSDIR)/Devs/Monitors
+
+# progname must differ from the module name 'amdgpu' — they share the gen object
+# tree (gen/.../amdgpu/amdgpu/ is the module dir), so a prog named 'amdgpu' would
+# collide. Headless does the same: module 'headlessgfx' vs command 'Headless'.
+%build_prog mmake=hidd-amdgpu-monitor \
+    progname=AmdgpuMonitor \
+    files=amdgpu_monitor \
+    targetdir=$(MONITORDIR)
+
+#MM- hidd-amdgpu-monitor : hidd-amdgpu
+
+%common
