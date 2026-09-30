@@ -108,22 +108,53 @@ static void reset_cfg_w16(OOP_Object *dev, UWORD reg, UWORD val)
     OOP_DoMethod(dev, (OOP_Msg)&m);
 }
 
+/* psp_v11_0_mode1_reset(): MP0 C2PMSG_64 carries the sOS mailbox */
+#define MODE1_MP0_C2PMSG_64            0x0080
+#define MODE1_PSP_TOS_READY_FLAG       0x80000000UL
+#define MODE1_PSP_TOS_READY_MASK       0x8000FFFFUL
+#define MODE1_GFX_CTRL_CMD_ID_MODE1_RST 0x00070000UL
+
 BOOL amdgpu_mode1_reset(struct AmdgpuDevice *ad)
 {
-    ULONG base, memsize = 0xffffffff, t;
+    ULONG base = 0, memsize = 0xffffffff, t;
     UWORD cmd_saved = 0;
     BOOL cfg_saved = FALSE;
+    BOOL via_psp;
 
-    if (!ad || !ad->rmmio || !ad->ip.smu.valid || !ad->ip.smu.base) {
-        bug("[amdgpu-reset] no MP1/SMU block (valid=%d base=0x%x) — cannot mode1-reset\n",
-            ad ? (int)ad->ip.smu.valid : -1,
-            ad ? (unsigned)ad->ip.smu.base : 0);
+    if (!ad || !ad->rmmio)
+        return FALSE;
+
+    /* Who triggers the reset follows Linux: smu_v14_0_2_mode1_reset sends the
+     * SMU debug message; with no SMU driver, amdgpu_device_mode1_reset() falls
+     * back to the PSP (psp_v11_0_mode1_reset). */
+    via_psp = ad->ip.psp.valid && ad->ip.psp.major == 11;
+    if (via_psp) {
+        ULONG mbox = 0;
+
+        for (t = 0; t < 5000; t++) {
+            mbox = amdgpu_rreg32(ad, ad->ip.psp.base + MODE1_MP0_C2PMSG_64);
+            if ((mbox & MODE1_PSP_TOS_READY_MASK) == MODE1_PSP_TOS_READY_FLAG)
+                break;
+            reset_spin(200000);
+        }
+        if ((mbox & MODE1_PSP_TOS_READY_MASK) != MODE1_PSP_TOS_READY_FLAG) {
+            bug("[amdgpu-reset] PSP not ready for a mode1 reset (C2PMSG_64=0x%08lx)\n",
+                (unsigned long)mbox);
+            return FALSE;
+        }
+        bug("[amdgpu-reset] MODE1 via PSP: C2PMSG_64<-0x%08lx @MP0 base=0x%05lx\n",
+            (unsigned long)MODE1_GFX_CTRL_CMD_ID_MODE1_RST,
+            (unsigned long)ad->ip.psp.base);
+    } else if (ad->ip.smu.valid && ad->ip.smu.base && ad->ip.smu.major == 14) {
+        base = amdgpu_smu_base(ad);
+        bug("[amdgpu-reset] MODE1 via SMU debug mailbox: C2PMSG_75<-%u @MP1 base=0x%05x\n",
+            (unsigned)DEBUGSMC_MSG_Mode1Reset, (unsigned)base);
+    } else {
+        bug("[amdgpu-reset] no mode1 reset path for PSP %u.%u.%u / SMU %u.%u.%u yet\n",
+            ad->ip.psp.major, ad->ip.psp.minor, ad->ip.psp.revision,
+            ad->ip.smu.major, ad->ip.smu.minor, ad->ip.smu.revision);
         return FALSE;
     }
-
-    base = amdgpu_smu_base(ad);
-    bug("[amdgpu-reset] MODE1 via SMU debug mailbox: C2PMSG_75<-%u @MP1 base=0x%05x\n",
-        (unsigned)DEBUGSMC_MSG_Mode1Reset, (unsigned)base);
 
     /* CACHE PCI STATE + DROP BUS MASTER, matching amdgpu_device_mode1_reset():
      *   amdgpu_device_cache_pci_state(pdev);
@@ -149,15 +180,22 @@ BOOL amdgpu_mode1_reset(struct AmdgpuDevice *ad)
         bug("[amdgpu-reset] no PCI device object — cannot quiesce bus master\n");
     }
 
-    /* smu_msg_v1_send_debug_msg: param, msg, then clear resp. Fire-and-forget —
-     * no response poll (the ASIC resets underneath us). */
-    amdgpu_wreg32(ad, base + MP1_C2PMSG_53, 0);
-    amdgpu_wreg32(ad, base + MP1_C2PMSG_75, DEBUGSMC_MSG_Mode1Reset);
-    amdgpu_wreg32(ad, base + MP1_C2PMSG_54, 0);
+    if (via_psp) {
+        amdgpu_wreg32(ad, ad->ip.psp.base + MODE1_MP0_C2PMSG_64,
+                      MODE1_GFX_CTRL_CMD_ID_MODE1_RST);
+        /* psp_v11_0_mode1_reset: msleep(500) */
+        reset_spin(50000000);
+    } else {
+        /* smu_msg_v1_send_debug_msg: param, msg, then clear resp. Fire-and-forget —
+         * no response poll (the ASIC resets underneath us). */
+        amdgpu_wreg32(ad, base + MP1_C2PMSG_53, 0);
+        amdgpu_wreg32(ad, base + MP1_C2PMSG_75, DEBUGSMC_MSG_Mode1Reset);
+        amdgpu_wreg32(ad, base + MP1_C2PMSG_54, 0);
 
-    /* Warm reset in flight. Match smu_v14_0_2_mode1_reset's fixed 1000 ms
-     * no-hardware-access window before any MMIO, then verify RCC below. */
-    reset_spin(100000000);
+        /* Warm reset in flight. Match smu_v14_0_2_mode1_reset's fixed 1000 ms
+         * no-hardware-access window before any MMIO, then verify RCC below. */
+        reset_spin(100000000);
+    }
 
     /* RESTORE PCI STATE before any further MMIO/DMA — Linux's
      * amdgpu_device_load_pci_state() sits here, between the reset and the
@@ -226,6 +264,69 @@ BOOL amdgpu_mode1_reset(struct AmdgpuDevice *ad)
     bug("[amdgpu-reset] MODE1 complete — ASIC back, RCC_CONFIG_MEMSIZE=0x%08lx (%lu MB)\n",
         (unsigned long)memsize, (unsigned long)memsize);
     return TRUE;
+}
+
+/*
+ * BACO reset (Bus Active, Chip Off) through the SMU, for SMU 11 (Navi 1x/2x):
+ * amdgpu_dpm_baco_reset() -> smu_v11_0_baco_enter()/_exit(). This is what
+ * Linux uses on Navi 2x when the PSP cannot be trusted to perform a mode1
+ * reset (mode1 relies on a working PSP), e.g. when a previous driver left the
+ * PSP OS running. Message IDs from smu_v11_0_7_ppsmc.h.
+ */
+#define SMU11_MSG_GetSmuVersion   0x02
+#define SMU11_MSG_EnterBaco       0x15
+#define SMU11_MSG_ExitBaco        0x16
+#define SMU11_D3HOT_BACO_SEQUENCE 0
+#define SMU11_RESP_OK             0x01
+#define THM_11_0_BACO_CNTL        0x0081          /* thm_11_0_2_offset.h, BASE_IDX 0 */
+#define THM_BACO_CNTL_EXIT_BUSY   0x00000100UL
+
+BOOL amdgpu_baco_reset(struct AmdgpuDevice *ad)
+{
+    ULONG resp, ver = 0, t, memsize = 0xffffffff, data = 0;
+
+    if (!ad || !ad->rmmio || !ad->ip.smu.valid || ad->ip.smu.major != 11 ||
+        !ad->ip.thm.valid) {
+        bug("[amdgpu-reset] BACO: needs SMU 11 and a THM block\n");
+        return FALSE;
+    }
+
+    resp = amdgpu_smu_send_msg(ad, SMU11_MSG_GetSmuVersion, 0, &ver);
+    if (resp != SMU11_RESP_OK) {
+        bug("[amdgpu-reset] BACO: SMU not answering (resp=0x%08lx)\n", (unsigned long)resp);
+        return FALSE;
+    }
+    bug("[amdgpu-reset] BACO: SMU firmware 0x%08lx, entering BACO\n", (unsigned long)ver);
+
+    resp = amdgpu_smu_send_msg(ad, SMU11_MSG_EnterBaco, SMU11_D3HOT_BACO_SEQUENCE, NULL);
+    if (resp != SMU11_RESP_OK) {
+        bug("[amdgpu-reset] BACO: EnterBaco refused (resp=0x%08lx)\n", (unsigned long)resp);
+        return FALSE;
+    }
+    reset_spin(1000000);                    /* msleep(10) */
+
+    resp = amdgpu_smu_send_msg(ad, SMU11_MSG_ExitBaco, 0, NULL);
+    if (resp != SMU11_RESP_OK) {
+        bug("[amdgpu-reset] BACO: ExitBaco refused (resp=0x%08lx)\n", (unsigned long)resp);
+        return FALSE;
+    }
+    /* smu_v11_0_poll_baco_exit(): THM_BACO_CNTL bit 8 clears when done */
+    for (t = 0; t < 100; t++) {
+        data = amdgpu_rreg32(ad, ad->ip.thm.base + THM_11_0_BACO_CNTL);
+        if (!(data & THM_BACO_CNTL_EXIT_BUSY))
+            break;
+        reset_spin(100000);                 /* ~1ms */
+    }
+    for (t = 0; t < 5000; t++) {
+        memsize = amdgpu_rreg32(ad, AMDGPU_mmRCC_CONFIG_MEMSIZE);
+        if (memsize != 0xffffffff && memsize != 0)
+            break;
+        reset_spin(200000);
+    }
+    bug("[amdgpu-reset] BACO %s: THM_BACO_CNTL=0x%08lx RCC_CONFIG_MEMSIZE=0x%08lx\n",
+        (memsize != 0xffffffff && memsize != 0) ? "complete" : "TIMEOUT",
+        (unsigned long)data, (unsigned long)memsize);
+    return memsize != 0xffffffff && memsize != 0;
 }
 
 /*

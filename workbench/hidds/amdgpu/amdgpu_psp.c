@@ -201,6 +201,12 @@ static BOOL psp_sos_part(const UBYTE *fw, ULONG fwsize, ULONG type,
         off = le32(fw + 36);
         size = le32(fw + 40);
         break;
+    case PSP_FW_TYPE_TOC:                       /* v1.1, v1.3 (v1.2 has res there) */
+        if ((minor != 1 && minor != 3) || fwsize < 56)
+            return FALSE;
+        off = le32(fw + 48);
+        size = le32(fw + 52);
+        break;
     case PSP_FW_TYPE_KDB:                       /* v1.1, v1.2, v1.3 */
         if (minor < 1 || fwsize < 68)
             return FALSE;
@@ -658,7 +664,7 @@ static void psp_cp_record(struct AmdgpuDevice *ad, struct AmdgpuFirmwareInfo *in
 #define PSP_TOC_STAGE_SIZE    ((UQUAD)PSP_PRIVATE_STAGE_SIZE)
 
 static BOOL psp_load_toc(struct AmdgpuDevice *ad, UQUAD vram_start, UQUAD *off,
-                         const UBYTE *sos, ULONG sos_len)
+                         const UBYTE *sos, ULONG sos_len, ULONG *tmr_size_out)
 {
     const UBYTE *toc;
     ULONG toc_sz, cmd[256], status = 0xFFFFFFFFUL;
@@ -670,8 +676,8 @@ static BOOL psp_load_toc(struct AmdgpuDevice *ad, UQUAD vram_start, UQUAD *off,
         bug("[amdgpu-psp] LOAD_TOC: GART unavailable; refusing a raw-VRAM substitute\n");
         return FALSE;
     }
-    if (!psp_find_subbin(sos, sos_len, PSP_FW_TYPE_TOC, &toc, &toc_sz)) {
-        bug("[amdgpu-psp] LOAD_TOC: packed SOS has no valid TOC descriptor\n");
+    if (!psp_sos_part(sos, sos_len, PSP_FW_TYPE_TOC, &toc, &toc_sz)) {
+        bug("[amdgpu-psp] LOAD_TOC: SOS has no valid TOC descriptor\n");
         return FALSE;
     }
 
@@ -697,7 +703,7 @@ static BOOL psp_load_toc(struct AmdgpuDevice *ad, UQUAD vram_start, UQUAD *off,
     }
     CopyMem((APTR)toc, ad->gart_arena + *off, toc_sz);
     toc_mc = ad->gart_fw_va + *off;
-    bug("[amdgpu-psp] LOAD_TOC source=packed psp_14_0_2_sos descriptor type=%lu "
+    bug("[amdgpu-psp] LOAD_TOC source=SOS descriptor type=%lu "
         "size=%lu first=0x%08lx\n",
         (unsigned long)PSP_FW_TYPE_TOC, (unsigned long)toc_sz,
         (unsigned long)(toc_sz >= 4 ? le32(toc) : 0));
@@ -722,6 +728,8 @@ static BOOL psp_load_toc(struct AmdgpuDevice *ad, UQUAD vram_start, UQUAD *off,
     amdgpu_gart_dump_fault(ad, "LOAD_TOC");
 
     *off += PSP_TOC_STAGE_SIZE;
+    if (tmr_size_out)
+        *tmr_size_out = tmr_size;
     return completed && status == 0;
 }
 
@@ -829,7 +837,7 @@ static void psp_load_gfx_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
      *     id=6  type=18 ...                  SMC, then the LOAD_IP_FW array
      * The TOC is the autoload manifest: without it the PSP has nothing to
      * autoload into and rejects the whole GFX ucode set. */
-    (void)psp_load_toc(ad, vram_start, &voff, sos, sos_len);
+    (void)psp_load_toc(ad, vram_start, &voff, sos, sos_len, NULL);
 
     /* SMC/PMFW next — the RLC autoload relies on the SMU firmware being loaded
      * first (gfx_v12_0.c: "rlc firmware loading relies on smu firmware loaded
@@ -1009,6 +1017,86 @@ static void psp_load_gfx_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
     if (vcn) amdgpu_release_firmware(vcn);
 }
 
+/* ---- psp_v11_0 firmware stage (Navi 1x/2x) -------------------------------
+ * After the KM ring, Linux psp_hw_start() on MP0 11.0.x (autoload supported,
+ * no boot-time TMR, PMFW-centralized C-state management) runs:
+ *   psp_tmr_init   LOAD_TOC -> the TMR size the PSP needs for autoload
+ *   psp_load_smu_fw  SMC through LOAD_IP_FW, before the TMR
+ *   psp_tmr_load   SETUP_TMR on a VRAM region naturally aligned to its size
+ * The remaining engines' microcode follows once those blocks are ported. */
+#define PSP_GFX_CMD_SETUP_TMR       0x05
+#define PSP_TMR_DEFAULT_SIZE        0x400000UL
+#define PSP_TMR_VRAM_OFF            ((UQUAD)1 << 30)    /* 1 GiB: aligned to any TMR size */
+#define PSP_TMR_VIRT_PHY_ADDR       0x00000002UL        /* cmd_setup_tmr bitfield bit 1 */
+
+static BOOL psp_v11_setup_tmr(struct AmdgpuDevice *ad, UQUAD vram_start, ULONG tmr_size)
+{
+    const struct AmdgpuMmhubRegs *mr = amdgpu_mmhub_regs(ad);
+    ULONG cmd[256], status = 0xFFFFFFFFUL, z;
+    UQUAD tmr_mc = vram_start + PSP_TMR_VRAM_OFF;
+    UQUAD tmr_pa;
+    BOOL completed;
+
+    if (!mr || ((UQUAD)ad->vram_mb << 20) < PSP_TMR_VRAM_OFF + tmr_size) {
+        bug("[amdgpu-psp] SETUP_TMR: no room for a 0x%lx TMR at 1 GiB in %lu MB of VRAM\n",
+            (unsigned long)tmr_size, (unsigned long)ad->vram_mb);
+        return FALSE;
+    }
+    /* amdgpu_gmc_vram_pa(): the VRAM offset plus the FB offset base */
+    tmr_pa = ((UQUAD)amdgpu_rreg32(ad, ad->ip.mmhub.base + mr->fb_offset) << 24) +
+             PSP_TMR_VRAM_OFF;
+
+    for (z = 0; z < 256; z++) cmd[z] = 0;
+    cmd[0] = 1024;
+    cmd[1] = PSP_GFX_CMD_BUF_VERSION;
+    cmd[2] = PSP_GFX_CMD_SETUP_TMR;
+    cmd[7] = (ULONG)(tmr_mc & 0xFFFFFFFFUL);
+    cmd[8] = (ULONG)(tmr_mc >> 32);
+    cmd[9] = tmr_size;
+    cmd[10] = PSP_TMR_VIRT_PHY_ADDR;
+    cmd[11] = (ULONG)(tmr_pa & 0xFFFFFFFFUL);
+    cmd[12] = (ULONG)(tmr_pa >> 32);
+
+    completed = psp_gpcom_submit(ad, vram_start, cmd, 256, &status);
+    bug("[amdgpu-psp] SETUP_TMR mc=0x%08lx%08lx pa=0x%08lx%08lx size=0x%lx -> transport=%s status=0x%08lx\n",
+        (unsigned long)(tmr_mc >> 32), (unsigned long)(tmr_mc & 0xFFFFFFFFUL),
+        (unsigned long)(tmr_pa >> 32), (unsigned long)(tmr_pa & 0xFFFFFFFFUL),
+        (unsigned long)tmr_size, completed ? "complete" : "TIMEOUT", (unsigned long)status);
+    return completed && status == 0;
+}
+
+static void psp_v11_load_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
+                                  const UBYTE *sos, ULONG sos_len)
+{
+    UBYTE *smc = NULL;
+    ULONG smc_len = 0, tmr_size = PSP_TMR_DEFAULT_SIZE, toc_tmr = 0, response;
+    UQUAD voff = 0;
+
+    if (!ad->gart_ready) {
+        bug("[amdgpu-psp] v11: GART not ready; firmware stage needs it\n");
+        return;
+    }
+
+    if (psp_load_toc(ad, vram_start, &voff, sos, sos_len, &toc_tmr) && toc_tmr)
+        tmr_size = toc_tmr;
+
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_SMU, NULL, &smc, &smc_len) && smc) {
+        ULONG ao = le32(smc + 24), sz = le32(smc + 20);
+
+        if (ao && sz && (UQUAD)ao + sz <= smc_len)
+            (void)psp_stage_load_report(ad, vram_start, &voff, smc + ao, sz,
+                                        FWT_SMU, "SMC", &response);
+        else
+            bug("[amdgpu-psp] SMU firmware header bad (ao=%lu sz=%lu len=%lu)\n",
+                (unsigned long)ao, (unsigned long)sz, (unsigned long)smc_len);
+        amdgpu_release_firmware(smc);
+    } else {
+        bug("[amdgpu-psp] SMU firmware MISSING\n");
+    }
+
+    (void)psp_v11_setup_tmr(ad, vram_start, tmr_size);
+}
+
 BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
 {
     char sos_name[64];
@@ -1165,8 +1253,18 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
             ((UQUAD)(amdgpu_rreg32(ad, mb + amdgpu_mmhub_regs(ad)->fb_location_base) & 0x00FFFFFFUL)) << 24;
 
         if (sol0 != 0) {
-            D(bug("[amdgpu-psp] sign-of-life already set (0x%08lx) — sOS up; skipping load\n",
+            /* psp_v11_0/psp_v14_0 bootloader_load_*() return early when the sOS
+             * is alive; psp_hw_start() still creates the ring and loads the
+             * TMR and firmware. */
+            D(bug("[amdgpu-psp] sign-of-life already set (0x%08lx) — sOS up; bootloader loads skipped\n",
                   (unsigned long)sol0));
+            amdgpu_gart_enable(ad, vram_start);
+            if (psp_ring_create(ad, vram_start)) {
+                if (ad->ip.psp.major == 14)
+                    psp_load_gfx_firmware(ad, vram_start, fw, fwsize);
+                else
+                    psp_v11_load_firmware(ad, vram_start, fw, fwsize);
+            }
         } else if (!(amdgpu_rreg32(ad, base + MP0_C2PMSG_35) & PSP_BL_READY)) {
             D(bug("[amdgpu-psp] bootloader not ready — not attempting wake\n"));
         } else {
@@ -1247,9 +1345,7 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
                         if (ad->ip.psp.major == 14)
                             psp_load_gfx_firmware(ad, vram_start, fw, fwsize);
                         else
-                            bug("[amdgpu-psp] PSP %u.%u.%u: ring up; TMR setup and IP "
-                                "microcode loading are not ported for it yet\n",
-                                ad->ip.psp.major, ad->ip.psp.minor, ad->ip.psp.revision);
+                            psp_v11_load_firmware(ad, vram_start, fw, fwsize);
                     }
                 } else
                     D(bug("[amdgpu-psp] sequence accepted but sign-of-life still 0 — sOS not "

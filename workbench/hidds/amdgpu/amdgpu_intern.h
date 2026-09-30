@@ -64,6 +64,7 @@ struct AmdgpuIpMap {
     struct AmdgpuIpBase dmu;      /* display */
     struct AmdgpuIpBase df;       /* data fabric */
     struct AmdgpuIpBase vcn;      /* video codec */
+    struct AmdgpuIpBase thm;      /* thermal (BACO control) */
 };
 
 /* One ATOM display-object connector route, populated from the VBIOS
@@ -379,6 +380,7 @@ BOOL amdgpu_atom_asic_init(struct AmdgpuDevice *ad);
 #define AMDGPU_MODE1_RESET_ON_INIT 0
 #endif
 BOOL amdgpu_mode1_reset(struct AmdgpuDevice *ad);
+BOOL amdgpu_baco_reset(struct AmdgpuDevice *ad);
 /* PCI power cycle D0 -> D3hot -> D0 before init, mirroring what Linux gets for
  * free across rmmod/modprobe. See the rationale at the call site. */
 BOOL amdgpu_pci_power_cycle(struct AmdgpuDevice *ad);

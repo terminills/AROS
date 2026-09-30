@@ -159,6 +159,25 @@ static BOOL ip_common_init(struct AmdgpuDevice *ad)
         }
     }
 
+    /* nv_need_reset_on_init(): a dGPU whose PSP OS is already running (a warm
+     * reboot, or a previous driver instance) is mode1-reset before init, so
+     * the PSP bootloader can load our firmware from scratch. */
+    if (ad->ip.psp.valid && ad->ip.psp.major == 11 &&
+        !(ad->chip_flags & AMDGPU_PCIID_APU) &&
+        amdgpu_rreg32(ad, ad->ip.psp.base + 0x0091 /* MP0 C2PMSG_81 */) != 0) {
+        BOOL reset;
+
+        /* nv_asic_reset_method(): BACO when the SMU can do it, else mode1 */
+        bug("[amdgpu] %s: PSP OS already running — resetting before init\n", ad->name);
+        reset = amdgpu_baco_reset(ad);
+        if (!reset)
+            reset = amdgpu_mode1_reset(ad);
+        /* The reset takes the chip back to its power-on state: post it again,
+           as amdgpu_device_init() does after amdgpu_asic_reset() */
+        if (reset && !amdgpu_atom_asic_init(ad))
+            bug("[amdgpu] %s: VBIOS ASIC_Init after reset did not run\n", ad->name);
+    }
+
     ad->vram_mb = amdgpu_get_vram_mb(ad);
     if (!ad->vram_mb)
         ad->vram_mb = boot_mb;   /* discovery-independent fallback */
