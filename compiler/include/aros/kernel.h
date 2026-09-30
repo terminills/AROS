@@ -31,6 +31,13 @@ typedef enum
 	MAP_CacheInhibit 	= 0x0001,
 	MAP_WriteThrough	= 0x0002,
 	MAP_Guarded 		= 0x0004,
+	/* Write-combining. Selects PAT index 4, which core_CPUSetup() programs to
+	   WC on x86_64. Mutually exclusive with MAP_CacheInhibit -- a range is
+	   either uncached or write-combining, not both. Intended for large
+	   write-mostly MMIO such as a framebuffer aperture, where UC costs a
+	   store-per-bus-transaction (measured 7 MB/s on an RX 9060 XT BAR)
+	   and WC batches them into burst writes. */
+	MAP_WriteCombine	= 0x0008,
 
 	MAP_Readable		= 0x0100,
 	MAP_Writable		= 0x0200,

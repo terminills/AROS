@@ -137,8 +137,25 @@ static void set_pde_2m(struct PDE2M *slot, IPTR phys, KRN_MapAttr flags)
     entry->p = (flags & (MAP_Readable | MAP_Writable | MAP_Executable)) ? 1 : 0;
     entry->rw = (flags & MAP_Writable) ? 1 : 0;
     entry->us = 1;
-    entry->pwt = (flags & MAP_WriteThrough) ? 1 : 0;
-    entry->pcd = (flags & MAP_CacheInhibit) ? 1 : 0;
+    /*
+     * Memory type is selected by PAT:PCD:PWT indexing IA32_PAT's 8 entries.
+     * core_CPUSetup() leaves indices 0-3 at their architectural defaults and
+     * programs index 4 (PAT=1, PCD=0, PWT=0) to write-combining. Nothing else
+     * in the tree sets the PAT bit, so indices 4-7 were previously unused and
+     * this cannot change the type of any existing mapping.
+     */
+    if (flags & MAP_WriteCombine)
+    {
+        entry->pat = 1;                 /* -> PAT index 4 == WC */
+        entry->pcd = 0;
+        entry->pwt = 0;
+    }
+    else
+    {
+        entry->pat = 0;
+        entry->pwt = (flags & MAP_WriteThrough) ? 1 : 0;
+        entry->pcd = (flags & MAP_CacheInhibit) ? 1 : 0;
+    }
     entry->a = 0;
     entry->d = 0;
     entry->ps = 1;
