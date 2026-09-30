@@ -640,11 +640,11 @@ static void gfx_v12_stage_id(struct AmdgpuDevice *ad, UQUAD base, ULONG id,
 }
 
 /* Load a firmware file; caller FreeVec()s *out. */
-static BOOL gfx_v12_load_fw(const char *name, UBYTE **out, ULONG *out_len)
+static BOOL gfx_v12_load_fw(struct AmdgpuDevice *ad, const char *suffix, UBYTE **out, ULONG *out_len)
 {
     *out = NULL; *out_len = 0;
-    if (!amdgpu_request_firmware(name, out, out_len) || !*out) {
-        bug("[amdgpu-gfx] firmware %s not found\n", name);
+    if (!amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, suffix, out, out_len) || !*out) {
+        bug("[amdgpu-gfx] GC firmware %s not found\n", suffix);
         return FALSE;
     }
     return TRUE;
@@ -687,7 +687,7 @@ static BOOL gfx_v12_build_autoload(struct AmdgpuDevice *ad)
     UQUAD base = GFX_AUTOLOAD_VRAM_OFF;
     BOOL ok = FALSE;
 
-    if (!gfx_v12_load_fw("gc_12_0_0_toc.bin", &toc, &toc_len))
+    if (!gfx_v12_load_fw(ad, "_toc", &toc, &toc_len))
         return FALSE;
     toc_tab_off = le32p(toc + FWH_UCODE_ARRAY_OFF);
     toc_tab_sz  = le32p(toc + FWH_UCODE_SIZE_BYTES);
@@ -707,7 +707,7 @@ static BOOL gfx_v12_build_autoload(struct AmdgpuDevice *ad)
         goto out;
     }
 
-    if (!gfx_v12_load_fw("gc_12_0_0_rlc.bin", &rlc, &rlc_len))
+    if (!gfx_v12_load_fw(ad, "_rlc", &rlc, &rlc_len))
         goto out;
 
     /* RLC_G (id 1): the main RLC ucode (common header ucode). */
@@ -760,8 +760,8 @@ static BOOL gfx_v12_imu_load_microcode(struct AmdgpuDevice *ad)
     ULONG array_off, ver, iram_sz, dram_sz, i;
     const UBYTE *iram, *dram;
 
-    if (!amdgpu_request_firmware("gc_12_0_0_imu.bin", &imu, &imu_len) || !imu) {
-        bug("[amdgpu-gfx] IMU firmware gc_12_0_0_imu.bin not found\n");
+    if (!amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_imu", &imu, &imu_len) || !imu) {
+        bug("[amdgpu-gfx] IMU firmware not found\n");
         return FALSE;
     }
 
@@ -1090,10 +1090,10 @@ static BOOL gfx_v12_config_gfx_rs64(struct AmdgpuDevice *ad)
     ULONG pfp_len = 0, me_len = 0, lo, hi, cc;
 
     gfx_v12_me_snapshot(ad, "before-rs64-config");
-    if (!amdgpu_request_firmware("gc_12_0_0_pfp.bin", &pfp, &pfp_len) || !pfp) {
-        bug("[amdgpu-gfx] config_gfx_rs64: gc_12_0_0_pfp.bin missing\n"); return FALSE; }
-    if (!amdgpu_request_firmware("gc_12_0_0_me.bin", &me, &me_len) || !me) {
-        bug("[amdgpu-gfx] config_gfx_rs64: gc_12_0_0_me.bin missing\n");
+    if (!amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_pfp", &pfp, &pfp_len) || !pfp) {
+        bug("[amdgpu-gfx] config_gfx_rs64: PFP firmware missing\n"); return FALSE; }
+    if (!amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_me", &me, &me_len) || !me) {
+        bug("[amdgpu-gfx] config_gfx_rs64: ME firmware missing\n");
         amdgpu_release_firmware(pfp); return FALSE; }
 
     /* Faithful to Linux gfx_v12_0_config_gfx_rs64 (PSP path): set the PFP start
@@ -1222,8 +1222,8 @@ BOOL gfx_v12_mec_bringup(struct AmdgpuDevice *ad)
     ULONG mec_len = 0, lo, hi, pipe, data, pc_pre, pc_post;
 
     if (!s_fw_ok) {
-        if (!amdgpu_request_firmware("gc_12_0_0_mec.bin", &mec, &mec_len) || !mec) {
-            bug("[amdgpu-gfx] mec-bringup: gc_12_0_0_mec.bin missing\n"); return FALSE; }
+        if (!amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_mec", &mec, &mec_len) || !mec) {
+            bug("[amdgpu-gfx] mec-bringup: MEC firmware missing\n"); return FALSE; }
         s_lo = le32p(mec + FWH2_START_LO); s_hi = le32p(mec + FWH2_START_HI);
         amdgpu_release_firmware(mec);
         s_fw_ok = TRUE;
@@ -1276,13 +1276,16 @@ BOOL gfx_v12_mec_bringup(struct AmdgpuDevice *ad)
  * pipe1 freezes at reset PC 0x4444 with no IC base, so the KIQ ring is never
  * serviced. Giving pipe1 a valid IC/MD base lets it fetch + execute. Leaves grbm
  * selected at (me=3,pipe) for the caller. Returns firmware uc_start (0 = failed). */
-static UQUAD mes_v12_direct_load_pipe(struct AmdgpuDevice *ad, ULONG pipe, CONST_STRPTR fwname, BOOL prime, BOOL load_ic)
+static UQUAD mes_v12_direct_load_pipe(struct AmdgpuDevice *ad, ULONG pipe, CONST_STRPTR fwsuffix, BOOL prime, BOOL load_ic)
 {
     UBYTE *fw = NULL;
     ULONG fw_len = 0, uc_off, uc_sz, dt_off, dt_sz, l;
     UQUAD uc_start, ic_va, md_va;
     APTR icbuf, mdbuf;
+    char fwname[64];
 
+    if (!amdgpu_fw_name(ad, AMDGPU_FW_GC, (const char *)fwsuffix, fwname, sizeof(fwname)))
+        return 0;
     if (!amdgpu_request_firmware(fwname, &fw, &fw_len) || !fw) {
         bug("[amdgpu-mes] direct-load: %s missing\n", fwname); return 0; }
     uc_off = le32p(fw + MESH1_UCODE_OFF); uc_sz = le32p(fw + MESH1_UCODE_SIZE);
@@ -1429,8 +1432,8 @@ BOOL mes_v12_enable(struct AmdgpuDevice *ad)
      * loads BOTH MES pipes and our manual direct-load IC_BASE writes were ineffective
      * (PSP-protected) AND its INVALIDATE/prime can only corrupt the PSP-loaded ucode.
      * We only read the header for each pipe's uc_start to program PRGRM_CNTR. */
-    uc[0] = mes_v12_direct_load_pipe(ad, 0, (CONST_STRPTR)"gc_12_0_0_mes.bin",  FALSE, FALSE);
-    uc[1] = mes_v12_direct_load_pipe(ad, 1, (CONST_STRPTR)"gc_12_0_0_mes1.bin", FALSE, FALSE);
+    uc[0] = mes_v12_direct_load_pipe(ad, 0, (CONST_STRPTR)"_mes",  FALSE, FALSE);
+    uc[1] = mes_v12_direct_load_pipe(ad, 1, (CONST_STRPTR)"_mes1", FALSE, FALSE);
     if (!uc[0] || !uc[1]) {
         bug("[amdgpu-mes] direct-load failed (uc0=%d uc1=%d) — MES enable aborted\n",
             uc[0] ? 1 : 0, uc[1] ? 1 : 0);

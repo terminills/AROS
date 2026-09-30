@@ -105,6 +105,7 @@ static void record_base(struct AmdgpuDevice *ad, UWORD hw_id, UBYTE instance,
     case AMDGPU_SDMA0_HWID: slot = &ad->ip.sdma0; break;
     case AMDGPU_DMU_HWID:   slot = &ad->ip.dmu;   break;
     case AMDGPU_DF_HWID:    slot = &ad->ip.df;    break;
+    case AMDGPU_VCN_HWID:   slot = &ad->ip.vcn;   break;
     default: break;
     }
     /* first instance wins for the slots we track (instance 0) */

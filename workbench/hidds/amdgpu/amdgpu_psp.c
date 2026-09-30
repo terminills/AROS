@@ -782,46 +782,46 @@ static void psp_load_gfx_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
     /* SMC/PMFW next — the RLC autoload relies on the SMU firmware being loaded
      * first (gfx_v12_0.c: "rlc firmware loading relies on smu firmware loaded
      * firstly"); it governs the GFX power rails the PSP ungates at AUTOLOAD_RLC. */
-    if (amdgpu_request_firmware("smu_14_0_2.bin", &smc, &smc_len) && smc) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_SMU, NULL, &smc, &smc_len) && smc) {
         ULONG ao = le32(smc+24), sz = le32(smc+20);
         if (ao && ao + sz <= smc_len)
             psp_stage_load(ad, vram_start, &voff, smc+ao, sz, FWT_SMU, "SMC");
         else
-            bug("[amdgpu-psp] smu_14_0_2.bin header bad (ao=%lu sz=%lu len=%lu)\n",
+            bug("[amdgpu-psp] SMU firmware header bad (ao=%lu sz=%lu len=%lu)\n",
                 (unsigned long)ao, (unsigned long)sz, (unsigned long)smc_len);
         amdgpu_release_firmware(smc);
     } else {
-        bug("[amdgpu-psp] smu_14_0_2.bin MISSING — GFX power rails cannot be ungated\n");
+        bug("[amdgpu-psp] SMU firmware MISSING — GFX power rails cannot be ungated\n");
     }
 
     /* Linux submits the populated firmware array in AMDGPU_UCODE_ID order.
      * GFX12 starts with the single RS64 SDMA payload, then the three CP
      * instruction blobs, and only then the stack entries initialized by
      * gfx_v12_0_init_microcode(). */
-    if (amdgpu_request_firmware("sdma_7_0_0.bin", &sdma, &sdma_len) && sdma) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_SDMA, NULL, &sdma, &sdma_len) && sdma) {
         ULONG ao = le32(sdma+24), sz = le32(sdma+40);
         if (ao && sz && ao + sz <= sdma_len)
             psp_stage_load(ad, vram_start, &voff, sdma+ao, sz,
                            FWT_SDMA_RS64, "SDMA_RS64");
         else
-            bug("[amdgpu-psp] sdma_7_0_0.bin header bad (ao=%lu sz=%lu len=%lu)\n",
+            bug("[amdgpu-psp] SDMA firmware header bad (ao=%lu sz=%lu len=%lu)\n",
                 (unsigned long)ao, (unsigned long)sz, (unsigned long)sdma_len);
     }
 
     /* RS64 CP instruction blobs. */
-    if (amdgpu_request_firmware("gc_12_0_0_pfp.bin", &pfp, &pfp_len) && pfp) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_pfp", &pfp, &pfp_len) && pfp) {
         if (psp_cp_header(pfp, pfp_len, AMDGPU_FIRMWARE_PFP, &pfp_info))
             psp_cp_stage(ad, vram_start, &voff, pfp, &pfp_info, 0, FWT_RS64_PFP, "PFP");
         else
             bug("[amdgpu-psp] PFP CP header invalid; instruction/stack not submitted\n");
     }
-    if (amdgpu_request_firmware("gc_12_0_0_me.bin", &me, &me_len) && me) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_me", &me, &me_len) && me) {
         if (psp_cp_header(me, me_len, AMDGPU_FIRMWARE_ME, &me_info))
             psp_cp_stage(ad, vram_start, &voff, me, &me_info, 0, FWT_RS64_ME, "ME");
         else
             bug("[amdgpu-psp] ME CP header invalid; instruction/stack not submitted\n");
     }
-    if (amdgpu_request_firmware("gc_12_0_0_mec.bin", &mec, &mec_len) && mec) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_mec", &mec, &mec_len) && mec) {
         if (psp_cp_header(mec, mec_len, AMDGPU_FIRMWARE_MEC, &mec_info))
             psp_cp_stage(ad, vram_start, &voff, mec, &mec_info, 0, FWT_RS64_MEC, "MEC");
         else
@@ -847,19 +847,19 @@ static void psp_load_gfx_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
      * drives the KIQ pipe (CP_MES1/MES1_STACK). uni_mes.bin is the UNIFIED-model
      * blob; staging it into both pipes leaves the wrong ucode flavor and the pipes
      * boot but never service their queues. Mirror Linux amdgpu_mes_init_microcode. */
-    if (amdgpu_request_firmware("gc_12_0_0_mes.bin", &mes, &mes_len) && mes) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_mes", &mes, &mes_len) && mes) {
         psp_stage_load(ad, vram_start, &voff, mes+le32(mes+40), le32(mes+36), FWT_CP_MES,    "MES");
         psp_stage_load(ad, vram_start, &voff, mes+le32(mes+52), le32(mes+48), FWT_MES_STACK, "MES_DATA");
         amdgpu_release_firmware(mes); mes = NULL;
     }
-    if (amdgpu_request_firmware("gc_12_0_0_mes1.bin", &mes, &mes_len) && mes) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_mes1", &mes, &mes_len) && mes) {
         psp_stage_load(ad, vram_start, &voff, mes+le32(mes+40), le32(mes+36), FWT_CP_MES1,    "MES1");
         psp_stage_load(ad, vram_start, &voff, mes+le32(mes+52), le32(mes+48), FWT_MES1_STACK, "MES1_DATA");
     }
 
     /* IMU I/D follow the MES pairs in Linux's firmware array. Submit each once
      * through the proven GART path; retain raw VRAM only as the no-GART fallback. */
-    if (amdgpu_request_firmware("gc_12_0_0_imu.bin", &imu, &imu_len) && imu) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_imu", &imu, &imu_len) && imu) {
         ULONG ao = le32(imu+24), i_sz = le32(imu+32), d_sz = le32(imu+40);
         if (ao && ao + i_sz + d_sz <= imu_len) {
             if (ad->gart_ready) {
@@ -882,7 +882,7 @@ static void psp_load_gfx_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
 
     /* RLC sub-components, then RLC_G LAST — Linux loads RLC_G as the final
      * autoload component and fires AUTOLOAD_RLC immediately after it. */
-    if (amdgpu_request_firmware("gc_12_0_0_rlc.bin", &rlc, &rlc_len) && rlc) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_GC, "_rlc", &rlc, &rlc_len) && rlc) {
         psp_stage_load(ad, vram_start, &voff, rlc+le32(rlc+136), le32(rlc+132), FWT_RLC_GPM_MEM,   "RLC_GPM");
         psp_stage_load(ad, vram_start, &voff, rlc+le32(rlc+152), le32(rlc+148), FWT_RLC_SRM_MEM,   "RLC_SRM");
         psp_stage_load(ad, vram_start, &voff, rlc+le32(rlc+160), le32(rlc+156), FWT_RLC_IRAM,      "RLC_IRAM");
@@ -918,7 +918,7 @@ static void psp_load_gfx_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
                 ad->gc_seg[1] + GC1_RLC_RLCS_BOOTLOAD_STATUS));
     }
 
-    if (amdgpu_request_firmware("vcn_5_0_0.bin", &vcn, &vcn_len) && vcn) {
+    if (amdgpu_request_ip_firmware(ad, AMDGPU_FW_VCN, NULL, &vcn, &vcn_len) && vcn) {
         if (vcn_len >= 28) {
             ULONG ao = le32(vcn + 24);
             ULONG sz = le32(vcn + 20);
@@ -931,17 +931,17 @@ static void psp_load_gfx_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
                 psp_stage_load(ad, vram_start, &voff, vcn + ao, sz,
                                FWT_VCN, "VCN");
             } else {
-                bug("[amdgpu-psp] vcn_5_0_0.bin header bad "
+                bug("[amdgpu-psp] VCN firmware header bad "
                     "(ao=%lu sz=%lu len=%lu)\n",
                     (unsigned long)ao, (unsigned long)sz,
                     (unsigned long)vcn_len);
             }
         } else {
-            bug("[amdgpu-psp] vcn_5_0_0.bin too small (%lu bytes)\n",
+            bug("[amdgpu-psp] VCN firmware too small (%lu bytes)\n",
                 (unsigned long)vcn_len);
         }
     } else {
-        bug("[amdgpu-psp] vcn_5_0_0.bin MISSING — VCN command progression "
+        bug("[amdgpu-psp] VCN firmware MISSING — VCN command progression "
             "discriminator unavailable\n");
     }
 
@@ -959,7 +959,7 @@ static void psp_load_gfx_firmware(struct AmdgpuDevice *ad, UQUAD vram_start,
 
 BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
 {
-    static const char * const sos_name = "amdgpu/psp_14_0_2_sos.bin";
+    char sos_name[64];
     UBYTE *fw = NULL;
     ULONG  fwsize = 0;
 
@@ -969,6 +969,10 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
 
     /* Fetch the SOS from DEVS:Firmware/amdgpu. A miss is not fatal in the
      * observe-only ladder — we just cannot bring PSP up yet. */
+    if (!amdgpu_fw_name(ad, AMDGPU_FW_PSP, "_sos", sos_name, sizeof(sos_name))) {
+        D(bug("[amdgpu-psp] cannot name the SOS firmware — deferring PSP bring-up\n"));
+        return TRUE;
+    }
     if (!amdgpu_request_firmware(sos_name, &fw, &fwsize)) {
         D(bug("[amdgpu-psp] SOS '%s' unavailable on disk — deferring PSP bring-up\n",
               sos_name));

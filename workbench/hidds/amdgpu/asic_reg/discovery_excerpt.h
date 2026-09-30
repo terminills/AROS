@@ -74,6 +74,7 @@
 #define AMDGPU_MP0_HWID                 255   /* PSP */
 #define AMDGPU_MP1_HWID                 1     /* SMU */
 #define AMDGPU_PWR_HWID                 10
+#define AMDGPU_VCN_HWID                 12    /* video codec (UVD_HWID) */
 #define AMDGPU_GC_HWID                  11    /* graphics + compute */
 #define AMDGPU_SDMA0_HWID               42
 #define AMDGPU_SDMA1_HWID               43

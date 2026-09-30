@@ -250,3 +250,130 @@ VOID amdgpu_release_firmware(UBYTE *data)
     if (data)
         FreeVec(data);
 }
+
+/* ---- firmware naming ------------------------------------------------------
+ * Microcode files are named the way Linux names them
+ * (amdgpu_ucode_ip_version_decode()), so a linux-firmware amdgpu/ directory
+ * can be dropped into Devs/Firmware/ as it is.
+ *
+ * GPUs of the GFX10 generation have one code name used for every block's
+ * file: sienna_cichlid_pfp.bin, sienna_cichlid_sos.bin, sienna_cichlid_smc.bin,
+ * sienna_cichlid_sdma.bin, sienna_cichlid_vcn.bin. Their GC version identifies
+ * the chip. Later GPUs name each file after that block's own IP version, as
+ * IP discovery reports it: gc_12_0_0_pfp.bin, psp_14_0_2_sos.bin,
+ * smu_14_0_2.bin, sdma_7_0_0.bin, vcn_5_0_0.bin.
+ *
+ * The APUs of that generation (Van Gogh, Yellow Carp) are left out on
+ * purpose: their PSP and SMU files do not follow the chip-name pattern.
+ */
+static const struct {
+    UBYTE major, minor, revision;
+    const char *chip;
+} legacy_chips[] = {
+    { 10, 1, 10, "navi10" },
+    { 10, 1,  1, "navi14" },
+    { 10, 1,  2, "navi12" },
+    { 10, 3,  0, "sienna_cichlid" },    /* Navi 21: RX 6800/6900, Radeon Pro V620 */
+    { 10, 3,  2, "navy_flounder" },     /* Navi 22 */
+    { 10, 3,  4, "dimgrey_cavefish" },  /* Navi 23 */
+    { 10, 3,  5, "beige_goby" },        /* Navi 24 */
+};
+
+static BOOL fw_append(char *buf, ULONG len, ULONG *pos, const char *s)
+{
+    while (*s) {
+        if (*pos + 1 >= len)
+            return FALSE;
+        buf[(*pos)++] = *s++;
+    }
+    buf[*pos] = '\0';
+    return TRUE;
+}
+
+static BOOL fw_append_uint(char *buf, ULONG len, ULONG *pos, ULONG v)
+{
+    char digits[12];
+    ULONG n = 0;
+
+    do {
+        digits[n++] = '0' + (v % 10);
+        v /= 10;
+    } while (v && n < sizeof(digits) - 1);
+
+    while (n) {
+        if (*pos + 1 >= len)
+            return FALSE;
+        buf[(*pos)++] = digits[--n];
+    }
+    buf[*pos] = '\0';
+    return TRUE;
+}
+
+BOOL amdgpu_fw_name(struct AmdgpuDevice *ad, enum AmdgpuFwIp ip,
+                    const char *suffix, char *buf, ULONG len)
+{
+    const struct AmdgpuIpBase *block;
+    const char *ip_name, *legacy_suffix;
+    const char *chip = NULL;
+    ULONG pos = 0, i;
+
+    if (!ad || !buf || len == 0)
+        return FALSE;
+    buf[0] = '\0';
+    if (!suffix)
+        suffix = "";
+
+    switch (ip) {
+    case AMDGPU_FW_GC:   block = &ad->ip.gc;    ip_name = "gc";   legacy_suffix = "";      break;
+    case AMDGPU_FW_PSP:  block = &ad->ip.psp;   ip_name = "psp";  legacy_suffix = "";      break;
+    case AMDGPU_FW_SMU:  block = &ad->ip.smu;   ip_name = "smu";  legacy_suffix = "_smc";  break;
+    case AMDGPU_FW_SDMA: block = &ad->ip.sdma0; ip_name = "sdma"; legacy_suffix = "_sdma"; break;
+    case AMDGPU_FW_VCN:  block = &ad->ip.vcn;   ip_name = "vcn";  legacy_suffix = "_vcn";  break;
+    default:
+        return FALSE;
+    }
+
+    if (ad->ip.gc.valid) {
+        for (i = 0; i < sizeof(legacy_chips) / sizeof(legacy_chips[0]); i++) {
+            if (legacy_chips[i].major == ad->ip.gc.major &&
+                legacy_chips[i].minor == ad->ip.gc.minor &&
+                legacy_chips[i].revision == ad->ip.gc.revision) {
+                chip = legacy_chips[i].chip;
+                break;
+            }
+        }
+    }
+
+    if (chip) {
+        if (!fw_append(buf, len, &pos, chip) ||
+            !fw_append(buf, len, &pos, legacy_suffix))
+            return FALSE;
+    } else {
+        if (!block->valid) {
+            D(bug("[amdgpu-fw] no %s block discovered, cannot name its firmware\n", ip_name));
+            return FALSE;
+        }
+        if (!fw_append(buf, len, &pos, ip_name) ||
+            !fw_append(buf, len, &pos, "_") ||
+            !fw_append_uint(buf, len, &pos, block->major) ||
+            !fw_append(buf, len, &pos, "_") ||
+            !fw_append_uint(buf, len, &pos, block->minor) ||
+            !fw_append(buf, len, &pos, "_") ||
+            !fw_append_uint(buf, len, &pos, block->revision))
+            return FALSE;
+    }
+
+    return fw_append(buf, len, &pos, suffix) && fw_append(buf, len, &pos, ".bin");
+}
+
+BOOL amdgpu_request_ip_firmware(struct AmdgpuDevice *ad, enum AmdgpuFwIp ip,
+                                const char *suffix, UBYTE **data, ULONG *size)
+{
+    char name[64];
+
+    if (data) *data = NULL;
+    if (size) *size = 0;
+    if (!amdgpu_fw_name(ad, ip, suffix, name, sizeof(name)))
+        return FALSE;
+    return amdgpu_request_firmware(name, data, size);
+}

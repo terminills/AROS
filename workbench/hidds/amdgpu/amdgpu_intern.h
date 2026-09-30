@@ -60,6 +60,7 @@ struct AmdgpuIpMap {
     struct AmdgpuIpBase sdma0;
     struct AmdgpuIpBase dmu;      /* display */
     struct AmdgpuIpBase df;       /* data fabric */
+    struct AmdgpuIpBase vcn;      /* video codec */
 };
 
 /* One ATOM display-object connector route, populated from the VBIOS
@@ -213,6 +214,24 @@ BOOL amdgpu_nbio_hw_init(struct AmdgpuDevice *ad);
 
 /* amdgpu_firmware.c — GPU microcode loader (foundation owns firmware) */
 BOOL amdgpu_request_firmware(const char *name, UBYTE **data, ULONG *size);
+
+/* The IP blocks that carry microcode, for amdgpu_fw_name(). */
+enum AmdgpuFwIp {
+    AMDGPU_FW_GC,       /* suffix picks the engine: "_pfp", "_me", "_rlc", ... */
+    AMDGPU_FW_PSP,      /* "_sos", "_ta", "_toc" */
+    AMDGPU_FW_SMU,      /* no suffix */
+    AMDGPU_FW_SDMA,     /* no suffix */
+    AMDGPU_FW_VCN       /* no suffix */
+};
+
+/* Name the microcode file for one IP block of this GPU from the versions IP
+   discovery reported, e.g. "gc_12_0_0_pfp.bin" or "sienna_cichlid_pfp.bin".
+   FALSE if the block was not discovered or buf is too small. */
+BOOL amdgpu_fw_name(struct AmdgpuDevice *ad, enum AmdgpuFwIp ip,
+                    const char *suffix, char *buf, ULONG len);
+/* amdgpu_fw_name() + amdgpu_request_firmware(). */
+BOOL amdgpu_request_ip_firmware(struct AmdgpuDevice *ad, enum AmdgpuFwIp ip,
+                                const char *suffix, UBYTE **data, ULONG *size);
 VOID amdgpu_release_firmware(UBYTE *data);
 
 /* amdgpu_psp.c — Platform Security Processor (MP0): the firmware gateway */
