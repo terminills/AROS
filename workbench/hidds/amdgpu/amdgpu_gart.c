@@ -33,8 +33,8 @@
  * inside the system/FB aperture, so it bypasses the GART untouched. (Same class of
  * GMC re-touch as the display-safe MODE1 reset, 23cce639e4.)
  *
- * All register dword offsets below are from gc_12_0_0_offset.h / mmhub_4_1_0_offset.h
- * (BASE_IDX 0), verified against the Linux tree. amdgpu_rreg32/_wreg32 take a DWORD
+ * GFXHUB register dword offsets below are from gc_12_0_0_offset.h; MMHUB offsets
+ * come from amdgpu_mmhub.c for the discovered MMHUB version (BASE_IDX 0). amdgpu_rreg32/_wreg32 take a DWORD
  * offset into the MMIO aperture; GFXHUB regs add gc_seg[0], MMHUB regs add mmhub.base.
  */
 
@@ -48,6 +48,11 @@
 
 #include "amdgpu_intern.h"
 #include "amdgpu_gart.h"
+#include "amdgpu_mmhub.h"
+
+/* MMHUB registers at this GPU's MMHUB version (amdgpu_mmhub.c). Only used
+ * once amdgpu_gart_enable() has found a map for it. */
+#define MMR(field) (amdgpu_mmhub_regs(ad)->field)
 
 /* CachePreDMA flags (not exported in a public header; drivers define locally — see
  * workbench/hidds/okm/okm_fwsec.c and rom/devs/nvme). */
@@ -76,13 +81,24 @@
 #define GART_ARENA_SIZE      (32UL << 20)                /* 0x2000000 */
 #define GART_FW_VA           ((UQUAD)1 << 20)            /* 0x100000: leave page 0 unmapped */
 
-/* ---- GFX12 PTE bit layout (gmc_v12_0.c:450-468, amdgpu_vm.h) ---- */
+/* ---- PTE bit layout (amdgpu_vm.h) ----
+ * VALID(0)|SYSTEM(1)|SNOOPED(2)|EXE(4)|READ(5)|WRITE(6) are common. The memory
+ * type moved: GFX9/10 put it at bits 48-50 (AMDGPU_PTE_MTYPE_NV10), GFX12 at
+ * bits 54-55 and also sets IS_PTE (bit 63). MTYPE_UC is 3 in both. */
 #define PTE_ADDR_MASK        0x0000FFFFFFFFF000ULL       /* phys page addr bits 47:12 */
-/* VALID(0)|SYSTEM(1)|SNOOPED(2)|EXE(4)|READ(5)|WRITE(6)|MTYPE_UC(3<<54)|IS_PTE(63) */
-#define PTE_SYS_FLAGS        0x80C0000000000077ULL
+#define PTE_SYS_BITS         0x0000000000000077ULL
 /* BAR-mapped local VRAM is WC, not cached system RAM. Start uncached at the
- * GPU as well: VALID|EXE|READ|WRITE|MTYPE_UC|IS_PTE, no SYSTEM or SNOOPED. */
-#define PTE_VRAM_FLAGS       0x80C0000000000071ULL
+ * GPU as well: VALID|EXE|READ|WRITE|MTYPE_UC, no SYSTEM or SNOOPED. */
+#define PTE_VRAM_BITS        0x0000000000000071ULL
+#define PTE_MTYPE_UC_NV10    (3ULL << 48)
+#define PTE_MTYPE_UC_GFX12   ((3ULL << 54) | (1ULL << 63))
+
+static UQUAD gart_pte_mtype_uc(struct AmdgpuDevice *ad)
+{
+    return (ad->gfx_level == AMDGPU_GFX12) ? PTE_MTYPE_UC_GFX12 : PTE_MTYPE_UC_NV10;
+}
+#define PTE_SYS_FLAGS        (PTE_SYS_BITS | gart_pte_mtype_uc(ad))
+#define PTE_VRAM_FLAGS       (PTE_VRAM_BITS | gart_pte_mtype_uc(ad))
 
 struct GartMapping {
     struct Node node;
@@ -142,45 +158,6 @@ void amdgpu_gart_service_init(void)
 #define regGCVM_INVALIDATE_ENG0_ACK                  0x1659
 
 /* ---- MMHUB (mmhub_4_1_0) register dword offsets (add ip.mmhub.base) ---- */
-#define regMMVM_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32   0x05cf
-#define regMMVM_CONTEXT0_PAGE_TABLE_BASE_ADDR_HI32   0x05d0
-#define regMMVM_CONTEXT0_PAGE_TABLE_START_ADDR_LO32  0x05ef
-#define regMMVM_CONTEXT0_PAGE_TABLE_START_ADDR_HI32  0x05f0
-#define regMMVM_CONTEXT0_PAGE_TABLE_END_ADDR_LO32    0x060f
-#define regMMVM_CONTEXT0_PAGE_TABLE_END_ADDR_HI32    0x0610
-#define regMMMC_VM_AGP_TOP                           0x0556
-#define regMMMC_VM_AGP_BOT                           0x0557
-#define regMMMC_VM_AGP_BASE                          0x0558
-#define regMMMC_VM_SYSTEM_APERTURE_LOW_ADDR          0x0559
-#define regMMMC_VM_SYSTEM_APERTURE_HIGH_ADDR         0x055a
-#define regMMMC_VM_SYSTEM_APERTURE_DEFAULT_ADDR_LSB  0x04c8
-#define regMMMC_VM_SYSTEM_APERTURE_DEFAULT_ADDR_MSB  0x04c9
-#define regMMMC_VM_MX_L1_TLB_CNTL                    0x055b
-#define regMMVM_L2_CNTL                              0x04e4
-#define regMMVM_L2_CNTL2                             0x04e5
-#define regMMVM_L2_CNTL3                             0x04e6
-#define regMMVM_L2_PROTECTION_FAULT_CNTL2            0x04ed
-#define regMMVM_L2_PROTECTION_FAULT_STATUS_LO32      0x04f0
-#define regMMVM_L2_PROTECTION_FAULT_STATUS_HI32      0x04f1
-#define regMMVM_L2_PROTECTION_FAULT_ADDR_LO32        0x04f2
-#define regMMVM_L2_PROTECTION_FAULT_ADDR_HI32        0x04f3
-#define regMMVM_L2_PROTECTION_FAULT_DEFAULT_ADDR_LO32 0x04f4
-#define regMMVM_L2_PROTECTION_FAULT_DEFAULT_ADDR_HI32 0x04f5
-#define regMMMC_VM_FB_OFFSET                          0x04c7
-#define regMMVM_L2_CONTEXT1_IDENTITY_APERTURE_LOW_ADDR_LO32  0x04f7
-#define regMMVM_L2_CONTEXT1_IDENTITY_APERTURE_LOW_ADDR_HI32  0x04f8
-#define regMMVM_L2_CONTEXT1_IDENTITY_APERTURE_HIGH_ADDR_LO32 0x04f9
-#define regMMVM_L2_CONTEXT1_IDENTITY_APERTURE_HIGH_ADDR_HI32 0x04fa
-#define regMMVM_L2_CONTEXT_IDENTITY_PHYSICAL_OFFSET_LO32     0x04fb
-#define regMMVM_L2_CONTEXT_IDENTITY_PHYSICAL_OFFSET_HI32     0x04fc
-#define regMMVM_L2_CNTL4                             0x04fd
-#define regMMVM_L2_CNTL5                             0x0503
-#define regMMVM_CONTEXT0_CNTL                        0x0564
-#define regMMVM_INVALIDATE_ENG0_SEM                  0x0575
-#define regMMVM_INVALIDATE_ENG0_REQ                  0x0587
-#define regMMVM_INVALIDATE_ENG0_ACK                  0x0599
-#define regMMVM_INVALIDATE_ENG0_ADDR_RANGE_LO32      0x05ab
-#define regMMVM_INVALIDATE_ENG0_ADDR_RANGE_HI32      0x05ac
 
 /* Engine 17 is the GART/VMID0 invalidation engine; eng_distance = 1 dword. */
 #define GART_INVAL_ENG       17
@@ -198,13 +175,15 @@ void amdgpu_gart_dump_fault(struct AmdgpuDevice *ad, const char *tag)
     ULONG status_lo, status_hi, addr_lo, addr_hi;
     UQUAD fault_va;
 
-    if (!ad->ip.mmhub.valid || !base)
+    if (!ad->ip.mmhub.valid || !base || !amdgpu_mmhub_regs(ad))
         return;
 
-    status_lo = grd(ad, base, regMMVM_L2_PROTECTION_FAULT_STATUS_LO32);
-    status_hi = grd(ad, base, regMMVM_L2_PROTECTION_FAULT_STATUS_HI32);
-    addr_lo = grd(ad, base, regMMVM_L2_PROTECTION_FAULT_ADDR_LO32);
-    addr_hi = grd(ad, base, regMMVM_L2_PROTECTION_FAULT_ADDR_HI32);
+    status_lo = grd(ad, base, MMR(l2_protection_fault_status_lo));
+    /* MMHUB 2.x has a single 32-bit status register */
+    status_hi = MMR(l2_protection_fault_status_hi) ?
+        grd(ad, base, MMR(l2_protection_fault_status_hi)) : 0;
+    addr_lo = grd(ad, base, MMR(l2_protection_fault_addr_lo));
+    addr_hi = grd(ad, base, MMR(l2_protection_fault_addr_hi));
     fault_va = (((UQUAD)(addr_hi & 0xFUL) << 32) | addr_lo) << 12;
 
     bug("[amdgpu-gart] FAULT %-14s status=0x%08lx%08lx addr=0x%08lx%08lx "
@@ -265,46 +244,46 @@ static void gart_program_hub(struct AmdgpuDevice *ad, ULONG base, BOOL mmhub,
     } else {
         ULONG tmp;
 
-        gwr(ad, base, regMMVM_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32, pt_lo);
-        gwr(ad, base, regMMVM_CONTEXT0_PAGE_TABLE_BASE_ADDR_HI32, pt_hi);
-        gwr(ad, base, regMMVM_CONTEXT0_PAGE_TABLE_START_ADDR_LO32, 0);
-        gwr(ad, base, regMMVM_CONTEXT0_PAGE_TABLE_START_ADDR_HI32, 0);
-        gwr(ad, base, regMMVM_CONTEXT0_PAGE_TABLE_END_ADDR_LO32, end_lo);
-        gwr(ad, base, regMMVM_CONTEXT0_PAGE_TABLE_END_ADDR_HI32, 0);
-        gwr(ad, base, regMMMC_VM_AGP_BASE, 0);
-        gwr(ad, base, regMMMC_VM_AGP_BOT, 0x00FFFFFFUL);
-        gwr(ad, base, regMMMC_VM_AGP_TOP, 0);
-        gwr(ad, base, regMMMC_VM_SYSTEM_APERTURE_LOW_ADDR, (ULONG)sys_low);
-        gwr(ad, base, regMMMC_VM_SYSTEM_APERTURE_HIGH_ADDR, (ULONG)sys_high);
-        gwr(ad, base, regMMMC_VM_SYSTEM_APERTURE_DEFAULT_ADDR_LSB,
+        gwr(ad, base, MMR(context0_page_table_base_lo), pt_lo);
+        gwr(ad, base, MMR(context0_page_table_base_hi), pt_hi);
+        gwr(ad, base, MMR(context0_page_table_start_lo), 0);
+        gwr(ad, base, MMR(context0_page_table_start_hi), 0);
+        gwr(ad, base, MMR(context0_page_table_end_lo), end_lo);
+        gwr(ad, base, MMR(context0_page_table_end_hi), 0);
+        gwr(ad, base, MMR(agp_base), 0);
+        gwr(ad, base, MMR(agp_bot), 0x00FFFFFFUL);
+        gwr(ad, base, MMR(agp_top), 0);
+        gwr(ad, base, MMR(system_aperture_low), (ULONG)sys_low);
+        gwr(ad, base, MMR(system_aperture_high), (ULONG)sys_high);
+        gwr(ad, base, MMR(system_aperture_default_lsb),
             (ULONG)(default_mc >> 12));
-        gwr(ad, base, regMMMC_VM_SYSTEM_APERTURE_DEFAULT_ADDR_MSB,
+        gwr(ad, base, MMR(system_aperture_default_msb),
             (ULONG)(default_mc >> 44));
-        gwr(ad, base, regMMVM_L2_PROTECTION_FAULT_DEFAULT_ADDR_LO32,
+        gwr(ad, base, MMR(l2_protection_fault_default_addr_lo),
             (ULONG)(dummy_phys >> 12));
-        gwr(ad, base, regMMVM_L2_PROTECTION_FAULT_DEFAULT_ADDR_HI32,
+        gwr(ad, base, MMR(l2_protection_fault_default_addr_hi),
             (ULONG)(dummy_phys >> 44));
-        tmp = grd(ad, base, regMMVM_L2_PROTECTION_FAULT_CNTL2);
-        gwr(ad, base, regMMVM_L2_PROTECTION_FAULT_CNTL2, tmp | 0x00040000UL);
-        gwr(ad, base, regMMMC_VM_MX_L1_TLB_CNTL, 0x1859);
-        gwr(ad, base, regMMVM_L2_CNTL,  0x00080801UL);
-        tmp = grd(ad, base, regMMVM_L2_CNTL2);
-        gwr(ad, base, regMMVM_L2_CNTL2, tmp | 0x00000003UL);
-        gwr(ad, base, regMMVM_L2_CNTL3, l2_cntl3);
+        tmp = grd(ad, base, MMR(l2_protection_fault_cntl2));
+        gwr(ad, base, MMR(l2_protection_fault_cntl2), tmp | 0x00040000UL);
+        gwr(ad, base, MMR(mx_l1_tlb_cntl), 0x1859);
+        gwr(ad, base, MMR(l2_cntl),  0x00080801UL);
+        tmp = grd(ad, base, MMR(l2_cntl2));
+        gwr(ad, base, MMR(l2_cntl2), tmp | 0x00000003UL);
+        gwr(ad, base, MMR(l2_cntl3), l2_cntl3);
         /* Linux starts from 0xc1 then clears both VMC_TAP_*_PHYSICAL bits. */
-        gwr(ad, base, regMMVM_L2_CNTL4, 0x00000001UL);
-        gwr(ad, base, regMMVM_L2_CNTL5, 0x00003FE0UL);
-        gwr(ad, base, regMMVM_CONTEXT0_CNTL, 0x00000001UL);
+        gwr(ad, base, MMR(l2_cntl4), 0x00000001UL);
+        gwr(ad, base, MMR(l2_cntl5), 0x00003FE0UL);
+        gwr(ad, base, MMR(context0_cntl), 0x00000001UL);
 
         /* Disable context-1 identity translation exactly as mmhub_v4_1_0 does. */
-        gwr(ad, base, regMMVM_L2_CONTEXT1_IDENTITY_APERTURE_LOW_ADDR_LO32,
+        gwr(ad, base, MMR(l2_context1_identity_aperture_low_lo),
             0xFFFFFFFFUL);
-        gwr(ad, base, regMMVM_L2_CONTEXT1_IDENTITY_APERTURE_LOW_ADDR_HI32,
+        gwr(ad, base, MMR(l2_context1_identity_aperture_low_hi),
             0x0000000FUL);
-        gwr(ad, base, regMMVM_L2_CONTEXT1_IDENTITY_APERTURE_HIGH_ADDR_LO32, 0);
-        gwr(ad, base, regMMVM_L2_CONTEXT1_IDENTITY_APERTURE_HIGH_ADDR_HI32, 0);
-        gwr(ad, base, regMMVM_L2_CONTEXT_IDENTITY_PHYSICAL_OFFSET_LO32, 0);
-        gwr(ad, base, regMMVM_L2_CONTEXT_IDENTITY_PHYSICAL_OFFSET_HI32, 0);
+        gwr(ad, base, MMR(l2_context1_identity_aperture_high_lo), 0);
+        gwr(ad, base, MMR(l2_context1_identity_aperture_high_hi), 0);
+        gwr(ad, base, MMR(l2_context_identity_physical_offset_lo), 0);
+        gwr(ad, base, MMR(l2_context_identity_physical_offset_hi), 0);
     }
 }
 
@@ -314,9 +293,9 @@ static void gart_program_mmhub_invalidation(struct AmdgpuDevice *ad, ULONG base)
 {
     ULONG i;
     for (i = 0; i < 18; i++) {
-        gwr(ad, base, regMMVM_INVALIDATE_ENG0_ADDR_RANGE_LO32 + i * 2,
+        gwr(ad, base, MMR(invalidate_eng0_addr_range_lo) + i * 2,
             0xFFFFFFFFUL);
-        gwr(ad, base, regMMVM_INVALIDATE_ENG0_ADDR_RANGE_HI32 + i * 2,
+        gwr(ad, base, MMR(invalidate_eng0_addr_range_hi) + i * 2,
             0x0000001FUL);
     }
 }
@@ -356,9 +335,9 @@ static void gart_program_mmhub_invalidation(struct AmdgpuDevice *ad, ULONG base)
 static BOOL gart_flush_hub(struct AmdgpuDevice *ad, ULONG base, BOOL mmhub)
 {
     static BOOL gfxhub_warned = FALSE;
-    ULONG req_off = (mmhub ? regMMVM_INVALIDATE_ENG0_REQ : regGCVM_INVALIDATE_ENG0_REQ) + GART_INVAL_ENG;
-    ULONG ack_off = (mmhub ? regMMVM_INVALIDATE_ENG0_ACK : regGCVM_INVALIDATE_ENG0_ACK) + GART_INVAL_ENG;
-    ULONG sem_off = regMMVM_INVALIDATE_ENG0_SEM + GART_INVAL_ENG;
+    ULONG req_off = (mmhub ? MMR(invalidate_eng0_req) : regGCVM_INVALIDATE_ENG0_REQ) + GART_INVAL_ENG;
+    ULONG ack_off = (mmhub ? MMR(invalidate_eng0_ack) : regGCVM_INVALIDATE_ENG0_ACK) + GART_INVAL_ENG;
+    ULONG sem_off = MMR(invalidate_eng0_sem) + GART_INVAL_ENG;
     ULONG spins   = mmhub ? 100000 : 2000;   /* bound the pre-wake/no-ACK path */
     ULONG i, ack = 0;
     BOOL acquired = !mmhub;
@@ -581,7 +560,8 @@ BOOL amdgpu_gart_bind_vram_range(struct AmdgpuDevice *ad,
         return FALSE;
     ObtainSemaphore(&gart_map_lock);
     if (!ad->gart_ready || r->attempted || !ad->ip.mmhub.valid ||
-        !ad->ip.mmhub.base || ad->gart_table_mc < GART_TABLE_VRAM_OFF) goto out;
+        !ad->ip.mmhub.base || !amdgpu_mmhub_regs(ad) ||
+        ad->gart_table_mc < GART_TABLE_VRAM_OFF) goto out;
     vram_start = ad->gart_table_mc - GART_TABLE_VRAM_OFF;
     vram_bytes = (UQUAD)ad->vram_mb << 20;
     bytes = (UQUAD)r->npages << GART_PAGE_SHIFT;
@@ -592,7 +572,7 @@ BOOL amdgpu_gart_bind_vram_range(struct AmdgpuDevice *ad,
      * offsets plus vm_manager.vram_base_offset, NOT the CPU BAR or MC window
      * address. Match the same FB_OFFSET conversion already used for our root.
      * The BO service supplies only its own aligned payload's MC address. */
-    fb_offset = grd(ad, ad->ip.mmhub.base, regMMMC_VM_FB_OFFSET);
+    fb_offset = grd(ad, ad->ip.mmhub.base, MMR(fb_offset));
     if (fb_offset == 0xffffffffUL) goto out;
     physical = ((UQUAD)fb_offset << 24) + offset;
     if ((physical & ~PTE_ADDR_MASK) || bytes - GART_PAGE_SIZE > PTE_ADDR_MASK - physical)
@@ -829,6 +809,11 @@ void amdgpu_gart_enable_gfxhub(struct AmdgpuDevice *ad)
     UQUAD sys_low, sys_high, default_mc, dummy_phys;
     ULONG base_lo, cnt;
 
+    if (!ad->ip.gc.valid || ad->ip.gc.major != 12) {
+        bug("[amdgpu-gart] gfxhub: GC %u.%u.%u has no GFXHUB map yet — skipping\n",
+            ad->ip.gc.major, ad->ip.gc.minor, ad->ip.gc.revision);
+        return;
+    }
     if (!ad->gart_ready || !ad->gart_table_mc || !ad->gc_seg[0]) {
         bug("[amdgpu-gart] gfxhub: GART not ready (ready=%d table=0x%08lx%08lx gc0=0x%05lx)"
             " — skipping\n", (int)ad->gart_ready,
@@ -839,7 +824,7 @@ void amdgpu_gart_enable_gfxhub(struct AmdgpuDevice *ad)
     }
 
     vram_start       = ad->gart_table_mc - GART_TABLE_VRAM_OFF;
-    vram_base_offset = (UQUAD)grd(ad, ad->ip.mmhub.base, regMMMC_VM_FB_OFFSET) << 24;
+    vram_base_offset = (UQUAD)grd(ad, ad->ip.mmhub.base, MMR(fb_offset)) << 24;
     pt_base          = vram_base_offset + (ad->gart_table_mc - vram_start);
     pt_base         |= 0x1;                     /* AMDGPU_PTE_VALID */
     fb_start         = vram_start;
@@ -893,6 +878,11 @@ BOOL amdgpu_gart_enable(struct AmdgpuDevice *ad, UQUAD vram_start)
         bug("[amdgpu-gart] MMHUB base unknown — cannot route PSP GTT; GART disabled\n");
         return FALSE;
     }
+    if (!amdgpu_mmhub_regs(ad)) {
+        bug("[amdgpu-gart] MMHUB %u.%u.%u has no register map yet — GART disabled\n",
+            ad->ip.mmhub.major, ad->ip.mmhub.minor, ad->ip.mmhub.revision);
+        return FALSE;
+    }
 
     /* One-time: PAGE-ALIGNED system-RAM arena + VRAM page table. AllocMem only
      * guarantees 8-byte alignment, but a GART PTE addresses a 4KB page (bits 47:12),
@@ -927,7 +917,7 @@ BOOL amdgpu_gart_enable(struct AmdgpuDevice *ad, UQUAD vram_start)
      * register. It converts the VRAM BO to MMHUB physical form by subtracting
      * gmc.vram_start and adding vm_manager.vram_base_offset. On this Navi44 the
      * latter is MMMC_VM_FB_OFFSET << 24 (currently zero). */
-    vram_base_offset = (UQUAD)grd(ad, ad->ip.mmhub.base, regMMMC_VM_FB_OFFSET) << 24;
+    vram_base_offset = (UQUAD)grd(ad, ad->ip.mmhub.base, MMR(fb_offset)) << 24;
     pt_base    = vram_base_offset + (pt_mc - vram_start);
     pt_base   |= 0x1;                              /* AMDGPU_PTE_VALID */
     fb_start   = vram_start;
@@ -966,9 +956,9 @@ BOOL amdgpu_gart_enable(struct AmdgpuDevice *ad, UQUAD vram_start)
         ULONG pte_lo = 0, pte_hi = 0;
         UQUAD expected_pte;
         UQUAD pte_idx = GART_FW_VA >> GART_PAGE_SHIFT;   /* first mapped entry */
-        mm_lo  = grd(ad, ad->ip.mmhub.base, regMMVM_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32);
-        mm_hi  = grd(ad, ad->ip.mmhub.base, regMMVM_CONTEXT0_PAGE_TABLE_BASE_ADDR_HI32);
-        mm_cnt = grd(ad, ad->ip.mmhub.base, regMMVM_CONTEXT0_CNTL);
+        mm_lo  = grd(ad, ad->ip.mmhub.base, MMR(context0_page_table_base_lo));
+        mm_hi  = grd(ad, ad->ip.mmhub.base, MMR(context0_page_table_base_hi));
+        mm_cnt = grd(ad, ad->ip.mmhub.base, MMR(context0_cntl));
         if (ad->gc_seg[0]) {
             gc_lo  = grd(ad, ad->gc_seg[0], regGCVM_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32);
             gc_cnt = grd(ad, ad->gc_seg[0], regGCVM_CONTEXT0_CNTL);

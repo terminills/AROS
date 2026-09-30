@@ -16,6 +16,10 @@
 
 #include "amdgpu_intern.h"
 #include "asic_reg/discovery_excerpt.h"
+#define AMDGPU_PCIIDS_TABLES
+#include "amdgpu_pciids.h"
+#include "amdgpu_mmhub.h"
+#include "amdgpu_linux_ipmap.h"
 
 static const struct AmdgpuPciId amdgpu_ids[] = {
     /* GFX10.3 — RDNA2, Navi 21: the lab's Radeon Pro V620 (headless)
@@ -66,13 +70,62 @@ const struct AmdgpuPciId *amdgpu_identify(UWORD vendorid, UWORD deviceid)
 const char *amdgpu_gfx_level_name(UBYTE level)
 {
     switch (level) {
-    case AMDGPU_GFX8:    return "GFX8 (GCN4/Polaris)";
+    case AMDGPU_GFX6:    return "GFX6 (GCN1/Southern Islands)";
+    case AMDGPU_GFX7:    return "GFX7 (GCN2/Sea Islands)";
+    case AMDGPU_GFX8:    return "GFX8 (GCN3-4/Volcanic Islands)";
     case AMDGPU_GFX9:    return "GFX9 (Vega)";
     case AMDGPU_GFX10_1: return "GFX10.1 (RDNA1)";
     case AMDGPU_GFX10_3: return "GFX10.3 (RDNA2)";
     case AMDGPU_GFX11:   return "GFX11 (RDNA3)";
     case AMDGPU_GFX12:   return "GFX12 (RDNA4)";
     default:             return "unknown";
+    }
+}
+
+void amdgpu_identify_chip(struct AmdgpuDevice *ad)
+{
+    const struct AmdgpuPciIdEntry *e;
+
+    ad->chip = AMDGPU_CHIP_IP_DISCOVERY;
+    ad->chip_flags = 0;
+    for (e = amdgpu_pciids; e->deviceid; e++) {
+        if (e->deviceid == ad->deviceid) {
+            ad->chip = e->chip;
+            ad->chip_flags = e->flags;
+            break;
+        }
+    }
+    ad->family = amdgpu_chip_info[ad->chip].family;
+    if (ad->chip != AMDGPU_CHIP_IP_DISCOVERY) {
+        ad->gfx_level = amdgpu_chip_info[ad->chip].gfx_level;
+        if (!ad->name) {
+            const char *c = amdgpu_chip_info[ad->chip].name;
+            ULONG i = 0;
+            const char *p = "AMD GPU (";
+            while (*p && i < sizeof(ad->namebuf) - 2) ad->namebuf[i++] = *p++;
+            while (*c && i < sizeof(ad->namebuf) - 2) ad->namebuf[i++] = *c++;
+            ad->namebuf[i++] = ')';
+            ad->namebuf[i] = '\0';
+            ad->name = ad->namebuf;
+        }
+    }
+    D(bug("[amdgpu] %04lx: chip %s, family %s, %s%s\n",
+          (unsigned long)ad->deviceid, amdgpu_chip_info[ad->chip].name, ad->family,
+          amdgpu_gfx_level_name(ad->gfx_level),
+          (ad->chip_flags & AMDGPU_PCIID_APU) ? ", APU" : ""));
+}
+
+/* GFX level of a chip found through IP discovery, from its GC version. */
+static UBYTE gfx_level_from_gc(const struct AmdgpuIpBase *gc)
+{
+    if (!gc->valid)
+        return AMDGPU_GFX_UNKNOWN;
+    switch (gc->major) {
+    case 9:  return AMDGPU_GFX9;
+    case 10: return (gc->minor >= 3) ? AMDGPU_GFX10_3 : AMDGPU_GFX10_1;
+    case 11: return AMDGPU_GFX11;
+    case 12: return AMDGPU_GFX12;
+    default: return AMDGPU_GFX_UNKNOWN;
     }
 }
 
@@ -94,7 +147,15 @@ static BOOL ip_common_init(struct AmdgpuDevice *ad)
     ULONG boot_mb = amdgpu_rreg32(ad, AMDGPU_mmRCC_CONFIG_MEMSIZE);
 
     if (boot_mb && amdgpu_discovery_init(ad, boot_mb)) {
+        UBYTE level = gfx_level_from_gc(&ad->ip.gc);
+
         D(bug("[amdgpu] %s: IP discovery parsed\n", ad->name));
+        if (level != AMDGPU_GFX_UNKNOWN && level != ad->gfx_level) {
+            D(bug("[amdgpu] %s: GC %u.%u.%u -> %s\n", ad->name,
+                  ad->ip.gc.major, ad->ip.gc.minor, ad->ip.gc.revision,
+                  amdgpu_gfx_level_name(level)));
+            ad->gfx_level = level;
+        }
     }
 
     ad->vram_mb = amdgpu_get_vram_mb(ad);
@@ -118,17 +179,114 @@ static BOOL ip_common_init(struct AmdgpuDevice *ad)
     return TRUE;
 }
 
+/* ---- which IP versions each block implements ----
+ *
+ * Linux amdgpu drives every GPU from Southern Islands on by picking, per IP
+ * block, the implementation for that block's version. This driver does the
+ * same, and a block whose version has no implementation here is skipped
+ * rather than run with another generation's register map. The log line
+ * names the Linux file that drives it, so a report from any card says what
+ * is missing. GPUs before Navi 1x have no IP discovery table; Linux uses
+ * fixed per-family register maps for them, which this driver does not have
+ * yet, so every hardware block is skipped there. */
+
+static const char *linux_ip_name(UBYTE block, const struct AmdgpuIpBase *ip)
+{
+    const struct AmdgpuLinuxIp *e;
+
+    for (e = amdgpu_linux_ipmap; e->name; e++)
+        if (e->block == block && e->major == ip->major &&
+            e->minor == ip->minor && e->revision == ip->revision)
+            return e->name;
+    return NULL;
+}
+
+/* Linux keys GMC and MES off the GC version, the rest off their own. */
+static BOOL gate_block(struct AmdgpuDevice *ad, const char *block,
+                       const struct AmdgpuIpBase *ip, BOOL implemented,
+                       UBYTE linux_block, const struct AmdgpuIpBase *linux_key)
+{
+    const char *impl;
+
+    if (implemented)
+        return TRUE;
+    if (!ip->valid) {
+        bug("[amdgpu] %s: %s not found by IP discovery (family %s: Linux uses "
+            "fixed per-family register maps there) — skipped\n", ad->name, block,
+            ad->family ? ad->family : "?");
+        return FALSE;
+    }
+    impl = linux_ip_name(linux_block, linux_key ? linux_key : ip);
+    bug("[amdgpu] %s: %s %u.%u.%u not implemented yet (Linux: %s) — skipped\n",
+        ad->name, block, ip->major, ip->minor, ip->revision,
+        impl ? impl : "no match in amdgpu_discovery.c");
+    return FALSE;
+}
+
+static BOOL nbio_supported(struct AmdgpuDevice *ad)
+{
+    /* soc24 common init: only GFX12 parts */
+    return gate_block(ad, "NBIO", &ad->ip.nbio,
+                      ad->ip.gc.valid && ad->ip.gc.major == 12, AMDGPU_LINUX_NBIO, NULL);
+}
+
+static BOOL gmc_supported(struct AmdgpuDevice *ad)
+{
+    return gate_block(ad, "MMHUB", &ad->ip.mmhub,
+                      amdgpu_mmhub_regs(ad) != NULL, AMDGPU_LINUX_GMC, &ad->ip.gc);
+}
+
+static BOOL psp_supported(struct AmdgpuDevice *ad)
+{
+    return gate_block(ad, "PSP (MP0)", &ad->ip.psp,
+                      ad->ip.psp.valid && ad->ip.psp.major == 14, AMDGPU_LINUX_PSP, NULL);
+}
+
+static BOOL smu_supported(struct AmdgpuDevice *ad)
+{
+    return gate_block(ad, "SMU (MP1)", &ad->ip.smu,
+                      ad->ip.smu.valid && ad->ip.smu.major == 14, AMDGPU_LINUX_SMU, NULL);
+}
+
+static BOOL gfx_supported(struct AmdgpuDevice *ad)
+{
+    return gate_block(ad, "GC", &ad->ip.gc,
+                      ad->ip.gc.valid && ad->ip.gc.major == 12, AMDGPU_LINUX_GC, NULL);
+}
+
+static BOOL sdma_supported(struct AmdgpuDevice *ad)
+{
+    return gate_block(ad, "SDMA", &ad->ip.sdma0,
+                      ad->ip.sdma0.valid && ad->ip.sdma0.major == 7, AMDGPU_LINUX_SDMA, NULL);
+}
+
+static BOOL dcn_supported(struct AmdgpuDevice *ad)
+{
+    const struct AmdgpuIpBase *ip = &ad->ip.dmu;
+
+    if (ip->valid && ip->major == 4)
+        return TRUE;
+    if (!ip->valid)
+        bug("[amdgpu] %s: DCN not found by IP discovery (family %s) — skipped\n",
+            ad->name, ad->family ? ad->family : "?");
+    else
+        bug("[amdgpu] %s: DCN %u.%u.%u not implemented yet (Linux: amdgpu_dm, "
+            "DC resource for DCN %u.%u.%u) — skipped\n", ad->name,
+            ip->major, ip->minor, ip->revision, ip->major, ip->minor, ip->revision);
+    return FALSE;
+}
+
 static const struct AmdgpuIpBlock amdgpu_ip_blocks[] = {
-    { "common",  ip_common_init },
-    { "nbio",    amdgpu_nbio_hw_init }, /* Linux soc24 common register init */
-    { "gmc",     amdgpu_gmc_hw_init },  /* memory controller — observe aperture map */
-    { "ih",      NULL },    /* interrupt handler — CS tier */
-    { "psp",     amdgpu_psp_hw_init },  /* firmware security processor — the gateway */
-    { "smu",     amdgpu_smu_hw_init }, /* MP1 mailbox — display/pixel clock (Stage 3 P0) */
-    { "gfx",     amdgpu_gfx_hw_init },  /* GFX12 engine — IMU power-up (P0), CP rings next */
-    { "sdma",    amdgpu_sdma_hw_init }, /* copy engine — the 2D blit path; out of reset only since the SMU feature-enable landed */
-    { "dcn",     amdgpu_dcn_hw_init },  /* display — observe the live scanout */
-    { NULL, NULL }
+    { "common",  ip_common_init,      NULL },
+    { "nbio",    amdgpu_nbio_hw_init, nbio_supported }, /* Linux soc24 common register init */
+    { "gmc",     amdgpu_gmc_hw_init,  gmc_supported },  /* memory controller — observe aperture map */
+    { "ih",      NULL,                NULL },           /* interrupt handler — CS tier */
+    { "psp",     amdgpu_psp_hw_init,  psp_supported },  /* firmware security processor — the gateway */
+    { "smu",     amdgpu_smu_hw_init,  smu_supported },  /* MP1 mailbox — display/pixel clock (Stage 3 P0) */
+    { "gfx",     amdgpu_gfx_hw_init,  gfx_supported },  /* GFX12 engine — IMU power-up (P0), CP rings next */
+    { "sdma",    amdgpu_sdma_hw_init, sdma_supported }, /* copy engine — the 2D blit path */
+    { "dcn",     amdgpu_dcn_hw_init,  dcn_supported },  /* display — observe the live scanout */
+    { NULL, NULL, NULL }
 };
 
 BOOL amdgpu_device_init(struct AmdgpuBase *base, struct AmdgpuDevice *ad)
@@ -180,6 +338,8 @@ BOOL amdgpu_device_init(struct AmdgpuBase *base, struct AmdgpuDevice *ad)
                   ad->name, ip->name));
             continue;
         }
+        if (ip->supported && !ip->supported(ad))
+            continue;
         amdgpu_gfx_state_snapshot(ad, ip->name);
         bug("[amdgpu] ip block '%s' -> enter\n", ip->name);
         if (!ip->hw_init(ad)) {

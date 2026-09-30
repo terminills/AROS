@@ -5,8 +5,8 @@
  * the VRAM MC window, the AGP aperture, and the system (GTT) aperture. This is the
  * foundation a later tier needs to place buffers by MC address (the PSP firmware
  * staging already relies on the VRAM base derived here). Registers live in the
- * MMHUB block (BASE_IDX 0 = the discovered mmhub base); offsets from
- * mmhub_4_1_0_offset.h. No writes.
+ * MMHUB block (BASE_IDX 0 = the discovered mmhub base), at the offsets of its
+ * IP version (amdgpu_mmhub.c). No writes.
  */
 
 #define DEBUG 1
@@ -16,19 +16,11 @@
 
 #include "amdgpu_intern.h"
 #include "amdgpu_vram.h"
-
-/* dword offsets within the MMHUB base (all BASE_IDX 0) */
-#define MMHUB_FB_OFFSET_R      0x04c7
-#define MMHUB_FB_LOC_BASE      0x0554
-#define MMHUB_FB_LOC_TOP       0x0555
-#define MMHUB_AGP_TOP          0x0556
-#define MMHUB_AGP_BOT          0x0557
-#define MMHUB_AGP_BASE         0x0558
-#define MMHUB_SYSAPER_LOW      0x0559
-#define MMHUB_SYSAPER_HIGH     0x055a
+#include "amdgpu_mmhub.h"
 
 BOOL amdgpu_gmc_hw_init(struct AmdgpuDevice *ad)
 {
+    const struct AmdgpuMmhubRegs *r = amdgpu_mmhub_regs(ad);
     ULONG mb, fb_base, fb_top, fb_off, agp_base, agp_top, agp_bot, sa_lo, sa_hi;
     UQUAD vram_start, vram_end;
 
@@ -36,16 +28,21 @@ BOOL amdgpu_gmc_hw_init(struct AmdgpuDevice *ad)
         D(bug("[amdgpu-gmc] no MMHUB block — skipping memory-map read\n"));
         return TRUE;
     }
+    if (!r) {
+        bug("[amdgpu-gmc] MMHUB %u.%u.%u has no register map yet — skipping memory-map read\n",
+            ad->ip.mmhub.major, ad->ip.mmhub.minor, ad->ip.mmhub.revision);
+        return TRUE;
+    }
     mb = ad->ip.mmhub.base;
 
-    fb_base  = amdgpu_rreg32(ad, mb + MMHUB_FB_LOC_BASE);
-    fb_top   = amdgpu_rreg32(ad, mb + MMHUB_FB_LOC_TOP);
-    fb_off   = amdgpu_rreg32(ad, mb + MMHUB_FB_OFFSET_R);
-    agp_base = amdgpu_rreg32(ad, mb + MMHUB_AGP_BASE);
-    agp_top  = amdgpu_rreg32(ad, mb + MMHUB_AGP_TOP);
-    agp_bot  = amdgpu_rreg32(ad, mb + MMHUB_AGP_BOT);
-    sa_lo    = amdgpu_rreg32(ad, mb + MMHUB_SYSAPER_LOW);
-    sa_hi    = amdgpu_rreg32(ad, mb + MMHUB_SYSAPER_HIGH);
+    fb_base  = amdgpu_rreg32(ad, mb + r->fb_location_base);
+    fb_top   = amdgpu_rreg32(ad, mb + r->fb_location_top);
+    fb_off   = amdgpu_rreg32(ad, mb + r->fb_offset);
+    agp_base = amdgpu_rreg32(ad, mb + r->agp_base);
+    agp_top  = amdgpu_rreg32(ad, mb + r->agp_top);
+    agp_bot  = amdgpu_rreg32(ad, mb + r->agp_bot);
+    sa_lo    = amdgpu_rreg32(ad, mb + r->system_aperture_low);
+    sa_hi    = amdgpu_rreg32(ad, mb + r->system_aperture_high);
 
     /* FB base/top are the MC address in 24-bit (16 MiB) units. */
     vram_start = ((UQUAD)(fb_base & 0x00FFFFFFUL)) << 24;

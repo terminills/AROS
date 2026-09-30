@@ -99,31 +99,22 @@ static void amdgpu_record_bars(struct AmdgpuBase *base,
         D(bug("[amdgpu]   BAR%d: 0x%p, %lu KB\n", i, (APTR)pbase,
               (unsigned long)(psize >> 10)));
 
-        /* BAR2 is the doorbell aperture on RDNA (Linux pci_resource_start(pdev,2)),
-         * regardless of size — on Navi44 it is 256 MB, far outside the old 2-8 MB
-         * heuristic, so classify it by index. We only need a small window. */
-        if (i == 2 && !ad->doorbell_phys) {
-            ad->doorbell_phys = pbase;
-            ad->doorbell_size = psize;
-            continue;
-        }
-
-        if (psize >= (256 << 10) && psize <= (1 << 20)) {
-            /* register aperture */
-            if (!ad->rmmio_phys) {
-                ad->rmmio_phys = pbase;
-                ad->rmmio_size = psize;
-            }
-        } else if (psize >= (2 << 20) && psize <= (8 << 20)) {
-            /* doorbell aperture (RDNA) */
-            if (!ad->doorbell_phys) {
-                ad->doorbell_phys = pbase;
-                ad->doorbell_size = psize;
-            }
-        } else if (psize > ad->vram_bar_size) {
-            /* largest BAR = VRAM aperture */
+        /* The BAR layout by index, as Linux amdgpu_device_init() uses it:
+         * BAR0 is the VRAM aperture; from Sea Islands (CIK) on, BAR2 is the
+         * doorbell aperture and BAR5 the register aperture; Southern Islands
+         * (SI) has no doorbells and its registers are in BAR2. */
+        if (i == 0) {
             ad->vram_bar_phys = pbase;
             ad->vram_bar_size = psize;
+        } else if (i == 2 && ad->gfx_level == AMDGPU_GFX6) {
+            ad->rmmio_phys = pbase;
+            ad->rmmio_size = psize;
+        } else if (i == 2) {
+            ad->doorbell_phys = pbase;
+            ad->doorbell_size = psize;
+        } else if (i == 5 && ad->gfx_level != AMDGPU_GFX6) {
+            ad->rmmio_phys = pbase;
+            ad->rmmio_size = psize;
         }
     }
 }
@@ -188,14 +179,16 @@ static AROS_UFH3(void, amdgpu_enum_cb,
               amdgpu_gfx_level_name(id->gfx_level),
               id->tested ? "" : " (not lab-validated yet)"));
     } else {
-        ad->gfx_level = AMDGPU_GFX_UNKNOWN;   /* resolved by IP discovery */
+        ad->gfx_level = AMDGPU_GFX_UNKNOWN;   /* from the chip table or IP discovery */
         ad->tested    = FALSE;
-        ad->name      = "AMD GPU (via IP discovery)";
-        D(bug("[amdgpu] found %04lx:%04lx rev %02lx — not in amdgpu_ids[]; "
-              "identifying via IP discovery (no table entry needed)\n",
+        ad->name      = NULL;
+        D(bug("[amdgpu] found %04lx:%04lx rev %02lx — no marketing name in amdgpu_ids[]\n",
               (unsigned long)vendorid, (unsigned long)deviceid,
               (unsigned long)revision));
     }
+    amdgpu_identify_chip(ad);
+    if (!ad->name)
+        ad->name = "AMD GPU (via IP discovery)";
     amdgpu_record_bars(base, ad);
 
     AddTail((struct List *)&base->devices, (struct Node *)ad);

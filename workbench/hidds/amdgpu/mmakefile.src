@@ -32,6 +32,7 @@ AMDGPU_SOURCES := \
     amdgpu_dcn \
     amdgpu_display \
     amdgpu_gmc \
+    amdgpu_mmhub \
     amdgpu_gart \
     amdgpu_gfx \
     amdgpu_sdma \
@@ -258,7 +259,7 @@ USER_CPPFLAGS := \
 # C: like AmdgpuProbe; a deliberate run exercises the reset search.
 %build_prog mmake=hidd-amdgpu-gfxreset \
     progname=GfxResetProbe \
-    files="test/GfxResetProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_vram amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    files="test/GfxResetProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_vram amdgpu_device amdgpu_mmhub amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
     uselibs="oop" \
     targetdir=$(AROS_C)
 
@@ -272,7 +273,7 @@ USER_CPPFLAGS := \
 # 35-minute seed/deploy/boot cycle. Ships in C: like the other probes.
 %build_prog mmake=hidd-amdgpu-fbprobe \
     progname=FbProbe \
-    files="test/FbProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    files="test/FbProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_mmhub amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
     uselibs="oop" \
     targetdir=$(AROS_C)
 
@@ -287,7 +288,7 @@ USER_CPPFLAGS := \
 # the scanout) can be tested for reachability.
 %build_prog mmake=hidd-amdgpu-fbpattern \
     progname=FbPattern \
-    files="test/FbPattern amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_vram amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    files="test/FbPattern amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_mmhub amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_vram amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
     uselibs="oop" \
     targetdir=$(AROS_C)
 
@@ -300,7 +301,7 @@ USER_CPPFLAGS := \
 # panel until reboot -- an acceptable and deliberate trade on a test rig.
 %build_prog mmake=hidd-amdgpu-dcnpoke \
     progname=DcnPoke \
-    files="test/DcnPoke amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    files="test/DcnPoke amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_mmhub amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
     uselibs="oop" \
     targetdir=$(AROS_C)
 
@@ -327,7 +328,7 @@ USER_CPPFLAGS := \
 
 %build_prog mmake=hidd-amdgpu-mesprobe \
     progname=MesProbe \
-    files="test/MesProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
+    files="test/MesProbe amdgpu_pci amdgpu_mmio amdgpu_discovery amdgpu_nbio amdgpu_reset amdgpu_smu amdgpu_device amdgpu_mmhub amdgpu_query amdgpu_firmware amdgpu_gmc amdgpu_psp amdgpu_dcn amdgpu_gfx amdgpu_sdma amdgpu_cursor amdgpu_gart amdgpu_modeset amdgpu_atom amdgpu_display atom_bios" \
     uselibs="oop" \
     targetdir=$(AROS_C)
 

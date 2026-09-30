@@ -24,6 +24,7 @@
 #include <proto/exec.h>
 
 #include "amdgpu_intern.h"
+#include "amdgpu_mmhub.h"
 #include "amdgpu_vram.h"
 #include "amdgpu_query_internal.h"
 
@@ -85,9 +86,6 @@ static inline ULONG le32(const UBYTE *b)
  * (ad->ip.mmhub.base, 0x1a000 on Navi 44), from Linux mmhub_4_1_0_offset.h
  * (BASE_IDX 0). The VRAM MC start = (FB_LOCATION_BASE & 0xFFFFFF) << 24; the PSP
  * DMAs firmware by MC address, so a VRAM-staged SOS sits at vram_start + offset. */
-#define MMHUB_FB_LOCATION_BASE  0x0554
-#define MMHUB_FB_LOCATION_TOP   0x0555
-#define MMHUB_FB_OFFSET         0x04c7
 
 /* psp_fw_type enum values (amdgpu_ucode.h) — the bootloader-stage components. */
 #define PSP_FW_TYPE_SOS       1
@@ -1057,11 +1055,12 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
      * stage 421 KB and issue a real load command to the silicon:
      *   (a) the VRAM MC base (vram_start) the PSP addresses firmware by, and
      *   (b) that our VRAM write path works (needed to stage the SOS into VRAM). */
-    if (ad->rmmio && ad->ip.mmhub.valid) {
+    if (ad->rmmio && ad->ip.mmhub.valid && amdgpu_mmhub_regs(ad)) {
+        const struct AmdgpuMmhubRegs *mr = amdgpu_mmhub_regs(ad);
         ULONG mb      = ad->ip.mmhub.base;
-        ULONG fb_base = amdgpu_rreg32(ad, mb + MMHUB_FB_LOCATION_BASE);
-        ULONG fb_top  = amdgpu_rreg32(ad, mb + MMHUB_FB_LOCATION_TOP);
-        ULONG fb_off  = amdgpu_rreg32(ad, mb + MMHUB_FB_OFFSET);
+        ULONG fb_base = amdgpu_rreg32(ad, mb + mr->fb_location_base);
+        ULONG fb_top  = amdgpu_rreg32(ad, mb + mr->fb_location_top);
+        ULONG fb_off  = amdgpu_rreg32(ad, mb + mr->fb_offset);
         UQUAD vram_start = ((UQUAD)(fb_base & 0x00FFFFFFUL)) << 24;
 
         D(bug("[amdgpu-psp] mmhub@0x%05lx FB_LOCATION_BASE=0x%08lx TOP=0x%08lx OFFSET=0x%08lx\n",
@@ -1104,12 +1103,12 @@ BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad)
      * security processor executes our firmware. Only attempted when the bootloader
      * is ready and the sOS is not already up; every poll is bounded so a wedged PSP
      * is recoverable by power-cycle, never an infinite hang. */
-    if (fw && ad->rmmio && ad->ip.psp.valid && ad->ip.mmhub.valid) {
+    if (fw && ad->rmmio && ad->ip.psp.valid && ad->ip.mmhub.valid && amdgpu_mmhub_regs(ad)) {
         ULONG base = ad->ip.psp.base;
         ULONG mb   = ad->ip.mmhub.base;
         ULONG sol0 = amdgpu_rreg32(ad, base + MP0_C2PMSG_81);
         UQUAD vram_start =
-            ((UQUAD)(amdgpu_rreg32(ad, mb + MMHUB_FB_LOCATION_BASE) & 0x00FFFFFFUL)) << 24;
+            ((UQUAD)(amdgpu_rreg32(ad, mb + amdgpu_mmhub_regs(ad)->fb_location_base) & 0x00FFFFFFUL)) << 24;
 
         if (sol0 != 0) {
             D(bug("[amdgpu-psp] sign-of-life already set (0x%08lx) — sOS up; skipping load\n",

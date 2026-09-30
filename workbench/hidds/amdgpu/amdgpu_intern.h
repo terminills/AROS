@@ -16,9 +16,10 @@
 #include <exec/semaphores.h>
 #include <oop/oop.h>
 
-/* GFX levels we recognise. Floor is GFX8 (Polaris) per the decision
-   record; tier-1 validated hardware is GFX10.3 (V620) and GFX12
-   (RX 9060 XT) — the cards the lab has access to today. */
+/* GFX levels, covering every generation Linux amdgpu drives (SI onwards).
+   The numeric values are part of the query API (AmdgpuGpuInfo.gfx_level),
+   so new levels are appended rather than inserted in order. Tier-1
+   validated hardware is GFX10.3 (V620) and GFX12 (RX 9060 XT). */
 enum amdgpu_gfx_level {
     AMDGPU_GFX_UNKNOWN = 0,
     AMDGPU_GFX8,        /* Polaris — DCE 11.2, no PSP (delayed: cards untested) */
@@ -27,6 +28,8 @@ enum amdgpu_gfx_level {
     AMDGPU_GFX10_3,     /* RDNA2  Navi 2x — V620 */
     AMDGPU_GFX11,       /* RDNA3  Navi 3x */
     AMDGPU_GFX12,       /* RDNA4  Navi 4x — RX 9060 XT */
+    AMDGPU_GFX6,        /* GCN1   Southern Islands */
+    AMDGPU_GFX7,        /* GCN2   Sea Islands */
 };
 
 struct AmdgpuPciId {
@@ -95,6 +98,10 @@ struct AmdgpuDevice {
     UBYTE               gfx_level;
     UBYTE               tested;
     const char         *name;
+    UBYTE               chip;           /* enum amdgpu_chip, or IP_DISCOVERY */
+    UBYTE               chip_flags;     /* AMDGPU_PCIID_* */
+    const char         *family;         /* Linux family: SI, CIK, VI, AI, NV, discovery */
+    char                namebuf[48];
 
     /* register aperture (the small MMIO BAR) */
     IPTR                rmmio_phys;
@@ -179,6 +186,10 @@ struct AmdgpuDevice {
 struct AmdgpuIpBlock {
     const char *name;
     BOOL (*hw_init)(struct AmdgpuDevice *ad);   /* NULL = not yet implemented */
+    /* NULL = runs on every GPU. Otherwise FALSE when this GPU's version of
+       the block has no implementation: the gate logs why, and the ladder
+       skips the block without touching its registers. */
+    BOOL (*supported)(struct AmdgpuDevice *ad);
 };
 
 struct AmdgpuBase {
@@ -485,5 +496,8 @@ void  amdgpu_gart_unmap(struct AmdgpuDevice *ad, UQUAD va, ULONG size);
 #include <hidd/amdgpu.h>
 BOOL amdgpu_device_init(struct AmdgpuBase *base, struct AmdgpuDevice *ad);
 const char *amdgpu_gfx_level_name(UBYTE level);
+/* Fill chip, chip_flags, family and (for listed chips) gfx_level from the
+   PCI device ID, as Linux amdgpu's pciidlist does. */
+void amdgpu_identify_chip(struct AmdgpuDevice *ad);
 
 #endif /* AMDGPU_INTERN_H */

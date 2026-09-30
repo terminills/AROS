@@ -41,6 +41,7 @@
 #include <errno.h>
 
 #include "amdgpu_intern.h"
+#include "amdgpu_mmhub.h"
 #include "amdgpu_gfx_mqd.h"
 #include "amdgpu_gfx_csb.h"
 #include "amdgpu_cs.h"
@@ -115,8 +116,6 @@ static ULONG *gfx_alloc_queue_buffer(struct AmdgpuDevice *ad,
 #define regRLC_RLCS_BOOTLOAD_STATUS        0x4e7c
 #define RLC_BOOTLOAD_COMPLETE              0x80000000UL
 
-/* MMHUB FB location (GC golden FB values mirror the live display's aperture) */
-#define MMHUB_FB_LOCATION_TOP             0x0555
 
 /* Registers whose golden data is computed at runtime (imu_v12_0.c overrides). */
 #define regGCMC_VM_FB_LOCATION_BASE_OFF   0x1614
@@ -439,8 +438,6 @@ static ULONG *gfx_alloc_queue_buffer(struct AmdgpuDevice *ad,
  * gpu_addr - gmc.vram_start). */
 #define GFX_AUTOLOAD_VRAM_OFF   ((UQUAD)320 << 20)
 
-/* MMHUB FB location (to derive the VRAM MC base, as amdgpu_psp.c does) */
-#define MMHUB_FB_LOCATION_BASE  0x0554
 
 /* ---- SOC24 autoload firmware IDs + TOC decode (amdgpu_rlc.h) ---- */
 #define SOC24_FW_MAX               43
@@ -914,9 +911,10 @@ static const struct imu_golden gfx12_imu_golden[] = {
  * power-up. FB/AGP entries take the live display's aperture. */
 static void gfx_v12_program_rlc_ram(struct AmdgpuDevice *ad)
 {
-    ULONG mmhub  = ad->ip.mmhub.valid ? ad->ip.mmhub.base : 0;
-    ULONG fb_base = mmhub ? (amdgpu_rreg32(ad, mmhub + MMHUB_FB_LOCATION_BASE) & 0x00FFFFFFUL) : 0;
-    ULONG fb_top  = mmhub ? (amdgpu_rreg32(ad, mmhub + MMHUB_FB_LOCATION_TOP)  & 0x00FFFFFFUL) : 0;
+    const struct AmdgpuMmhubRegs *mr = amdgpu_mmhub_regs(ad);
+    ULONG mmhub  = (ad->ip.mmhub.valid && mr) ? ad->ip.mmhub.base : 0;
+    ULONG fb_base = mmhub ? (amdgpu_rreg32(ad, mmhub + mr->fb_location_base) & 0x00FFFFFFUL) : 0;
+    ULONG fb_top  = mmhub ? (amdgpu_rreg32(ad, mmhub + mr->fb_location_top)  & 0x00FFFFFFUL) : 0;
     ULONG i, n = sizeof(gfx12_imu_golden) / sizeof(gfx12_imu_golden[0]);
 
     gc1_w(ad, regGFX_IMU_RLC_RAM_INDEX, 0x2);
