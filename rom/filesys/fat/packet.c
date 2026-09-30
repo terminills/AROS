@@ -13,6 +13,7 @@
 #include <exec/types.h>
 #include <exec/execbase.h>
 #include <dos/dosextens.h>
+#include <dos/dos64.h>
 #include <dos/filehandler.h>
 #include <dos/notify.h>
 #include <devices/inputevent.h>
@@ -340,6 +341,66 @@ void ProcessPackets(struct Globals *glob)
 
                 break;
             }
+
+#if (__WORDSIZE == 64)
+        /*
+         * 64-bit packets (MorphOS style: the whole offset in one argument),
+         * which dos64.library and posixc use to reach files past 2 GiB.
+         * FAT32 files are up to 4 GiB and their positions and sizes are
+         * already kept unsigned here; only the 32-bit ACTION_SEEK stopped
+         * at 2 GiB (reads of a 2.4 GiB game archive failed with EOVERFLOW).
+         */
+        case ACTION_SEEK64:
+            {
+                struct ExtFileLock *fl = BADDR(pkt->dp_Arg1);
+                QUAD offset = (QUAD)(SIPTR)pkt->dp_Arg2;
+                ULONG whence = pkt->dp_Arg3;
+                QUAD target;
+
+                if ((err = TestLock(fl, glob)))
+                {
+                    res = -1;
+                    break;
+                }
+
+                if (whence == OFFSET_BEGINNING)
+                    target = offset;
+                else if (whence == OFFSET_CURRENT)
+                    target = (QUAD)fl->pos + offset;
+                else if (whence == OFFSET_END)
+                    target = (QUAD)fl->gl->size + offset;
+                else
+                    target = -1;
+
+                if (target < 0 || target > (QUAD)fl->gl->size)
+                {
+                    res = -1;
+                    err = ERROR_SEEK_ERROR;
+                    break;
+                }
+
+                /* Like ACTION_SEEK, return the previous position */
+                res = fl->pos;
+                fl->pos = (ULONG)target;
+                err = 0;
+                break;
+            }
+
+        case ACTION_GET_FILE_SIZE64:
+            {
+                struct ExtFileLock *fl = BADDR(pkt->dp_Arg1);
+
+                if ((err = TestLock(fl, glob)))
+                {
+                    res = -1;
+                    break;
+                }
+
+                res = fl->gl->size;
+                err = 0;
+                break;
+            }
+#endif
 
         case ACTION_SET_FILE_SIZE:
             {
