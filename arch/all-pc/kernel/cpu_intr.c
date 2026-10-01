@@ -462,9 +462,15 @@ SAVE_XMM_INTO_AREA(localarea)
                         IPTR *sp = (IPTR *)EXCTX_SP(regs);
                         int di;
 
+#if defined(__x86_64__)
                         bug("[GP-DBG] IP=%p SP=%p BP=%p CS=%p FLAGS=%p\n",
                             (APTR)EXCTX_IP(regs), (APTR)sp, (APTR)regs->rbp,
                             (APTR)regs->cs, (APTR)regs->rflags);
+#else
+                        bug("[GP-DBG] IP=%p SP=%p BP=%p CS=%p FLAGS=%p\n",
+                            (APTR)EXCTX_IP(regs), (APTR)sp, (APTR)regs->ebp,
+                            (APTR)regs->cs, (APTR)regs->eflags);
+#endif
                         for (di = -4; di < 12; di++)
                             bug("[GP-STK] %+04d %p\n", di * (int)sizeof(IPTR),
                                 (APTR)sp[di]);
