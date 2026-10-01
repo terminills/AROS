@@ -1453,3 +1453,22 @@ diff --color -ruN llvm-20.1.0.src/lib/TargetParser/Triple.cpp llvm-20.1.0.src.ar
      .StartsWith("darwin", Triple::Darwin)
      .StartsWith("dragonfly", Triple::DragonFly)
      .StartsWith("freebsd", Triple::FreeBSD)
+diff --color -ruN llvm-20.1.0.src/include/llvm/Support/Threading.h llvm-20.1.0.src.aros/include/llvm/Support/Threading.h
+--- llvm-20.1.0.src/include/llvm/Support/Threading.h	2026-09-30 21:23:54.353116664 -0500
++++ llvm-20.1.0.src.aros/include/llvm/Support/Threading.h	2026-09-30 21:24:08.563001112 -0500
+@@ -26,10 +26,13 @@
+ #define LLVM_THREADING_USE_STD_CALL_ONCE 1
+ #elif defined(LLVM_ON_UNIX) &&                                                 \
+     (defined(_LIBCPP_VERSION) ||                                               \
+-     !(defined(__NetBSD__) || defined(__OpenBSD__) || defined(__powerpc__)))
++     !(defined(__NetBSD__) || defined(__OpenBSD__) || defined(__powerpc__) ||  \
++       defined(__AROS__)))
+ // std::call_once from libc++ is used on all Unix platforms. Other
+ // implementations like libstdc++ are known to have problems on NetBSD,
+-// OpenBSD and PowerPC.
++// OpenBSD and PowerPC. AROS's libstdc++ has no TLS, so its std::call_once
++// holds one global mutex across pthread_once; that deadlocks when a pass
++// initializer reaches call_once from inside another one on a second thread.
+ #define LLVM_THREADING_USE_STD_CALL_ONCE 1
+ #elif defined(LLVM_ON_UNIX) &&                                                 \
+     (defined(__powerpc__) && defined(__LITTLE_ENDIAN__))
