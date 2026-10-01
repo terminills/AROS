@@ -179,8 +179,11 @@ int main(void)
         {
             bug("[smptimerjitter] cannot create remote task\n");
             fail++;
+            /* Only ours to free when no task took it: a created task's
+             * mask becomes its iet_CpuAffinity, which exec frees when the
+             * task ends - freeing it here as well is a double free. */
+            KrnFreeCPUMask(affinity);
         }
-        KrnFreeCPUMask(affinity);
         FreeSignal(sig);
     }
 

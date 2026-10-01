@@ -142,7 +142,13 @@ int main(void)
                                           TASKTAG_AFFINITY, (IPTR)mask,
                                           TASKTAG_USERDATA, (IPTR)&g_workers[i],
                                           TAG_DONE);
-        KrnFreeCPUMask(mask);
+        /*
+         * A created task keeps the mask as its iet_CpuAffinity and exec
+         * frees it when the task ends. Freeing it here left every worker
+         * with a dangling affinity: READY, never scheduled, ops=0.
+         */
+        if (!g_workers[i].task)
+            KrnFreeCPUMask(mask);
         if (!g_workers[i].task)
         {
             bug("[smpsemstorm] cannot create worker %lu\n", i);
