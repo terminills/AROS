@@ -206,6 +206,7 @@ LONG pkg_sources_save(struct PkgContext *ctx)
     }
     rc = pkg_write_stanzas(pkg_basepath(ctx, PKG_SOURCESFILE, NULL, path, sizeof path), head);
     pkg_stanza_free(head);
+    if (rc) pkg_set_error(ctx, "cannot write %s", path);
     return rc;
 }
 
@@ -299,7 +300,8 @@ LONG pkg_trust_add(struct PkgContext *ctx, CONST_STRPTR pubfile)
     { TEXT f[40]; snprintf(f, sizeof f, "%s.pub", keyid); pkg_basepath(ctx, PKG_TRUSTDIR, f, path, sizeof path); }
     rc = pkg_file_write(path, buf, 32);
     free(buf);
-    if (rc == 0) pkg_log(ctx, "trusted key %s added", keyid);
+    if (rc) pkg_set_error(ctx, "cannot write %s", path);
+    else pkg_log(ctx, "trusted key %s added", keyid);
     return rc;
 }
 
