@@ -44,6 +44,8 @@
 #define PKGX_INSTALLROOT   "X-InstallRoot"
 #define PKGX_INSTALLDATE   "X-InstallDate"
 #define PKGX_INSTALLEDVER  "X-InstalledVersion"
+#define PKGX_ASSIGNS       "X-Assigns"           /* Installer (makeassign)s     */
+#define PKGX_USERSTARTUP   "X-UserStartup"       /* Installer (startup) sections */
 
 struct PkgContext
 {

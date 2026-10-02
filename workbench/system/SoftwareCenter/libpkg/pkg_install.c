@@ -428,7 +428,16 @@ static void remove_files(struct PkgContext *ctx, CONST_STRPTR name, struct List 
         if (kept) continue;
 
         SetProtection(n->ln_Name, 0);
-        DeleteFile(n->ln_Name);
+        if (!DeleteFile(n->ln_Name))
+        {
+            LONG err = IoErr();
+            if (err != ERROR_OBJECT_NOT_FOUND)
+            {
+                TEXT why[80];
+                Fault(err, NULL, why, sizeof why);
+                pkg_log(ctx, "%s: cannot delete %s: %s", name, n->ln_Name, why);
+            }
+        }
         snprintf(save, sizeof save, "%s.pkgsave", n->ln_Name);
         if (pkg_file_exists(save)) Rename(save, n->ln_Name);
 
@@ -491,6 +500,172 @@ static LONG run_startup(struct PkgContext *ctx, CONST_STRPTR name, CONST_STRPTR 
 }
 
 /* ------------------------------------------------------------------------ */
+/* Installer-script packages (§4.5)                                          */
+
+/* Drop the ;BEGIN <section> ... ;END <section> block Installer's
+   (startup) wrote into S:User-Startup. */
+static void strip_userstartup(CONST_STRPTR section)
+{
+    BPTR in, out;
+    TEXT line[1024];
+    BOOL skip = FALSE, changed = FALSE;
+    ULONG sl = strlen(section);
+
+    if (!(in = Open("S:User-Startup", MODE_OLDFILE))) return;
+    if (!(out = Open("S:User-Startup.pkgtmp", MODE_NEWFILE))) { Close(in); return; }
+    while (FGets(in, line, sizeof line))
+    {
+        ULONG l = strlen(line);
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
+        if (!skip && strnicmp(line, ";BEGIN ", 7) == 0 && l == 7 + sl && strcmp(line + 7, section) == 0)
+        {
+            skip = changed = TRUE;
+            continue;
+        }
+        if (skip)
+        {
+            if (strnicmp(line, ";END ", 5) == 0 && l == 5 + sl && strcmp(line + 5, section) == 0) skip = FALSE;
+            continue;
+        }
+        FPuts(out, line);
+        FPutC(out, '\n');
+    }
+    Close(in);
+    Close(out);
+    if (changed && DeleteFile("S:User-Startup")) Rename("S:User-Startup.pkgtmp", "S:User-Startup");
+    else DeleteFile("S:User-Startup.pkgtmp");
+}
+
+/* Append " <word>" to a space-separated stanza value kept in buf. */
+static void add_word(STRPTR buf, ULONG buflen, CONST_STRPTR word)
+{
+    if (buf[0]) strlcat(buf, " ", buflen);
+    strlcat(buf, word, buflen);
+}
+
+/* Installer's installed-files registry entry for an application (see the
+   Installer Documentation): the drawer ENV:Installer/Registry names, else
+   SYS:Prefs/Installer/Registry, then APPNAME. */
+static void registry_entry(CONST_STRPTR name, STRPTR path, ULONG len)
+{
+    if (GetVar("Installer/Registry", path, len, 0) <= 0)
+        strlcpy(path, "SYS:Prefs/Installer/Registry", len);
+    AddPart(path, name, len);
+}
+
+/* Read a registry entry: F/D lines are what the package owns, A and S are
+   undone separately on removal, T (tooltype edits) cannot be undone. */
+static void read_registry(CONST_STRPTR path, struct List *files, STRPTR assigns, STRPTR sections, ULONG len)
+{
+    BPTR fh = Open(path, MODE_OLDFILE);
+    TEXT line[PKG_PATHLEN + 4];
+
+    assigns[0] = sections[0] = 0;
+    if (!fh) return;
+    while (FGets(fh, line, sizeof line))
+    {
+        ULONG l = strlen(line);
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
+        if (l < 3 || line[1] != ' ') continue;
+        switch (line[0])
+        {
+        case 'F': case 'D': pkg_namelist_add(files, line + 2); break;
+        case 'A': add_word(assigns, len, line + 2); break;
+        case 'S': if (!strchr(line + 2, ' ')) add_word(sections, len, line + 2); break;
+        }
+    }
+    Close(fh);
+}
+
+/* Undo the assigns and User-Startup sections an Installer run recorded. */
+static void undo_installer_extras(CONST_STRPTR assigns, CONST_STRPTR sections)
+{
+    TEXT word[128];
+    const char *p, *e;
+
+    for (p = assigns; p && *p; p = *e ? e + 1 : e)
+    {
+        e = strchr(p, ' ');
+        if (!e) e = p + strlen(p);
+        if ((ULONG)(e - p) < sizeof word)
+        {
+            memcpy(word, p, e - p);
+            word[e - p] = 0;
+            AssignLock(word, BNULL);
+        }
+    }
+    for (p = sections; p && *p; p = *e ? e + 1 : e)
+    {
+        e = strchr(p, ' ');
+        if (!e) e = p + strlen(p);
+        if ((ULONG)(e - p) < sizeof word)
+        {
+            memcpy(word, p, e - p);
+            word[e - p] = 0;
+            strip_userstartup(word);
+        }
+    }
+}
+
+/* Unpack the archive's files/ tree into a staging drawer, run the package's
+   own Installer script from there, and take the file list from Installer's
+   registry entry for it.  The script decides where things go, so ownership checks and
+   .pkgsave backups do not apply; removal is still exact. */
+static LONG run_installer(struct PkgContext *ctx, CONST_STRPTR local, struct pkg_stanza *rec,
+                          ULONG nentries, struct List *files, STRPTR assigns, STRPTR sections, ULONG len)
+{
+    const char *name   = pkg_stanza_get(rec, "Package");
+    const char *script = pkg_stanza_get(rec, "Installer");
+    TEXT stage[PKG_PATHLEN], regentry[PKG_PATHLEN], logfile[PKG_PATHLEN], cmd[PKG_PATHLEN * 3];
+    struct List staged;
+    BPTR dir, olddir, in, out;
+    LONG rc;
+
+    NewList(&staged);
+    snprintf(stage, sizeof stage, "%s/.Staging-%s", ctx->PkgRoot, name);
+    pkg_delete_tree(stage);
+    strlcat(stage, "/", sizeof stage);
+    rc = extract_archive(ctx, local, rec, stage, nentries, &staged);
+    pkg_free_namelist(&staged);
+    if (rc) goto out;
+
+    registry_entry(name, regentry, sizeof regentry);
+    snprintf(logfile, sizeof logfile, "T:Pkg-%s.log", name);
+    snprintf(cmd, sizeof cmd,
+             "SYS:Utilities/Installer SCRIPT \"%s\" APPNAME \"%s\" MINUSER NOVICE DEFUSER NOVICE"
+             " LOGFILE \"%s\"", script, name, logfile);
+    DeleteFile(regentry);
+
+    stage[strlen(stage) - 1] = 0;
+    if (!(dir = Lock(stage, SHARED_LOCK)))
+    {
+        pkg_set_error(ctx, "%s: cannot lock the staging drawer %s", name, stage);
+        rc = PKGERR_IO;
+        goto out;
+    }
+    pkg_log(ctx, "%s: running Installer script %s", name, script);
+    in = Open("NIL:", MODE_OLDFILE);
+    out = Open("NIL:", MODE_NEWFILE);
+    olddir = CurrentDir(dir);
+    rc = SystemTags(cmd, SYS_Input, in, SYS_Output, out, SYS_Asynch, FALSE, TAG_DONE);
+    CurrentDir(olddir);
+    UnLock(dir);
+    if (in) Close(in);
+    if (out) Close(out);
+
+    read_registry(regentry, files, assigns, sections, len);
+    if (rc != 0)
+    {
+        DeleteFile(regentry);
+        pkg_set_error(ctx, "%s: the Installer script did not finish (%ld); see %s", name, (long)rc, logfile);
+        rc = PKGERR_ABORTED;
+    }
+out:
+    pkg_delete_tree(stage);
+    return rc;
+}
+
+/* ------------------------------------------------------------------------ */
 /* install                                                                   */
 
 static LONG install_one(struct PkgContext *ctx, CONST_STRPTR name, int depth);
@@ -536,6 +711,8 @@ static LONG install_one(struct PkgContext *ctx, CONST_STRPTR name, int depth)
     struct pkg_stanza *dbrec = NULL;
     struct List files, oldfiles;
     TEXT local[PKG_PATHLEN], root[PKG_PATHLEN];
+    TEXT assigns[256], sections[256];
+    const char *script;
     BOOL has_startup, activation;
     ULONG nentries;
     LONG rc;
@@ -566,6 +743,14 @@ static LONG install_one(struct PkgContext *ctx, CONST_STRPTR name, int depth)
 
     rc = resolve_root(ctx, rec, has_startup, root, sizeof root, &activation);
     if (rc) return rc;
+    script = pkg_stanza_get(rec, "Installer");
+    if (script && !*script) script = NULL;
+    if (script)
+    {
+        /* the script places the files; it is the activation too */
+        strlcpy(root, ctx->PkgRoot, sizeof root);
+        activation = FALSE;
+    }
 
     if (old)
     {
@@ -575,10 +760,15 @@ static LONG install_one(struct PkgContext *ctx, CONST_STRPTR name, int depth)
     else
         pkg_log(ctx, "%s: installing %s into %s", name, pkg_stanza_get(rec, "Version"), root);
 
-    rc = extract_archive(ctx, local, rec, root, nentries, &files);
+    if (script)
+        rc = run_installer(ctx, local, rec, nentries, &files, assigns, sections, sizeof assigns);
+    else
+        rc = extract_archive(ctx, local, rec, root, nentries, &files);
     if (rc)
     {
         /* roll back what this attempt wrote (old files stay) */
+        /* assigns first: an assign holds a lock on the drawer it names */
+        if (script) undo_installer_extras(assigns, sections);
         remove_files(ctx, name, &files, old ? &oldfiles : NULL);
         pkg_free_namelist(&files);
         pkg_free_namelist(&oldfiles);
@@ -604,6 +794,8 @@ static LONG install_one(struct PkgContext *ctx, CONST_STRPTR name, int depth)
         DateStamp(&ds);
         snprintf(date, sizeof date, "%ld.%ld", (long)ds.ds_Days, (long)ds.ds_Minute);
         pkg_stanza_set(dbrec, PKGX_INSTALLDATE, date);
+        if (script && assigns[0]) pkg_stanza_set(dbrec, PKGX_ASSIGNS, assigns);
+        if (script && sections[0]) pkg_stanza_set(dbrec, PKGX_USERSTARTUP, sections);
         rc = pkg_db_store(ctx, dbrec, &files);
         pkg_stanza_free(dbrec);
     }
@@ -670,8 +862,16 @@ static LONG remove_one(struct PkgContext *ctx, CONST_STRPTR name, int depth)
     pkg_log(ctx, "%s: removing %s", name, pkg_stanza_get(inst, "Version"));
     rc = pkg_db_files(ctx, name, &files);
     if (rc) return rc;
+    /* assigns first: an assign holds a lock on the drawer it names */
+    undo_installer_extras(pkg_stanza_get(inst, PKGX_ASSIGNS), pkg_stanza_get(inst, PKGX_USERSTARTUP));
     remove_files(ctx, name, &files, NULL);
     pkg_free_namelist(&files);
+    if (pkg_stanza_get(inst, "Installer"))
+    {
+        TEXT entry[PKG_PATHLEN];
+        registry_entry(name, entry, sizeof entry);
+        DeleteFile(entry);
+    }
 
     if (root && strncmp(root, ctx->PkgRoot, strlen(ctx->PkgRoot)) == 0 && root[strlen(ctx->PkgRoot)] == '/')
     {

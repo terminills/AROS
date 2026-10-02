@@ -114,6 +114,7 @@ files exist for tools that fetch them standalone).
 | `Changes`      | no  | Multi-line changelog for this version |
 | `Startup`      | no  | `yes` if the archive ships `S/Package-Startup` (informational; the client inspects the archive) |
 | `Reboot`       | no  | `yes` if a reboot is required after install (kickstart modules, handlers) |
+| `Installer`    | no  | Installer script inside `files/` (e.g. `Install`) that places the payload instead of the client (§4.5) |
 | `Date`         | no  | RFC 3339 build/publish time |
 
 ### 3.3 `Announcements` — one record per notification
@@ -208,6 +209,38 @@ own repository, signed with its own key, and its plugins appear alongside
 everything else.  Per-source HTTP authentication (paid repositories) is a
 v2 item: token stored in `credentials.library`'s keyring, sent as
 `Authorization: Bearer`.
+
+### 4.5 Installer scripts
+
+Software that already ships an Installer script keeps it.  When the record
+carries `Installer: <script>`, the client unpacks `files/` into a staging
+drawer (`<PkgRoot>/.Staging-<Package>/`) instead of the target volume and
+runs, with the staging drawer as the current directory:
+
+```
+SYS:Utilities/Installer SCRIPT <script> APPNAME <Package>
+    MINUSER NOVICE DEFUSER NOVICE LOGFILE T:Pkg-<Package>.log
+```
+
+The script chooses where things go.  Installer records every real
+installation in its installed-files registry, one entry per `APPNAME`
+(`<Installer/Registry>/<Package>`, default
+`SYS:Prefs/Installer/Registry/`; see the Installer documentation), one
+line per thing created: `F` file, `D` drawer, `A` assign, `S`
+User-Startup section, `T` icon whose tooltypes changed.  The client reads
+that entry after Installer returns.  `F`/`D` paths
+become the package's file list in the installed DB, exactly as extracted
+files do; `A` and `S` entries are stored as `X-Assigns` and
+`X-UserStartup` and undone on removal (the assign is dropped, the
+`;BEGIN`/`;END` block is cut from `S:User-Startup`).  `T` edits are not
+reversible.  The staging drawer is deleted afterwards; the registry entry
+stays until the package is removed.
+
+A non-zero Installer return (the user aborted, or the script failed) is
+`PKGERR_ABORTED`; whatever the registry entry shows was created is removed again
+and the DB is left untouched.  `S/Package-Startup` activation (§4.2) does
+not apply: the script does its own (startup) work.  Ownership checks and
+`.pkgsave` backups do not apply to script-placed files.
 
 ## 5. Signing and trust
 
