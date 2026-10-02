@@ -1809,7 +1809,7 @@ APTR oldwin;
             }
             else
             {
-                manifest_log('A', GetPL(pl, _NEWNAME).arg[0]);
+                registry_log('A', GetPL(pl, _NEWNAME).arg[0]);
             }
         }
         else

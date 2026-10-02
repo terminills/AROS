@@ -7,6 +7,7 @@
 #include "Installer.h"
 #include "cleanup.h"
 #include "execute.h"
+#include "variables.h"
 
 /* External variables */
 extern InstallerPrefs preferences;
@@ -128,22 +129,94 @@ int i=0;
 
 
 /*
- * Record one thing the script created in the MANIFEST file:
+ * The installed-files registry: one entry per application, named after
+ * APPNAME, in the drawer ENV:Installer/Registry names (default
+ * SYS:Prefs/Installer/Registry -- a live CD points it at RAM:). Each line is
+ * one thing the script created:
  *   F <file>    D <directory>    A <assign>    S <User-Startup section>
  *   T <icon whose tooltypes were changed>
- * F/D/T paths are canonicalised with NameFromLock() so whoever removes the
- * package later does not depend on the assigns the script used. Nothing is
- * written in pretend mode -- callers only log what really happened.
+ * so the application can be removed again. The entry is opened on the first
+ * thing really created: a pretend run, or a run aborted before it did
+ * anything, leaves the previous entry alone.
  */
-void manifest_log(char kind, const char *path)
+static void registry_open(void)
+{
+char dir[256], *name, *p;
+STRPTR path;
+LONG len;
+BPTR lock;
+
+    if (GetVar("Installer/Registry", dir, sizeof(dir), 0) <= 0)
+    {
+        strcpy(dir, "SYS:Prefs/Installer/Registry");
+    }
+    /* create the drawer and any missing parents */
+    for (p = dir; ; p++)
+    {
+        if (*p == '/' || *p == 0)
+        {
+            char c = *p;
+            *p = 0;
+            if (p > dir && p[-1] != ':' && (lock = Lock(dir, SHARED_LOCK)) == BNULL)
+            {
+                lock = CreateDir(dir);
+            }
+            if (lock != BNULL)
+            {
+                UnLock(lock);
+            }
+            *p = c;
+            if (c == 0)
+            {
+                break;
+            }
+        }
+    }
+    p = get_var_arg("@app-name");
+    name = strdup(p != NULL && *p ? p : "Unnamed");
+    outofmem(name);
+    for (p = name; *p; p++)
+    {
+        if (*p == '/' || *p == ':' || *p == '"' || *p == '*' || *p == '?' || *p == '#')
+        {
+            *p = '_';
+        }
+    }
+    len = strlen(dir) + strlen(name) + 2;
+    path = malloc(len);
+    outofmem(path);
+    strcpy(path, dir);
+    AddPart(path, name, len);
+    preferences.registrystream = Open(path, MODE_NEWFILE);
+    free(path);
+    free(name);
+}
+
+/*
+ * Record one thing the script created in this application's registry entry.
+ * F/D/T paths are canonicalised with NameFromLock() so removing the
+ * application later does not depend on the assigns the script used. Callers
+ * only log what really happened, never in pretend mode.
+ */
+void registry_log(char kind, const char *path)
 {
 BPTR lock;
 char *full = NULL;
 char prefix[2];
 
-    if (preferences.manifeststream == BNULL || path == NULL)
+    if (preferences.noregistry || preferences.pretend || path == NULL)
     {
         return;
+    }
+    if (preferences.registrystream == BNULL)
+    {
+        registry_open();
+        if (preferences.registrystream == BNULL)
+        {
+            /* read-only system and no ENV:Installer/Registry: carry on */
+            preferences.noregistry = 1;
+            return;
+        }
     }
     if (kind == 'F' || kind == 'D' || kind == 'T')
     {
@@ -156,8 +229,8 @@ char prefix[2];
     }
     prefix[0] = kind;
     prefix[1] = SPACE;
-    Write(preferences.manifeststream, prefix, 2);
-    Write(preferences.manifeststream, full ? full : (char *)path, strlen(full ? full : path));
-    Write(preferences.manifeststream, "\n", 1);
+    Write(preferences.registrystream, prefix, 2);
+    Write(preferences.registrystream, full ? full : (char *)path, strlen(full ? full : path));
+    Write(preferences.registrystream, "\n", 1);
     free(full);
 }

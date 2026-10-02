@@ -75,10 +75,11 @@ typedef struct InstallerPrefs
 {
     char * transcriptfile;
     BPTR transcriptstream;
-    /* MANIFEST: one line per thing the script created, for a package
-       manager to undo later -- see manifest_log() in misc.c */
-    char * manifestfile;
-    BPTR manifeststream;
+    /* Installed-files registry: one entry per application, one line per
+       thing the script created, so it can be undone -- see registry_log()
+       in misc.c */
+    int noregistry;
+    BPTR registrystream;
     /* APPBANNER: picture shown above the pages (InstallerLG-compatible) */
     char * bannerfile;
     int debug, pretend, nopretend, novicelog, noprint;

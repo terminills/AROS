@@ -114,8 +114,8 @@ int main(int argc, char *argv[])
 
     preferences.welcome = FALSE;
     preferences.transcriptstream = BNULL;
-    preferences.manifestfile = NULL;
-    preferences.manifeststream = BNULL;
+    preferences.noregistry = 0;
+    preferences.registrystream = BNULL;
     preferences.pretend = 0;
 
     if (argc)
@@ -139,10 +139,7 @@ int main(int argc, char *argv[])
         {
             preferences.bannerfile = strdup((char *)args[ARG_APPBANNER]);
         }
-        if (args[ARG_MANIFEST])
-        {
-            preferences.manifestfile = strdup((char *)args[ARG_MANIFEST]);
-        }
+        preferences.noregistry = (int)args[ARG_NOREGISTRY];
         preferences.nopretend = (int)args[ARG_NOPRETEND];
         /* PRETEND/S: dry run without asking - the pretend page is skipped
          * and nothing is written (a package manager's preview, test harnesses) */
@@ -222,12 +219,8 @@ int main(int argc, char *argv[])
         {
             preferences.transcriptfile = strdup(ArgString(tooltypes, "LOGFILE", "install_log_file"));
         }
-        /* Record what gets created? (MANIFEST=<file>) */
-        ttemp = ArgString(tooltypes, "MANIFEST", NULL);
-        if (ttemp != NULL)
-        {
-            preferences.manifestfile = strdup(ttemp);
-        }
+        /* Keep no installed-files registry entry? (NOREGISTRY) */
+        preferences.noregistry = (ArgString(tooltypes, "NOREGISTRY", NULL) != NULL);
         /* Picture above the pages? (APPBANNER=<file>) */
         ttemp = ArgString(tooltypes, "APPBANNER", NULL);
         if (ttemp != NULL)
@@ -411,18 +404,6 @@ int main(int argc, char *argv[])
         /* open transcript file */
         preferences.transcriptstream = Open(preferences.transcriptfile, MODE_NEWFILE);
         if (preferences.transcriptstream == BNULL)
-        {
-            PrintFault(IoErr(), INSTALLER_NAME);
-            cleanup();
-            exit(-1);
-        }
-    }
-
-    if (preferences.manifestfile != NULL)
-    {
-        /* open manifest file */
-        preferences.manifeststream = Open(preferences.manifestfile, MODE_NEWFILE);
-        if (preferences.manifeststream == BNULL)
         {
             PrintFault(IoErr(), INSTALLER_NAME);
             cleanup();

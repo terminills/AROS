@@ -35,9 +35,9 @@ void cleanup()
     {
         Close(preferences.transcriptstream);
     }
-    if (preferences.manifeststream != BNULL)
+    if (preferences.registrystream != BNULL)
     {
-        Close(preferences.manifeststream);
+        Close(preferences.registrystream);
     }
 
     free_script(script.cmd);

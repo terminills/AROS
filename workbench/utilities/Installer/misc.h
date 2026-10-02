@@ -9,7 +9,7 @@ extern int strtostrs(char * in, char *** outarr);
 extern char *collatestrings(int n, char ** instrs);
 extern char *addquotes(char * array);
 extern void freestrlist(STRPTR * string);
-extern void manifest_log(char kind, const char *path);
+extern void registry_log(char kind, const char *path);
 
 
 #endif /* _MISC_H */

@@ -1373,7 +1373,7 @@ void *params;
                         if (request_confirm(parameter) && (preferences.pretend == 0 || GetPL(parameter, _SAFE).used == 1))
                         {
                             modify_userstartup(string, parameter);
-                            manifest_log('S', string);
+                            registry_log('S', string);
                         }
                         free(string);
                     }
@@ -1503,7 +1503,7 @@ void *params;
                     {
                         UnLock(success);
                         current->parent->intval = 1;
-                        manifest_log('D', string);
+                        registry_log('D', string);
                         if (infos)
                         {
                             /* (infos): give the new drawer a default icon */
@@ -1512,7 +1512,7 @@ void *params;
                             {
                                 if (PutDiskObject(string, dobj))
                                 {
-                                    manifest_log('T', string);
+                                    registry_log('T', string);
                                 }
                                 FreeDiskObject(dobj);
                             }
@@ -1883,13 +1883,13 @@ void *params;
                                     else
                                     {
                                         current->parent->intval = 1;
-                                        manifest_log('A', assign);
+                                        registry_log('A', assign);
                                     }
                                 }
                                 else
                                 {
                                     current->parent->intval = 1;
-                                    manifest_log('A', assign);
+                                    registry_log('A', assign);
                                 }
                             }
                         }
@@ -2908,7 +2908,7 @@ DMSG("   %s\n",ret);
                             Close(out);
                             if (ok)
                             {
-                                manifest_log('F', string);
+                                registry_log('F', string);
                                 if (preferences.transcriptstream != BNULL)
                                 {
                                     Write(preferences.transcriptstream, "Created text file \"", 19);
@@ -3021,7 +3021,7 @@ DMSG("   %s\n",ret);
                             }
                             else
                             {
-                                manifest_log('T', GetPL(parameter, _DEST).arg[0]);
+                                registry_log('T', GetPL(parameter, _DEST).arg[0]);
                                 if (preferences.transcriptstream != BNULL)
                                 {
                                     Write(preferences.transcriptstream, "Changed icon \"", 14);

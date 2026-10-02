@@ -456,7 +456,7 @@ LONG type;
     }
     UnLock(lock);
     *created = TRUE;
-    manifest_log('D', dir);
+    registry_log('D', dir);
     transcript("Created directory \"", dir, "\".\n", NULL);
     return COPY_OK;
 }
@@ -557,7 +557,7 @@ char *buf;
     {
         SetFileDate((STRPTR)j->dst, &j->ds);
     }
-    manifest_log('F', j->dst);
+    registry_log('F', j->dst);
     transcript("Copied \"", j->src, "\" to \"", j->dst);
     transcript("\".\n", NULL, NULL, NULL);
     return COPY_OK;

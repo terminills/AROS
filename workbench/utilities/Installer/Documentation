@@ -3,7 +3,7 @@ Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 Command line
 ------------
 	SCRIPT,APPNAME,MINUSER,DEFUSER,LOGFILE,NOLOG/S,NOPRETEND/S,
-	NOPRINT/S,LANGUAGE,MANIFEST/K,APPBANNER/K,PRETEND/S
+	NOPRINT/S,LANGUAGE,NOREGISTRY/S,APPBANNER/K,PRETEND/S
 
 	The first nine are the standard Installer arguments. NOLOG/S (also
 	a tooltype) means no log file at all: none is opened, and the "log
@@ -19,10 +19,15 @@ Command line
 	run without asking: the "Install for real / pretend" page is skipped
 	and nothing is written (what NOPRETEND/S forbids, this forces) - used
 	for previewing a package and for running scripts under test. Scripts
-	cannot tell it from a pretend run chosen on the page. MANIFEST/K is an
-	AROS extension for package management: a text file that lists what the
-	script created, one item per line, so a package manager can remove it
-	again. Kinds:
+	cannot tell it from a pretend run chosen on the page.
+
+Installed-files registry
+------------------------
+	Every real installation is recorded, so it can be removed again: one
+	entry per application, named after APPNAME, in the drawer that the
+	variable Installer/Registry names (default SYS:Prefs/Installer/
+	Registry; a live CD sets ENV:Installer/Registry to a RAM: drawer).
+	One line per thing the script created:
 	  F <file>        file written (copyfiles, copylib, textfile, copied
 	                  .info companions)
 	  D <dir>         directory created (makedir, copyfiles)
@@ -30,8 +35,12 @@ Command line
 	  S <section>     section added to S:User-Startup (startup)
 	  T <icon>        icon written (makedir/copyfiles (infos), tooltype);
 	                  the .info suffix is not included
-	File, dir and icon names are canonical (Lock + NameFromLock). Nothing
-	is written in pretend mode. Scripts do not see the manifest.
+	File, dir and icon names are canonical (Lock + NameFromLock). The
+	entry is opened when the first thing is really created, so a pretend
+	run, or one aborted before it changed anything, keeps the previous
+	entry; installing the same APPNAME again replaces it. A package
+	manager that runs the script reads the entry afterwards. NOREGISTRY/S
+	(also a tooltype) keeps no entry. Scripts do not see the registry.
 
 Parsing the script
 ------------------
