@@ -455,7 +455,12 @@ int main(void)
         extBlocks = extHighBlock - extLowBlock + 1;
         D(bug("[C:Partition] root blocks = %u, ext blocks = %u\n", rootBlocks, extBlocks));
 
-        if (extBlocks > rootBlocks || partCount == 4)
+        if (extPartition == NULL && partCount >= 4)
+        {
+            PutStr("*** ERROR: No free primary partition slot and no extended partition.\n");
+            error = ERROR_DISK_FULL;
+        }
+        else if (extPartition != NULL && (extBlocks > rootBlocks || partCount == 4))
         {
             parent = extPartition;
             lowBlock = extLowBlock;
@@ -467,7 +472,10 @@ int main(void)
             lowBlock = rootLowBlock;
             highBlock = rootHighBlock;
         }
+    }
 
+    if (error == 0)
+    {
         D(bug("[C:Partition] lowBlock = %u, highBlock = %u\n", lowBlock, highBlock));
 
         /* Convert block range to cylinders */
