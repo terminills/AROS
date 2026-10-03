@@ -1,4 +1,6 @@
 /*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
  * amdgpu.hidd — device identification and the IP-block init ladder.
  *
  * The PCI-ID table is deliberately small and honest: `tested` means
@@ -146,6 +148,16 @@ static BOOL ip_common_init(struct AmdgpuDevice *ad)
        kernel breaks this cycle by reading mmRCC_CONFIG_MEMSIZE at a
        fixed absolute dword (0xde3) that is valid before discovery. */
     ULONG boot_mb = amdgpu_rreg32(ad, AMDGPU_mmRCC_CONFIG_MEMSIZE);
+
+    if (ad->vram_bar_phys && !ad->vram_bar_size && boot_mb) {
+        UQUAD sz = 1;
+
+        while (sz < ((UQUAD)boot_mb << 20))
+            sz <<= 1;
+        ad->vram_bar_size = (IPTR)sz;
+        bug("[amdgpu] %s: BAR0 size from VRAM size: %lu MB\n", ad->name,
+            (unsigned long)(sz >> 20));
+    }
 
     if (boot_mb && amdgpu_discovery_init(ad, boot_mb)) {
         UBYTE level = gfx_level_from_gc(&ad->ip.gc);

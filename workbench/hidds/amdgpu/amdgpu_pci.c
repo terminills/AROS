@@ -1,4 +1,6 @@
 /*
+    Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
  * amdgpu.hidd — PCI discovery.
  *
  * Enumerates AMD display-class devices via pci.hidd and records BAR
@@ -35,6 +37,45 @@ static UWORD amdgpu_pci_command(OOP_Object *pciDevice)
     };
 
     return (UWORD)OOP_DoMethod(pciDevice, (OOP_Msg)&msg);
+}
+
+static ULONG amdgpu_pci_readl(OOP_Object *pciDevice, UWORD reg)
+{
+    struct pHidd_PCIDevice_ReadConfigLong msg = {
+        .mID = OOP_GetMethodID(IID_Hidd_PCIDevice,
+                               moHidd_PCIDevice_ReadConfigLong),
+        .reg = reg,
+    };
+
+    return (ULONG)OOP_DoMethod(pciDevice, (OOP_Msg)&msg);
+}
+
+/* Resizable BAR control: bits 2:0 = BAR index, bits 13:8 = size as 1MB << n */
+static IPTR amdgpu_rebar_size(OOP_Object *pciDevice, UBYTE bar)
+{
+    UWORD pos = 0x100;
+    int guard = 48;
+
+    while (pos >= 0x100 && guard--) {
+        ULONG hdr = amdgpu_pci_readl(pciDevice, pos);
+
+        if (hdr == 0 || hdr == 0xffffffff)
+            break;
+        if ((hdr & 0xffff) == 0x0015) {
+            ULONG ctrl = amdgpu_pci_readl(pciDevice, pos + 8);
+            ULONG nbars = (ctrl >> 5) & 7;
+            ULONG i;
+
+            for (i = 0; i < nbars; i++) {
+                ctrl = amdgpu_pci_readl(pciDevice, pos + 8 + i * 8);
+                if ((ctrl & 7) == bar)
+                    return (IPTR)1 << (((ctrl >> 8) & 0x3f) + 20);
+            }
+            break;
+        }
+        pos = (hdr >> 20) & 0xffc;
+    }
+    return 0;
 }
 
 static BOOL amdgpu_pci_enable(struct AmdgpuBase *base,
@@ -93,6 +134,15 @@ static void amdgpu_record_bars(struct AmdgpuBase *base,
 
         OOP_GetAttr(ad->pciDevice, base->pciDeviceAB + base_attr[i], &pbase);
         OOP_GetAttr(ad->pciDevice, base->pciDeviceAB + size_attr[i], &psize);
+        if (i == 0 && pbase && !psize) {
+            psize = amdgpu_rebar_size(ad->pciDevice, 0);
+            bug("[amdgpu]   BAR0 size from Resizable BAR capability: %lu MB\n",
+                (unsigned long)(psize >> 20));
+            if (!psize) {
+                ad->vram_bar_phys = pbase;
+                continue;
+            }
+        }
         if (!pbase || !psize)
             continue;
 
