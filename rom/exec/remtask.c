@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: Remove a task
 */
@@ -98,11 +98,32 @@
             task->tc_State = TS_REMOVED;
             Remove(&task->tc_Node);
 #else
+#if defined(__AROSEXEC_SMP__)
+            struct IntETask *iet = GetIntETask(task);
+
+            if (iet)
+                iet->iet_StopReq = TRUE;
+            for (;;)
+            {
+                Disable();
+                krnSysCallReschedTask(task, TS_REMOVED);
+                Enable();
+                if (task->tc_State != TS_RUN)
+                    break;
+                if (iet)
+                    KrnScheduleCPU(iet->iet_CpuAffinity);
+#if defined(__x86_64__) || defined(__i386__)
+                for (int i = 0; i < 1000; i++)
+                    __asm__ __volatile__("pause");
+#endif
+            }
+#else
             /* Disable(), not Forbid(): only it masks the FIQ whose
              * signal_hook would re-enter these same locks. */
             Disable();
             krnSysCallReschedTask(task, TS_REMOVED);
             Enable();
+#endif
 #endif
         }
 

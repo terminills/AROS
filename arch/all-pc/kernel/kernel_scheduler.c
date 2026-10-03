@@ -98,6 +98,10 @@ BOOL core_Schedule(void)
             bug("[Kernel:%03u]" DEBUGCOLOR_SET " %s: letting finalising task run.." DEBUGCOLOR_RESET "\n", cpuNo, __func__);
 #endif
         }
+#if defined(__AROSEXEC_SMP__)
+        else if (GetIntETask(task) && GetIntETask(task)->iet_StopReq)
+            corereschedule = TRUE;
+#endif
         else if (!(task->tc_Flags & TF_EXCEPT))
         {
 #if defined(__AROSEXEC_SMP__)
@@ -282,6 +286,14 @@ void core_Switch(void)
 #endif
         (task->tc_State != TS_REMOVED))
         task->tc_State = TS_READY;
+#if defined(__AROSEXEC_SMP__)
+    if ((task->tc_State == TS_READY) && GetIntETask(task) &&
+        GetIntETask(task)->iet_StopReq)
+    {
+        task->tc_SigWait = 0;
+        task->tc_State = TS_WAIT;
+    }
+#endif
 
     /* if the current task has gone out of stack bounds, suspend it to prevent further damage to the system */
     if (task->tc_SPReg <= task->tc_SPLower || task->tc_SPReg > task->tc_SPUpper)

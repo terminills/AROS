@@ -2,7 +2,7 @@
 #define _ETASK_H
 
 /*
-    Copyright (C) 1995-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: Internal description of the ETask structure
@@ -72,6 +72,9 @@ struct IntETask
     UQUAD               iet_LastBusy;           /* iet_private2 at the last sample         */
     UQUAD               iet_LastUsageStamp;     /* when that sample was taken              */
     ULONG               iet_QuantumLeft;        /* scheduler ticks left of this task's slice */
+#endif
+#if defined(__AROSEXEC_SMP__)
+    volatile ULONG      iet_StopReq;            /* RemTask(): switch out for good */
 #endif
 #ifdef DEBUG_ETASK
     STRPTR              iet_Me;

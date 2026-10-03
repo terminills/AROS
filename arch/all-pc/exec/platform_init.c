@@ -287,7 +287,8 @@ void X86_HandleReschedTask(struct ExceptionContext *regs)
     EXEC_SPINLOCK_LOCK(&reschTask->tc_SpinLock, NULL, SPINLOCK_MODE_WRITE);
 
     if ((reschTask->tc_State == TS_RUN) &&
-        ((reschState == TS_READY) || (reschState == TS_UNSPIN)))
+        ((reschState == TS_READY) || (reschState == TS_UNSPIN) ||
+         (reschState == TS_REMOVED)))
     {
         EXEC_SPINLOCK_UNLOCK(&reschTask->tc_SpinLock);
         return;
