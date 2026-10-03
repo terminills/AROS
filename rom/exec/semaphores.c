@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: Semaphore internal handling
 */
@@ -10,6 +10,7 @@
 #include <aros/debug.h>
 #include <proto/exec.h>
 
+#include "etask.h"
 #include "exec_intern.h"
 #include "exec_util.h"
 #include "semaphores.h"
@@ -135,6 +136,11 @@ void InternalObtainSemaphore(struct SignalSemaphore *sigSem, struct Task *owner,
         AROS_ATOMIC_AND(ThisTask->tc_SigRecvd, ~SIGF_SINGLE);
 
         AddTail((struct List *)&sigSem->ss_WaitQueue, (struct Node *)&sr);
+        if (GetIntETask(ThisTask))
+        {
+            GetIntETask(ThisTask)->iet_SemReq = &sr;
+            GetIntETask(ThisTask)->iet_SemWait = sigSem;
+        }
 
         /*
          * Drop the lock before Wait() so a Release elsewhere can reach
@@ -148,6 +154,8 @@ void InternalObtainSemaphore(struct SignalSemaphore *sigSem, struct Task *owner,
          * who owns the semaphore.
          */
         Wait(SIGF_SINGLE);
+        if (GetIntETask(ThisTask))
+            GetIntETask(ThisTask)->iet_SemWait = NULL;
 
         /* All Done! */
         Permit();

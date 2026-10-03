@@ -14,6 +14,7 @@
 
 #include <exec/interrupts.h>
 #include <exec/tasks.h>
+#include <exec/semaphores.h>
 #include <devices/timer.h>
 
 #include <exec_platform.h>
@@ -73,6 +74,8 @@ struct IntETask
     UQUAD               iet_LastUsageStamp;     /* when that sample was taken              */
     ULONG               iet_QuantumLeft;        /* scheduler ticks left of this task's slice */
 #endif
+    struct SignalSemaphore  *iet_SemWait;       /* semaphore the task is queued on         */
+    struct SemaphoreRequest *iet_SemReq;        /* its queue node, on the task's stack     */
 #if defined(__AROSEXEC_SMP__)
     volatile ULONG      iet_StopReq;            /* RemTask(): switch out for good */
 #endif

@@ -15,6 +15,36 @@
 #include "exec_util.h"
 #include "exec_debug.h"
 
+static void RemTaskSemaphore(struct IntETask *iet, struct ExecBase *SysBase)
+{
+    struct SignalSemaphore *sem = iet->iet_SemWait;
+    struct Node *n;
+    BOOL queued = FALSE;
+
+#if defined(__AROSEXEC_SMP__)
+    EXEC_SPINLOCK_LOCK(&sem->ss_MultipleLink.sr_SpinLock, NULL, SPINLOCK_MODE_WRITE);
+#endif
+    ForeachNode(&sem->ss_WaitQueue, n)
+    {
+        if (n == (struct Node *)iet->iet_SemReq)
+        {
+            queued = TRUE;
+            break;
+        }
+    }
+    if (queued)
+    {
+        Remove(n);
+        sem->ss_QueueCount--;
+    }
+#if defined(__AROSEXEC_SMP__)
+    EXEC_SPINLOCK_UNLOCK(&sem->ss_MultipleLink.sr_SpinLock);
+#endif
+    if (!queued)
+        ReleaseSemaphore(sem);
+    iet->iet_SemWait = NULL;
+}
+
 /*****************************************************************************
 
     NAME */
@@ -125,6 +155,8 @@
             Enable();
 #endif
 #endif
+            if (GetIntETask(task) && GetIntETask(task)->iet_SemWait)
+                RemTaskSemaphore(GetIntETask(task), SysBase);
         }
 
 #if defined(__AROSEXEC_SMP__)
