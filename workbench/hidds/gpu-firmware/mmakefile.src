@@ -1,0 +1,38 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+#
+# Stage GPU microcode into Devs/Firmware/ so amdgpu.hidd finds it at runtime
+# (DEVS:Firmware/amdgpu/). The blobs live in a directory outside the build
+# tree: <workspace>/aros-gpu-firmware by default, or GPUFW_SRC=/path.
+# The AMD set is only staged with its licence (amdgpu/LICENSE.amdgpu from
+# linux-firmware) beside it. The Nvidia GSP set is large and only staged with
+# GPUFW_NVIDIA=1, again with its
+# licence (nvidia/LICENCE.nvidia) beside it.
+#
+GPUFW_SRC ?= $(SRCDIR)/../aros-gpu-firmware
+GPUFW_NVIDIA ?= 0
+FWDST := $(AROS_DEVS)/Firmware
+
+#MM- workbench-hidds : workbench-hidds-gpu-firmware
+
+#MM
+workbench-hidds-gpu-firmware :
+	@if [ -d "$(GPUFW_SRC)/amdgpu" ] && [ ! -f "$(GPUFW_SRC)/amdgpu/LICENSE.amdgpu" ]; then \
+	    $(ECHO) "[gpu-firmware] $(GPUFW_SRC)/amdgpu has no LICENSE.amdgpu - not staging" ; \
+	 elif [ -d "$(GPUFW_SRC)/amdgpu" ]; then \
+	    $(ECHO) "Staging AMD firmware: $(GPUFW_SRC)/amdgpu -> $(FWDST)/amdgpu" ; \
+	    $(MKDIR) "$(FWDST)/amdgpu" ; \
+	    cp -a "$(GPUFW_SRC)/amdgpu/." "$(FWDST)/amdgpu/" ; \
+	 else \
+	    $(ECHO) "[gpu-firmware] no AMD firmware at $(GPUFW_SRC)/amdgpu - skipping" ; \
+	 fi
+	@if [ "$(GPUFW_NVIDIA)" = "1" ] && [ -d "$(GPUFW_SRC)/nvidia" ] && \
+	    [ -f "$(GPUFW_SRC)/nvidia/LICENCE.nvidia" ]; then \
+	    $(ECHO) "Staging Nvidia GSP firmware: $(GPUFW_SRC)/nvidia -> $(FWDST)/nvidia" ; \
+	    $(MKDIR) "$(FWDST)/nvidia" ; \
+	    cp -a "$(GPUFW_SRC)/nvidia/." "$(FWDST)/nvidia/" ; \
+	 fi
+
+%common
