@@ -483,11 +483,7 @@ static void LDReleaseObject(struct LDObjectNode *object, struct ExecBase *SysBas
     if (--(object->ldon_AccessCount) == 0)
     {
         Remove((struct Node *)object);
-        /*
-         * CHECKME: In LDRequestObject() we obtain the object semaphore also on a new object.
-         * So shouldn't we release it here too ?
-         */
-         
+        ReleaseSemaphore(&object->ldon_SigSem);
         FreeVec(object->ldon_Node.ln_Name);
         FreeVec(object);
     }
