@@ -928,7 +928,13 @@ void DoDiskInsert(struct Globals *glob)
 
             /* Scan volume list for a matching volume (would be better to
              * match by serial number) */
-            dl = LockDosList(LDF_VOLUMES | LDF_WRITE);
+            while (!(dl = AttemptLockDosList(LDF_VOLUMES | LDF_WRITE)))
+            {
+                glob->sb = NULL;
+                ProcessPackets(glob);
+                glob->sb = sb;
+                Delay(1);
+            }
             dl = FindDosEntry(dl, sb->volume.name + 1,
                 LDF_VOLUMES | LDF_WRITE);
             UnLockDosList(LDF_VOLUMES | LDF_WRITE);
