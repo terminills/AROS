@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2015-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 2015-2026, The AROS Development Team. All rights reserved.
 */
 
 #define DEBUG 0
@@ -75,8 +75,18 @@
         taskList->tlp_Node.ln_Name = (char *)FindTask(NULL);
         taskList->tlp_Flags = flags;
         taskList->tlp_Tasks = &TaskResBase->trb_TaskList;
+#if !defined(__AROSEXEC_SMP__)
+        Forbid();
+#else
+        EXEC_SPINLOCK_LOCK(&TaskResBase->TaskListSpinLock, NULL, SPINLOCK_MODE_WRITE);
+#endif
         taskList->tlp_Next = (struct TaskListEntry *)GetHead(taskList->tlp_Tasks);
         AddTail(&TaskResBase->trb_LockedLists, &taskList->tlp_Node);
+#if !defined(__AROSEXEC_SMP__)
+        Permit();
+#else
+        EXEC_SPINLOCK_UNLOCK(&TaskResBase->TaskListSpinLock);
+#endif
     }
 #else
     Disable();

@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2015-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 2015-2026, The AROS Development Team. All rights reserved.
 */
 
 #define DEBUG 0
@@ -72,12 +72,51 @@
 
     struct TagItem * Tag = NULL;
     struct Library *UtilityBase = TaskResBase->trb_UtilityBase;
-    struct IntETask *task_et = GetIntETask(task);
+    struct IntETask *task_et;
+    struct TaskListEntry *entry;
+    BOOL live = FALSE;
 
     D(
         bug("[TaskRes] %s: task @ 0x%p\n", __func__, task);
         bug("[TaskRes] %s: taglist @ 0x%p\n", __func__, tagList);
     )
+
+    /* RemTask() drops the task's entry under this lock before the task is
+       freed, so a task with a live entry stays valid until we unlock */
+#if !defined(__AROSEXEC_SMP__)
+    Forbid();
+#else
+    EXEC_SPINLOCK_LOCK(&TaskResBase->TaskListSpinLock, NULL, SPINLOCK_MODE_READ);
+#endif
+    ForeachNode(&TaskResBase->trb_TaskList, entry)
+    {
+        if (entry->tle_Task == task)
+        {
+            live = TRUE;
+            break;
+        }
+    }
+    if (!live)
+    {
+        ForeachNode(&TaskResBase->trb_NewTasks, entry)
+        {
+            if (entry->tle_Task == task)
+            {
+                live = TRUE;
+                break;
+            }
+        }
+    }
+    if (!live)
+    {
+#if !defined(__AROSEXEC_SMP__)
+        Permit();
+#else
+        EXEC_SPINLOCK_UNLOCK(&TaskResBase->TaskListSpinLock);
+#endif
+        return;
+    }
+    task_et = GetIntETask(task);
 
     /* This is the default implementation */
         
@@ -132,7 +171,7 @@
         case(TaskTag_CPUNumber):
             {
 #if defined(__AROSEXEC_SMP__)
-            *((IPTR *)Tag->ti_Data) = task_et->iet_CpuNumber;
+            *((IPTR *)Tag->ti_Data) = task_et ? task_et->iet_CpuNumber : 0;
 #else
             *((IPTR *)Tag->ti_Data) = 0;
 #endif
@@ -141,7 +180,7 @@
         case(TaskTag_CPUAffinity):
             {
 #if defined(__AROSEXEC_SMP__)
-                int i, count = KrnGetCPUCount();
+                int i, count = task_et ? KrnGetCPUCount() : 0;
                 for (i = 0; i < count; i ++)
                 {
                     if (KrnCPUInMask(i, task_et->iet_CpuAffinity))
@@ -240,7 +279,7 @@
         case(TaskTag_REG_SP):
             {
                 IPTR *storeval = (IPTR *)Tag->ti_Data;
-                if (storeval)
+                if (storeval && GetETask(task))
                 {
                     struct ExceptionContext *regs = (struct ExceptionContext *)GetETask(task)->et_RegFrame;
 #if defined(__mc68000__) 
@@ -271,6 +310,12 @@
             break;
         }
     }
+
+#if !defined(__AROSEXEC_SMP__)
+    Permit();
+#else
+    EXEC_SPINLOCK_UNLOCK(&TaskResBase->TaskListSpinLock);
+#endif
 
     AROS_LIBFUNC_EXIT
 } /* QueryTaskTagList() */

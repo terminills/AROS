@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2015-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 2015-2026, The AROS Development Team. All rights reserved.
 */
 
 #define DEBUG 0
@@ -52,7 +52,7 @@
     AROS_LIBFUNC_INIT
 
 #ifdef TASKRES_ENABLE
-    struct TaskListPrivate *taskList, *tltmp;
+    struct TaskListPrivate *taskList, *tltmp, *found = NULL;
     struct Task *thisTask = FindTask(NULL);
 #endif /* TASKRES_ENABLE */
 
@@ -61,6 +61,11 @@
 #ifdef TASKRES_ENABLE
     ReleaseSemaphore(&TaskResBase->trb_Sem);
 
+#if !defined(__AROSEXEC_SMP__)
+    Forbid();
+#else
+    EXEC_SPINLOCK_LOCK(&TaskResBase->TaskListSpinLock, NULL, SPINLOCK_MODE_WRITE);
+#endif
     ForeachNodeSafe(&TaskResBase->trb_LockedLists, taskList, tltmp)
     {
         if (((struct Task *)taskList->tlp_Node.ln_Name == thisTask) &&
@@ -68,10 +73,17 @@
         {
             D(bug("[TaskRes] UnLockTaskList: Releasing TaskList @ 0x%p\n", taskList));
             Remove(&taskList->tlp_Node);
-            FreeMem(taskList, sizeof(struct TaskListPrivate));
+            found = taskList;
             break;
         }
     }
+#if !defined(__AROSEXEC_SMP__)
+    Permit();
+#else
+    EXEC_SPINLOCK_UNLOCK(&TaskResBase->TaskListSpinLock);
+#endif
+    if (found)
+        FreeMem(found, sizeof(struct TaskListPrivate));
 
     /* Purge expired entries from the list... */
     task_CleanList(NULL, TaskResBase);
