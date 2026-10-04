@@ -1440,7 +1440,9 @@ static BOOL amdgpu_parse_detailed(const UBYTE *d, ULONG *w, ULONG *h, ULONG *r)
     if (h_active == 0 || v_active == 0 || htotal == 0 || vtotal == 0)
         return FALSE;
 
-    refresh = (pixclk_khz * 1000UL) / (htotal * vtotal);
+    /* Round to the nearest Hz: 59.94 Hz timings are "60", 70.08 Hz "70";
+       truncating made them 59 and 69. */
+    refresh = (pixclk_khz * 1000UL + (htotal * vtotal) / 2) / (htotal * vtotal);
     if (refresh < 24 || refresh > 240)
         return FALSE;
 

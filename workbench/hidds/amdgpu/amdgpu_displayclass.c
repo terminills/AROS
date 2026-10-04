@@ -66,8 +66,13 @@ static struct TagItem *amdgpu_build_sync(OOP_Class *cl, struct AmdgpuDisplayMode
     {
         STRPTR desc = AllocVec(32, MEMF_PUBLIC | MEMF_CLEAR);
         if (desc) {
+            /* The nominal rate the mode was asked for, as NV: modes show it;
+               the rate derived from the timing rounds to nearest otherwise
+               (CVT rounds the pixel clock down, so 60 Hz came out 59.9x
+               and was printed as 59). */
             ULONG vt = (ULONG)m->htotal * (ULONG)m->vtotal;
-            ULONG hz = vt ? (ULONG)(((UQUAD)m->pixelclock * 1000UL) / vt) : 0;
+            ULONG hz = m->refresh ? (ULONG)m->refresh :
+                       vt ? (ULONG)(((UQUAD)m->pixelclock * 1000UL + vt / 2) / vt) : 0;
             STRPTR d = desc;
             const char *p = "AMDGPU:%hx%v@";
             while (*p) *d++ = *p++;
