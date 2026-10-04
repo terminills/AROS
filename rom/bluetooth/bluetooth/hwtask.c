@@ -2949,6 +2949,12 @@ AROS_UFH0(void, bHWTask)
                     AddTail(&BluetoothBase->bt_Hardware, &bth->bth_Node);
                     btUnlockBase();
 
+                    /* A loader that registered during the bring-up found this
+                       controller not yet on the hardware list: retry now. */
+                    if(bth->bth_Flags & BTHF_FWPENDING) {
+                        Signal(thistask, SIGBREAKF_CTRL_F);
+                    }
+
                     Forbid();
                     if(bth->bth_ReadySigTask) {
                         Signal(bth->bth_ReadySigTask, 1L<<bth->bth_ReadySignal);
