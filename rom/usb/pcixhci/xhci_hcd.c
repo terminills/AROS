@@ -3265,7 +3265,6 @@ static AROS_INTH1(xhciIntCode, struct PCIController *, hc)
             (volatile struct pcisusbXHCIRing *)((IPTR)xhcic->xhc_ERSp);
         volatile struct xhci_trb *etrb;
         ULONG idx   = ering->next;
-        ULONG startidx = idx;
         ULONG cycle = (ering->end & RINGENDCFLAG) ? 1 : 0;
         ULONG maxwork = XHCI_EVENT_RING_TRBS;
 
@@ -3751,8 +3750,23 @@ static AROS_INTH1(xhciIntCode, struct PCIController *, hc)
             etrb = &ering->ring[idx];
         }
 
-        /* Update the hardware dequeue pointer to the next TRB. */
-        if (idx != startidx) { /* Don't write same value as per xHCI 2.0 spec */
+        /*
+         * Write the dequeue pointer with EHB (Event Handler Busy) on EVERY
+         * serviced interrupt, including a pass that consumed no events. The
+         * xHC sets EHB together with IP and raises no further interrupt
+         * while EHB is set; writing ERDP with EHB=1 is the only way to clear
+         * it. A just-posted event TRB can still be invisible to the CPU when
+         * the cycle bit is sampled above, so a pass can consume nothing -
+         * and skipping the write on that pass left EHB latched for good:
+         * every later Transfer Event was posted but never interrupted, and
+         * the IORequest waiting on it never completed. Seen as a USB CD that
+         * read its first sector and then nothing on AMD 500-series xHCI.
+         * Rewriting the unchanged pointer is harmless; the ring is still
+         * non-empty from the controller's side, so clearing EHB re-raises
+         * the interrupt and the next pass consumes the event. Linux writes
+         * ERDP unconditionally after servicing as well.
+         */
+        {
             volatile struct xhci_ir *ir = (volatile struct xhci_ir *)xhcic->xhc_XHCIIntR;
             UQUAD next_dma;
 
