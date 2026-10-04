@@ -3200,6 +3200,9 @@ BOOL bConnHandleEvent(struct BtHWCore *hc, UBYTE code, const UBYTE *params, ULON
         bd = bFindDeviceByAddr(hc, params);
         btUnlockBase();
         CopyMem((APTR) params, reply, 6);
+        if(bd && bd->bd_Conns[0]) {
+            bd->bd_Conns[0]->cn_PeerIOCapValid = FALSE; /* new pairing: response follows */
+        }
         if(bd) {
             reply[6] = BPIO_DISPLAYYESNO;  /* IO capability */
             reply[7] = 0x00;               /* no OOB data */
@@ -3219,6 +3222,16 @@ BOOL bConnHandleEvent(struct BtHWCore *hc, UBYTE code, const UBYTE *params, ULON
     }
 
     case HC_EVT_IO_CAP_RESPONSE:
+        if(len < 9) {
+            return(TRUE);
+        }
+        btLockReadBase();
+        bd = bFindDeviceByAddr(hc, params);
+        btUnlockBase();
+        if(bd && bd->bd_Conns[0]) {
+            bd->bd_Conns[0]->cn_PeerIOCap = params[6];
+            bd->bd_Conns[0]->cn_PeerIOCapValid = TRUE;
+        }
         return(TRUE);
 
     case HC_EVT_USER_CONFIRM_REQUEST: {
@@ -3231,8 +3244,19 @@ BOOL bConnHandleEvent(struct BtHWCore *hc, UBYTE code, const UBYTE *params, ULON
         bd = bFindDeviceByAddr(hc, params);
         btUnlockBase();
         if(bd && bd->bd_Conns[0]) {
-            if(BluetoothBase->bt_GlobalCfg->bgc_PopupPairing) {
-                bAskUser(bd->bd_Conns[0], BPRT_NUMERICCOMPARE, passkey);
+            /* A peer without a display or keyboard cannot show or confirm a
+               number, so this is Just Works: there is nothing to compare.
+               Pairing we started was already approved by whoever asked for
+               it; pairing the peer started only needs the user's consent. */
+            BOOL justworks;
+            cn = bd->bd_Conns[0];
+            justworks = cn->cn_PeerIOCapValid && (cn->cn_PeerIOCap == BPIO_NOINPUTNOOUTPUT);
+            if(justworks && cn->cn_PairReq) {
+                UBYTE reply[6];
+                CopyMem((APTR) params, reply, 6);
+                bSubmitCmd(hc, HC_OP_USER_CONFIRM_REPLY, reply, 6, bIgnoreCompletion, hc);
+            } else if(BluetoothBase->bt_GlobalCfg->bgc_PopupPairing) {
+                bAskUser(cn, justworks ? BPRT_CONSENT : BPRT_NUMERICCOMPARE, passkey);
             } else {
                 /* nobody to ask: accept (just works) */
                 UBYTE reply[6];
