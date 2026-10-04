@@ -1,22 +1,8 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    Desc: Find a working Ethernet device and write an AROSTCP interfaces
-          line for it.
-
-    Nothing populates ENVARC:AROSTCP on a fresh install, and a Live CD has
-    no writable ENVARC: at all, so ${AROSTCP/AutoRun} is empty and the stack
-    never starts - the machine boots with a browser and no network. The
-    interfaces file has to name one specific device, and DEVS:Networks ships
-    around eighteen of them, so the right one has to be found at boot.
-
-    Listing them all is not an option: AROSTCP's iface_make() puts up a
-    "Fatal error in NetDB file interfaces ... Memory exhausted" requester for
-    every entry whose device does not open.
-
-    So probe exactly the way iface_make() does - OpenDevice(), S2_DEVICEQUERY,
-    S2_GETSTATIONADDRESS - and only write an entry for a device that answers
-    all three. A device that passes here is one AROSTCP can bring up.
+    Desc: Find the Ethernet adapter and write an AROSTCP interfaces line
+          for it.
 */
 
 #include <exec/types.h>
@@ -35,8 +21,6 @@
 
 #include <string.h>
 
-/* utility.library's Stricmp is not pulled in by proto/dos.h, and this is the
-   only case-insensitive compare needed here. */
 static int NameEquals(CONST_STRPTR a, CONST_STRPTR b)
 {
     while (*a != '\0' && *b != '\0')
@@ -52,7 +36,7 @@ static int NameEquals(CONST_STRPTR a, CONST_STRPTR b)
     return (*a == *b) ? 0 : 1;
 }
 
-const TEXT version[] = "$VER: netdetect 1.0 (09.09.2026)";
+const TEXT version[] = "$VER: netdetect 1.0 (2.10.2026)";
 
 #define NETWORKS_DIR    "DEVS:Networks"
 #define DEFAULT_IFACES  "ENV:AROSTCP/db/interfaces"
@@ -69,8 +53,6 @@ enum
     ARG_COUNT
 };
 
-/* A driver copies packets through these and defaults them to NULL, so an
-   empty list leaves a live opener with null hooks. Never hand it one. */
 static BOOL CopyToBuff(APTR to, APTR from, ULONG len)
 {
     CopyMem(from, to, len);
@@ -90,11 +72,7 @@ static struct TagItem buffer_management[] =
     { TAG_END,         0                  }
 };
 
-/* Drivers that cannot serve as a plain DHCP Ethernet interface at boot:
-   the _debug variants flood the serial log (and livelock at DEBUG=1),
-   ppp is not Ethernet, and the wireless ones need an association before
-   they carry traffic. S2_DEVICEQUERY's wire type catches the last two as
-   well; the names are here so we do not even open them. */
+/* Not usable as a DHCP Ethernet interface at boot */
 static CONST_STRPTR skip_devices[] =
 {
     "ppp.device",
@@ -120,18 +98,13 @@ static BOOL IsSkipped(CONST_STRPTR name)
     return FALSE;
 }
 
-/* TRUE if <name> opens as an Ethernet device and answers the two queries
-   AROSTCP makes before it will use an interface. */
-static BOOL ProbeDevice(CONST_STRPTR name)
+/* TRUE if <path> opens exclusively as Ethernet and reports a station address */
+static BOOL ProbeDeviceAt(CONST_STRPTR path)
 {
     struct MsgPort *port;
     struct IOSana2Req *req;
     struct Sana2DeviceQuery query;
-    TEXT path[256];
     BOOL usable = FALSE;
-
-    strlcpy(path, NETWORKS_DIR "/", sizeof(path));
-    strlcat(path, name, sizeof(path));
 
     port = CreateMsgPort();
     if (port == NULL)
@@ -142,12 +115,7 @@ static BOOL ProbeDevice(CONST_STRPTR name)
     {
         req->ios2_BufferManagement = (APTR)buffer_management;
 
-        /* SANA2OPF_MINE: a device somebody else already owns must come back
-           IOERR_UNITBUSY and be left completely alone. e1000.device (at
-           least) re-runs its hardware init on every open, so probing a NIC
-           that the stack is already using resets it underneath the stack and
-           hangs the machine. Exclusive open both avoids that and asks the
-           right question - autoconfig only wants a card nobody is using. */
+        /* Exclusive, so a device another program owns is left alone */
         if (OpenDevice(path, 0, (struct IORequest *)req, SANA2OPF_MINE) == 0)
         {
             req->ios2_Req.io_Command = S2_DEVICEQUERY;
@@ -179,9 +147,58 @@ static BOOL ProbeDevice(CONST_STRPTR name)
     return usable;
 }
 
-/* Writes "<ifname> DEV=DEVS:Networks/<device> UNIT=0 IP=DHCP UP". */
+static BOOL ProbeDevice(CONST_STRPTR name)
+{
+    TEXT path[256];
+
+    strlcpy(path, NETWORKS_DIR "/", sizeof(path));
+    strlcat(path, name, sizeof(path));
+    return ProbeDeviceAt(path);
+}
+
+/* SANA-II devices added by the USB network classes; tried only if loaded */
+
+static CONST_STRPTR usb_devices[] =
+{
+    "usbrndis.device",
+    "usbcdceth.device",
+    "usbasixeth.device",
+    "usblan78xx.device",
+    "usbmoschipeth.device",
+    "usbpegasus.device",
+    NULL
+};
+
+static BOOL FindDeviceByUSB(STRPTR found, ULONG size, BOOL quiet)
+{
+    ULONG i;
+
+    for (i = 0; usb_devices[i] != NULL; i++)
+    {
+        BOOL present;
+
+        Forbid();
+        present = FindName(&SysBase->DeviceList, usb_devices[i]) != NULL;
+        Permit();
+        if (!present)
+            continue;
+
+        if (ProbeDeviceAt(usb_devices[i]))
+        {
+            strlcpy(found, usb_devices[i], size);
+            if (!quiet)
+                Printf("netdetect: USB adapter on %s\n", (IPTR)usb_devices[i]);
+            return TRUE;
+        }
+    }
+    if (!quiet)
+        PutStr("netdetect: no USB network adapter\n");
+    return FALSE;
+}
+
+/* dhclient supports a single interface, so exactly one line is written */
 static BOOL WriteInterfaces(CONST_STRPTR file, CONST_STRPTR ifname,
-    CONST_STRPTR device)
+    CONST_STRPTR device, BOOL resident)
 {
     BPTR fh;
     BOOL ok = FALSE;
@@ -189,33 +206,19 @@ static BOOL WriteInterfaces(CONST_STRPTR file, CONST_STRPTR ifname,
     fh = Open(file, MODE_NEWFILE);
     if (fh != BNULL)
     {
-        ok = FPrintf(fh, "%s DEV=%s/%s UNIT=0 IP=DHCP UP\n",
-                     ifname, NETWORKS_DIR, device) >= 0;
+        if (resident)
+            ok = FPrintf(fh, "%s DEV=%s UNIT=0 IP=DHCP UP\n",
+                         ifname, device) >= 0;
+        else
+            ok = FPrintf(fh, "%s DEV=%s/%s UNIT=0 IP=DHCP UP\n",
+                         ifname, NETWORKS_DIR, device) >= 0;
         Close(fh);
     }
 
     return ok;
 }
 
-/* First usable device in DEVS:Networks, or NULL. The name is copied into
-   <found>. */
-/* ------------------------------------------------------------------------
-   PCI-based detection.
-
-   Opening a card to find out whether it is there costs more than it looks:
-   e1000's Close() does not stop the unit (its own FIXME), so a probe's
-   open/close cycle consumes the driver's one-time bring-up and the stack that
-   opens afterwards inherits an unconfigured unit and moves no traffic.
-
-   The card can be identified without touching the driver at all. Every AROS
-   network driver finds its own hardware by enumerating PCI and matching
-   vendor/product IDs; do the same here and map the match to the driver that
-   claims it. No OpenDevice, so nothing is consumed and AROSTCP remains the
-   card's first opener.
-
-   A product of 0 matches any device from that vendor whose PCI class says
-   network controller, which is what lets one entry cover a whole family. -->
-   ------------------------------------------------------------------------ */
+/* PCI network controllers and the driver that handles each */
 
 struct NicMatch
 {
@@ -262,8 +265,6 @@ AROS_UFH3(void, NicEnumerator,
     IPTR vendor = 0, product = 0;
     int i;
 
-    /* No early return: AROS_USERFUNC_EXIT closes the function's scope, so it
-       has to appear exactly once, at the end. First match wins. */
     if (scan->driver == NULL)
     {
         OOP_GetAttr(pciDevice, scan->devattr + aoHidd_PCIDevice_VendorID, &vendor);
@@ -286,8 +287,6 @@ AROS_UFH3(void, NicEnumerator,
     AROS_USERFUNC_EXIT
 }
 
-/* Returns TRUE and fills `found` when a known NIC is present in PCI and its
-   driver exists in DEVS:Networks. */
 static BOOL FindDeviceByPCI(STRPTR found, ULONG size, BOOL quiet)
 {
     struct Library *OOPBase;
@@ -310,8 +309,7 @@ static BOOL FindDeviceByPCI(STRPTR found, ULONG size, BOOL quiet)
         if (pci != NULL)
         {
             struct Hook FindHook;
-            /* Class 0x02 is "network controller"; restricting the enumeration
-               keeps us away from every other device on the bus. */
+            /* Network controllers only */
             struct TagItem reqs[] =
             {
                 { tHidd_PCI_Class, 0x02 },
@@ -335,7 +333,6 @@ static BOOL FindDeviceByPCI(STRPTR found, ULONG size, BOOL quiet)
     {
         TEXT path[256];
 
-        /* A driver named in the table still has to be installed. */
         strlcpy(path, NETWORKS_DIR, sizeof(path));
         strlcat(path, "/", sizeof(path));
         strlcat(path, scan.driver, sizeof(path));
@@ -370,55 +367,6 @@ static BOOL FindDeviceByPCI(STRPTR found, ULONG size, BOOL quiet)
     return got;
 }
 
-static BOOL FindDevice(STRPTR found, ULONG size, BOOL quiet)
-{
-    struct FileInfoBlock *fib;
-    BPTR dir;
-    BOOL got = FALSE;
-
-    dir = Lock(NETWORKS_DIR, SHARED_LOCK);
-    if (dir == BNULL)
-    {
-        if (!quiet)
-            PutStr("netdetect: no " NETWORKS_DIR "\n");
-        return FALSE;
-    }
-
-    fib = AllocDosObject(DOS_FIB, NULL);
-    if (fib != NULL)
-    {
-        if (Examine(dir, fib))
-        {
-            while (!got && ExNext(dir, fib))
-            {
-                ULONG len;
-
-                if (fib->fib_DirEntryType > 0)
-                    continue;
-
-                len = strlen(fib->fib_FileName);
-                if (len < 8 || NameEquals(fib->fib_FileName + len - 7, ".device") != 0)
-                    continue;
-
-                if (IsSkipped(fib->fib_FileName))
-                    continue;
-
-                if (ProbeDevice(fib->fib_FileName))
-                {
-                    strlcpy(found, fib->fib_FileName, size);
-                    got = TRUE;
-                }
-            }
-        }
-
-        FreeDosObject(DOS_FIB, fib);
-    }
-
-    UnLock(dir);
-
-    return got;
-}
-
 int main(void)
 {
     struct RDArgs *rdargs;
@@ -428,6 +376,7 @@ int main(void)
     TEXT device[128];
     CONST_STRPTR file, ifname;
     BOOL quiet;
+    BOOL resident = FALSE;
     int rc = RETURN_WARN;
 
     rdargs = ReadArgs(ARG_TEMPLATE, args, NULL);
@@ -443,19 +392,23 @@ int main(void)
                               : (CONST_STRPTR)DEFAULT_IFNAME;
     quiet = args[ARG_QUIET] != 0;
 
-    /* Probing a driver whose hardware is absent must not put a requester on
-       the screen during the boot sequence. */
+    /* No requesters during the boot sequence */
     oldwindowptr = me->pr_WindowPtr;
     me->pr_WindowPtr = (APTR)-1;
 
     if (args[ARG_DEVICE] != 0)
     {
-        /* Explicit device: still probed, so a wrong guess writes nothing. */
         if (ProbeDevice((CONST_STRPTR)args[ARG_DEVICE]))
         {
             strlcpy(device, (CONST_STRPTR)args[ARG_DEVICE], sizeof(device));
             rc = RETURN_OK;
         }
+    }
+    else if (FindDeviceByUSB(device, sizeof(device), quiet))
+    {
+        /* A plugged-in USB adapter is preferred over the onboard port */
+        resident = TRUE;
+        rc = RETURN_OK;
     }
     else if (FindDeviceByPCI(device, sizeof(device), quiet))
     {
@@ -466,7 +419,7 @@ int main(void)
 
     if (rc == RETURN_OK)
     {
-        if (!WriteInterfaces(file, ifname, device))
+        if (!WriteInterfaces(file, ifname, device, resident))
         {
             if (!quiet)
             {
