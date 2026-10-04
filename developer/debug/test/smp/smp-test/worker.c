@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 #define DEBUG 0
@@ -190,7 +190,7 @@ void SMPTestWorker(struct ExecBase *SysBase)
 
                 /* we are ready for work .. */
                 worker->smpw_Node.ln_Type = 1;
-                Signal(worker->smpw_SyncTask, SIGBREAKF_CTRL_C);
+                Signal(worker->smpw_SyncTask, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D);
                 WaitPort(worker->smpw_MsgPort);
 
                 while((workMsg = (struct SMPWorkMessage *) GetMsg(worker->smpw_MsgPort)))

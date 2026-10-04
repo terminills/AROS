@@ -1,5 +1,5 @@
 /*
-    Copyright 2017-2018, The AROS Development Team. All rights reserved.
+    Copyright 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 #define DEBUG 0
@@ -284,6 +284,7 @@ int main()
 
             D(bug("[SMP-Test] %s: Target BitMap RastPort @ 0x%p\n", __func__, outBMRastPort);)
 
+            workMaster.smpm_Issuing = TRUE;
             workMaster.smpm_Master = NewCreateTask(TASKTAG_NAME   , "SMP-Test Master",
                                                         TASKTAG_AFFINITY, TASKAFFINITY_ANY,
                                                         TASKTAG_PRI        , -1,
@@ -303,14 +304,15 @@ int main()
                     complete = TRUE;
 
                     /* Is work still being issued? */
-                    if (workMaster.smpm_Master)
+                    if (workMaster.smpm_Issuing)
                         complete = FALSE;
 
                     /* Are workers still working ? */
                     ObtainSemaphoreShared(&workMaster.smpm_Lock);
                     ForeachNode(&workMaster.smpm_Workers, coreWorker)
                     {
-                        if (!IsListEmpty(&coreWorker->smpw_MsgPort->mp_MsgList))
+                        if ((coreWorker->smpw_Node.ln_Type != 1) ||
+                            !IsListEmpty(&coreWorker->smpw_MsgPort->mp_MsgList))
                             complete = FALSE;
                     }
                     ReleaseSemaphore(&workMaster.smpm_Lock);

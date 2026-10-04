@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <exec/semaphores.h>
@@ -11,6 +11,7 @@ struct SMPMaster
     IPTR                        smpm_WorkerCount;
     struct List                 smpm_Workers;
     struct Task                 *smpm_Master;
+    volatile BOOL               smpm_Issuing;
     struct MsgPort              *smpm_MasterPort;
     ULONG                       *smpm_WorkBuffer;
     UWORD                       smpm_Width;

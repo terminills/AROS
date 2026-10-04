@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 2017-2026, The AROS Development Team. All rights reserved.
 */
 
 #define DEBUG 0
@@ -74,7 +74,7 @@ void SMPTestMaster(struct ExecBase *SysBase)
         }
     }
 
-    workMaster->smpm_Master = NULL;
+    workMaster->smpm_Issuing = FALSE;
     Signal(workMaster->smpm_MasterPort->mp_SigTask, SIGBREAKF_CTRL_D);
 
     D(bug("[SMP-Test:Master.%03d] %s: work complete\n", cpunum, __func__);)
