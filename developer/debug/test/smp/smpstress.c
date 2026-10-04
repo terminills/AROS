@@ -47,9 +47,10 @@ static cpumask_t *g_WorkerMasks[NUM_WORKERS + 1];
 #define SOFTINT_ITERS   5000
 
 /* Signals for synchronization */
-#define SIGF_READY      SIGBREAKF_CTRL_D
+static ULONG g_SigReady, g_SigDone;
+#define SIGF_READY      g_SigReady
 #define SIGF_GO         SIGBREAKF_CTRL_E
-#define SIGF_DONE       SIGBREAKF_CTRL_F
+#define SIGF_DONE       g_SigDone
 
 /*
  * Helper: wait for all workers to signal SIGF_READY / SIGF_DONE.
@@ -1066,6 +1067,21 @@ int main(int argc, char **argv)
     ULONG pool_iters = POOL_ITERS;
     ULONG msg_iters = MSG_ITERS;
     ULONG softint_iters = SOFTINT_ITERS;
+    BYTE readybit, donebit;
+
+    readybit = AllocSignal(-1);
+    donebit = AllocSignal(-1);
+    if (readybit == -1 || donebit == -1)
+    {
+        bug("SMP Stress Test: no free signals\n");
+        if (readybit != -1)
+            FreeSignal(readybit);
+        if (donebit != -1)
+            FreeSignal(donebit);
+        return RETURN_FAIL;
+    }
+    g_SigReady = 1UL << readybit;
+    g_SigDone = 1UL << donebit;
 
     KernelBase = OpenResource("kernel.resource");
     if (KernelBase)
@@ -1114,6 +1130,9 @@ int main(int argc, char **argv)
 
     bug("\n======================================\n");
     bug("Results: %d passed, %d failed\n", passed, failed);
+
+    FreeSignal(donebit);
+    FreeSignal(readybit);
 
     return failed ? RETURN_ERROR : RETURN_OK;
 }
