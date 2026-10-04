@@ -31,6 +31,7 @@
 #include "hid/test_aros_input_bridge.h"
 #include "vendor_init/test_vendor_init.h"
 #include "codec/test_sbc.h"
+#include "a2dp/test_a2dp_source.h"
 
 #include <stdio.h>
 
@@ -68,6 +69,7 @@ int main(void)
     run_aros_input_bridge_tests();
     run_vendor_init_tests();
     run_sbc_tests();
+    run_a2dp_source_tests();
 
     printf("%d/%d checks passed\n", bt_test_count - bt_test_failures, bt_test_count);
 
