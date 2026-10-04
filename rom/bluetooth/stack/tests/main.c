@@ -30,6 +30,7 @@
 #include "hid/test_hogp_client.h"
 #include "hid/test_aros_input_bridge.h"
 #include "vendor_init/test_vendor_init.h"
+#include "codec/test_sbc.h"
 
 #include <stdio.h>
 
@@ -66,6 +67,7 @@ int main(void)
     run_hogp_client_tests();
     run_aros_input_bridge_tests();
     run_vendor_init_tests();
+    run_sbc_tests();
 
     printf("%d/%d checks passed\n", bt_test_count - bt_test_failures, bt_test_count);
 

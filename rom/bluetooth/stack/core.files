@@ -16,6 +16,7 @@ BTCORE_FILES := \
     core/security/smp_manager \
     core/hid/report_parser \
     core/hid/input \
+    core/codec/sbc_encoder \
     protocols/hci/hci \
     protocols/l2cap/l2cap \
     protocols/l2cap/signaling \

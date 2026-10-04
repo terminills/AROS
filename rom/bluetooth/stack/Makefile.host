@@ -23,7 +23,8 @@ TEST_SRC := tests/main.c tests/support/test.c tests/endian/test_endian.c \
             tests/security/test_smp_pairing.c tests/security/test_smp_manager.c \
             tests/hid/test_hid_report.c tests/hid/test_hid_input.c \
             tests/hid/test_hogp_client.c tests/hid/test_aros_input_bridge.c \
-            tests/vendor_init/test_vendor_init.c
+            tests/vendor_init/test_vendor_init.c \
+            tests/codec/test_sbc.c
 
 BUILD ?= build-host
 
