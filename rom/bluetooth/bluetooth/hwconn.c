@@ -934,7 +934,7 @@ static void bConnUp(struct BtHWConn *cn, UWORD handle, UBYTE role)
     btLockReadDevice(bd);
     for(bsv = (struct BtService *) bd->bd_Services.lh_Head; bsv->bsv_Node.ln_Succ; bsv = (struct BtService *) bsv->bsv_Node.ln_Succ) {
         for(bep = (struct BtEndpoint *) bsv->bsv_Endpoints.lh_Head; bep->bep_Node.ln_Succ; bep = (struct BtEndpoint *) bep->bep_Node.ln_Succ) {
-            if((bep->bep_Type == BEPT_L2CAP) && (cn->cn_LinkType == BDLT_ACL)) {
+            if((bep->bep_Type == BEPT_L2CAP) && (cn->cn_LinkType == BDLT_ACL) && !bep->bep_Secondary) {
                 struct BtHWEndpoint *hep = bFindHWEndpoint(cn, bep);
                 if(!hep) {
                     hep = bAllocHWEndpoint(cn, bep);
@@ -1686,6 +1686,24 @@ static void bParseSDPRecord(struct BtHWConn *cn, ULONG handle, const UBYTE *attr
                 bep->bep_MaxPktSize = (psms[n] == 0x000f) ? 1691 : BT_L2CAP_DEFAULT_MTU;
                 bep->bep_Name = btCopyStrFmt("L2CAP PSM 0x%04lx", psms[n]);
                 bep->bep_Node.ln_Name = bep->bep_Name;
+            }
+            /* AVDTP carries signalling and media on two separate L2CAP
+               channels to the same PSM, opened in that order. Each endpoint
+               owns one L2CAP channel, so give the media (transport) channel
+               its own endpoint after the signalling one; clients find it
+               with btFindEndpoint(bsv, signalling_endpoint, BEA_PSM, 0x19). */
+            if(psms[n] == 0x0019) {
+                bep = bAllocEndpoint(BluetoothBase, bsv);
+                if(bep) {
+                    bep->bep_Type = BEPT_L2CAP;
+                    bep->bep_CanRead = TRUE;
+                    bep->bep_CanWrite = TRUE;
+                    bep->bep_PSM = psms[n];
+                    bep->bep_MaxPktSize = BT_L2CAP_DEFAULT_MTU;
+                    bep->bep_Secondary = TRUE;
+                    bep->bep_Name = btCopyStr("AVDTP transport");
+                    bep->bep_Node.ln_Name = bep->bep_Name;
+                }
             }
         }
         if(rfcomm) {
