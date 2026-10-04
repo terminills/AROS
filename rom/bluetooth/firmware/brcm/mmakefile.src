@@ -1,0 +1,18 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+USER_LDFLAGS := -static
+USER_INCLUDES := -I$(SRCDIR)/rom/bluetooth/bluetooth/include \
+                 -I$(SRCDIR)/rom/bluetooth/stack/include
+
+FILES := brcmbt
+
+#MM- kernel-bluetooth-firmware-brcm : kernel-bluetooth-library-includes
+
+%build_module_library mmake=kernel-bluetooth-firmware-brcm \
+    modname=brcmbt modtype=library modsuffix="fwl" \
+    moduledir=Devs/Bluetooth/FWLoaders \
+    files="$(FILES)"
+
+%common
