@@ -110,7 +110,14 @@ int AmdgpuGfx_InitDisplay(struct AmdgpuHiddBase *LIBBASE)
                   (void *)xsd->device->vram_bar_phys, (unsigned)xsd->device->vram_mb,
                   (unsigned)xsd->device->dmu_seg[2]));
         else
-            D(bug("[AmdgpuGfx] no probed device to bind — display stays GOP-adopt only\n"));
+        {
+            /* No AMD GPU in the system: leave the display to the driver that
+               already owns it (efifbgfx/VESA). Registering here would take
+               over the boot display and draw into a framebuffer no AMD
+               scanout is showing. */
+            bug("[AmdgpuGfx] no AMD GPU found - display driver not registered\n");
+            return FALSE;
+        }
     }
 
     /*
