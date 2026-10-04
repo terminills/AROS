@@ -178,6 +178,13 @@ bt_status_t bt_l2cap_channel_manager_open_fixed(struct bt_l2cap_channel_manager 
  * defined for a channel that never finished opening, so none is sent.
  * Either way the channel slot is freed and a CLOSED event fires (with
  * BT_L2CAP_CLOSE_LOCAL) unless it was already FREE. */
+/* Forget a consumer that is going away: every channel whose user_data is
+ * user_data stops reporting events (a channel still closing finishes
+ * silently) and every listener registered with it is removed. Call this
+ * before freeing the object passed as user_data, since a close completes
+ * asynchronously when the peer's Disconnection Response arrives. */
+void bt_l2cap_channel_manager_detach(struct bt_l2cap_channel_manager *mgr, void *user_data);
+
 void bt_l2cap_channel_manager_close(struct bt_l2cap_channel_manager *mgr, uint16_t local_cid,
                                      uint64_t now_us);
 

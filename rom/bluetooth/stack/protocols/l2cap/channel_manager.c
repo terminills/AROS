@@ -688,6 +688,31 @@ bt_status_t bt_l2cap_channel_manager_open_fixed(struct bt_l2cap_channel_manager 
     return BT_OK;
 }
 
+void bt_l2cap_channel_manager_detach(struct bt_l2cap_channel_manager *mgr, void *user_data)
+{
+    size_t i;
+
+    for (i = 0; i < BT_L2CAP_CHANNEL_MANAGER_MAX_CHANNELS; i++)
+    {
+        struct bt_l2cap_channel *chan = &mgr->channels[i];
+
+        if (chan->state != BT_L2CAP_CHAN_FREE && chan->user_data == user_data)
+        {
+            chan->on_event = NULL;
+            chan->user_data = NULL;
+        }
+    }
+    for (i = 0; i < BT_L2CAP_CHANNEL_MANAGER_MAX_LISTENERS; i++)
+    {
+        if (mgr->listeners[i].psm != 0 && mgr->listeners[i].user_data == user_data)
+        {
+            mgr->listeners[i].psm = 0;
+            mgr->listeners[i].on_event = NULL;
+            mgr->listeners[i].user_data = NULL;
+        }
+    }
+}
+
 void bt_l2cap_channel_manager_close(struct bt_l2cap_channel_manager *mgr, uint16_t local_cid,
                                      uint64_t now_us)
 {

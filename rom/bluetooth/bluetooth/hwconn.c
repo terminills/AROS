@@ -204,6 +204,10 @@ static void bFreeHWEndpoint(struct BtHWEndpoint *hep, LONG error)
     struct BtBase *BluetoothBase = hep->hep_Conn->cn_Core->hc_Base;
     struct HCRxSDU *rx;
 
+    /* A channel being closed still reports CLOSED when the peer answers,
+       and listeners hold hep too: make btcore forget it before it goes. */
+    bt_l2cap_channel_manager_detach(&hep->hep_Conn->cn_L2CAP, hep);
+    bt_rfcomm_detach(&hep->hep_Conn->cn_RFCOMM, hep);
     bReqQueueFlush(BluetoothBase, &hep->hep_ReadReqs, error);
     bReqQueueFlush(BluetoothBase, &hep->hep_WriteReqs, error);
     while((rx = (struct HCRxSDU *) RemHead((struct List *) &hep->hep_RxQueue))) {

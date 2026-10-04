@@ -287,6 +287,48 @@ static void test_open_full_handshake(void)
     BT_CHECK(find_chan(&mgr, local_cid)->remote_mtu == 300);
 }
 
+/* A peer (onn soundbar) sends an Information Request carrying the same
+ * identifier as our pending Connection Request, then answers the
+ * connection with a source CID of 0. The channel must still configure. */
+static void test_conn_rsp_after_peer_info_req_same_ident(void)
+{
+    struct fake_transport ft;
+    struct bt_l2cap_channel_manager mgr;
+    struct event_log log = {0, 0, 0, BT_L2CAP_CLOSE_LOCAL, {0}, 0};
+    uint16_t local_cid;
+    struct bt_l2cap_sig_header hdr;
+    const uint8_t *cmd_data;
+    uint8_t identifier;
+    uint8_t buf[32];
+    struct bt_buf_writer w;
+    int sent;
+
+    fake_transport_init(&ft);
+    bt_l2cap_channel_manager_init(&mgr, &ft.base, 0x0041, BT_L2CAP_CID_SIGNALING_CLASSIC, 672);
+    BT_CHECK(bt_l2cap_channel_manager_open(&mgr, 0x0001, 672, log_event, &log, &local_cid, 0) == BT_OK);
+    BT_CHECK(take_last_sig_command(&ft, &hdr, &cmd_data));
+    identifier = hdr.identifier;
+
+    {
+        const uint8_t info_req[] = { BT_L2CAP_SIG_INFORMATION_REQUEST, 0, 2, 0, 0x02, 0x00 };
+        uint8_t ir[sizeof(info_req)];
+        memcpy(ir, info_req, sizeof(ir));
+        ir[1] = identifier;
+        feed_signaling_command(&mgr, ir, sizeof(ir), 5);
+    }
+    sent = ft.send_count;
+
+    bt_buf_writer_init(&w, buf, sizeof(buf));
+    bt_l2cap_sig_encode_connection_response(&w, identifier, 0x0041, 0x0000,
+                                             BT_L2CAP_CONN_RESULT_SUCCESS, 0);
+    feed_signaling_command(&mgr, buf, bt_buf_writer_len(&w), 10);
+
+    BT_CHECK(ft.send_count == sent + 1);
+    BT_CHECK(take_last_sig_command(&ft, &hdr, &cmd_data));
+    BT_CHECK(hdr.code == BT_L2CAP_SIG_CONFIGURE_REQUEST);
+    BT_CHECK(find_chan(&mgr, local_cid)->state == BT_L2CAP_CHAN_CONFIG);
+}
+
 static void test_connection_refused(void)
 {
     struct fake_transport ft;
@@ -426,6 +468,65 @@ static void test_local_disconnect_from_open(void)
 
     BT_CHECK(log.closed_count == 1);
     BT_CHECK(log.last_close_reason == BT_L2CAP_CLOSE_LOCAL);
+    BT_CHECK(find_chan(&mgr, local_cid) == NULL);
+}
+
+static void test_detach_before_disconnect_rsp(void)
+{
+    struct fake_transport ft;
+    struct bt_l2cap_channel_manager mgr;
+    struct event_log log = {0, 0, 0, BT_L2CAP_CLOSE_LOCAL, {0}, 0};
+    uint16_t local_cid;
+    struct bt_l2cap_sig_header hdr;
+    const uint8_t *cmd_data;
+    uint8_t identifier;
+    uint8_t buf[32];
+    struct bt_buf_writer w;
+    size_t i;
+    bool listening;
+
+    fake_transport_init(&ft);
+    bt_l2cap_channel_manager_init(&mgr, &ft.base, 0x0041, BT_L2CAP_CID_SIGNALING_LE, 200);
+    BT_CHECK(bt_l2cap_channel_manager_listen(&mgr, 0x0019, 0, log_event, &log) == BT_OK);
+
+    BT_CHECK(bt_l2cap_channel_manager_open(&mgr, 0x0019, 0, log_event, &log, &local_cid, 0) ==
+              BT_OK);
+    BT_CHECK(take_last_sig_command(&ft, &hdr, &cmd_data));
+    identifier = hdr.identifier;
+    bt_buf_writer_init(&w, buf, sizeof(buf));
+    bt_l2cap_sig_encode_connection_response(&w, identifier, 0x0050, local_cid,
+                                             BT_L2CAP_CONN_RESULT_SUCCESS, 0);
+    feed_signaling_command(&mgr, buf, bt_buf_writer_len(&w), 10);
+    BT_CHECK(take_last_sig_command(&ft, &hdr, &cmd_data));
+    identifier = hdr.identifier;
+    bt_buf_writer_init(&w, buf, sizeof(buf));
+    bt_l2cap_sig_encode_configure_response(&w, identifier, 0x0050, 0,
+                                            BT_L2CAP_CONFIG_RESULT_SUCCESS, 0);
+    feed_signaling_command(&mgr, buf, bt_buf_writer_len(&w), 20);
+    bt_buf_writer_init(&w, buf, sizeof(buf));
+    bt_l2cap_sig_encode_configure_request(&w, 0x77, local_cid, 0, 0);
+    feed_signaling_command(&mgr, buf, bt_buf_writer_len(&w), 30);
+    BT_CHECK(log.open_count == 1);
+    ft.captured_complete = false;
+
+    /* Close, then the consumer goes away before the peer answers. */
+    bt_l2cap_channel_manager_close(&mgr, local_cid, 40);
+    BT_CHECK(take_last_sig_command(&ft, &hdr, &cmd_data));
+    identifier = hdr.identifier;
+    bt_l2cap_channel_manager_detach(&mgr, &log);
+
+    listening = false;
+    for (i = 0; i < BT_L2CAP_CHANNEL_MANAGER_MAX_LISTENERS; i++)
+        if (mgr.listeners[i].psm == 0x0019)
+            listening = true;
+    BT_CHECK(!listening);
+
+    bt_buf_writer_init(&w, buf, sizeof(buf));
+    bt_l2cap_sig_encode_disconnection_response(&w, identifier, 0x0050, local_cid);
+    feed_signaling_command(&mgr, buf, bt_buf_writer_len(&w), 50);
+
+    /* The close completed without calling the departed consumer. */
+    BT_CHECK(log.closed_count == 0);
     BT_CHECK(find_chan(&mgr, local_cid) == NULL);
 }
 
@@ -829,9 +930,11 @@ void run_l2cap_channel_tests(void)
     test_incoming_connection_accepted();
     test_information_echo_and_reject();
     test_open_full_handshake();
+    test_conn_rsp_after_peer_info_req_same_ident();
     test_connection_refused();
     test_data_round_trip();
     test_local_disconnect_from_open();
+    test_detach_before_disconnect_rsp();
     test_peer_initiated_disconnect();
     test_removal_during_negotiation();
     test_timeout_waiting_for_connect_rsp();
