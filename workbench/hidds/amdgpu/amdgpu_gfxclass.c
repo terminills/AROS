@@ -150,6 +150,7 @@ OOP_Object *Amdgpu__Root__New(OOP_Class *cl, OOP_Object *o, struct pRoot_New *ms
 
 /* Rows per SDMA submission; amdgpu_sdma_copy_rect_vram() takes at most 64. */
 #define AMDGPU_COPYBOX_ROWS       64
+#define AMDGPU_COPYBOX_DN_MIN_BYTES 4096UL
 
 /* Is this bitmap's storage inside our VRAM pool? Asked by ADDRESS, never by
  * class: the bitmap handed to us may be wrapped (CursorFB wraps displayable
@@ -193,7 +194,8 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
     ULONG  src_stride = 0, dst_stride = 0, bytes_pp = 0, row_bytes, done;
     OOP_Object *access_bm[2];
     ULONG held = 0, access_count;
-    BOOL copied = FALSE;
+    BOOL copied = FALSE, download = FALSE;
+    UBYTE *dst_cpu = NULL;
     OOP_MethodID release_mid;
 
     /*
@@ -239,7 +241,21 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
         BOOL sv = amdgpu_bm_vram(cl, msg->src,  &src_mc, &src_stride);
         BOOL dv = amdgpu_bm_vram(cl, msg->dest, &dst_mc, &dst_stride);
 
-        if (!sv || !dv)
+        if (sv && !dv)
+        {
+            IPTR dbuf = 0, dbpr = 0, dhgt = 0;
+
+            OOP_GetAttr(msg->dest, aHidd_ChunkyBM_Buffer, &dbuf);
+            OOP_GetAttr(msg->dest, aHidd_BitMap_BytesPerRow, &dbpr);
+            OOP_GetAttr(msg->dest, aHidd_BitMap_Height, &dhgt);
+            if (dbuf && dbpr && dhgt)
+            {
+                download   = TRUE;
+                dst_cpu    = (UBYTE *)dbuf;
+                dst_stride = (ULONG)dbpr;
+            }
+        }
+        if (!download && (!sv || !dv))
         {
             /* Zero accelerated CopyBox calls could mean "nothing ever issues
              * one" or "the gate rejects them all", and those need opposite
@@ -264,7 +280,8 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
     row_bytes = (ULONG)msg->width * bytes_pp;
 
     /* AUDIT P1-5: total in 64-bit so a large box cannot wrap the size gate. */
-    if ((UQUAD)row_bytes * (UQUAD)msg->height < AMDGPU_COPYBOX_MIN_BYTES)
+    if ((UQUAD)row_bytes * (UQUAD)msg->height <
+        (download ? AMDGPU_COPYBOX_DN_MIN_BYTES : AMDGPU_COPYBOX_MIN_BYTES))
     {
         static ULONG nsmall = 0;
         if (++nsmall <= 8)
@@ -359,8 +376,9 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
          * same-bitmap copy, including negative coordinates before conversion.
          */
         if (!address ||
-            address != (UBYTE *)XSD(cl)->data.vram_pool_cpu +
-                       (mc - XSD(cl)->data.vram_pool_mc) ||
+            address != ((download && bm == msg->dest) ? dst_cpu :
+                        (UBYTE *)XSD(cl)->data.vram_pool_cpu +
+                        (mc - XSD(cl)->data.vram_pool_mc)) ||
             bank < (UQUAD)stride * height || mem < (UQUAD)stride * height ||
             (bm == msg->src && (msg->srcX < 0 || msg->srcY < 0 ||
                 (UQUAD)msg->srcX + msg->width > width ||
@@ -380,6 +398,18 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
                 msg->width, msg->height, (unsigned long)bytes_pp,
                 (ULONG)(src_mc >> 32), (ULONG)src_mc, (unsigned long)src_stride,
                 (ULONG)(dst_mc >> 32), (ULONG)dst_mc, (unsigned long)dst_stride);
+    }
+
+    if (download)
+    {
+        if (!amdgpu_sdma_download_rect(XSD(cl)->device,
+                src_mc + (UQUAD)msg->srcY * src_stride + (UQUAD)msg->srcX * bytes_pp,
+                src_stride,
+                dst_cpu + (UQUAD)msg->destY * dst_stride + (UQUAD)msg->destX * bytes_pp,
+                dst_stride, row_bytes, msg->height, AMDGPU_XFER_RAW))
+            goto release_access;
+        copied = TRUE;
+        goto release_access;
     }
 
     for (done = 0; done < msg->height; done += AMDGPU_COPYBOX_ROWS)
