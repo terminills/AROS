@@ -16,4 +16,12 @@ USER_CPPFLAGS := -D__BLUETOOTH_NOLIBBASE__
 %build_progs mmake=bluetooth-shellcommands \
     files=$(SHELLFILES) targetdir=$(AROS_C)
 
+# BTAudioModes needs AHI's headers and ahi.device's API, so it is built with
+# AHI rather than with the other commands.
+#MM- workbench-devs-AHI : bluetooth-audiomodes
+#MM bluetooth-audiomodes : kernel-bluetooth-library-includes workbench-devs-AHI-subsystem
+
+%build_progs mmake=bluetooth-audiomodes \
+    files=BTAudioModes targetdir=$(AROS_C)
+
 %common
