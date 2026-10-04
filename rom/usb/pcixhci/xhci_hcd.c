@@ -2986,8 +2986,6 @@ BOOL xhciIntWorkProcess(struct PCIController *hc, struct IOUsbHWReq *ioreq, ULON
         pciusbXHCIDebugTRBV("xHCI", DEBUGCOLOR_SET "          Ring    @ 0x%p" DEBUGCOLOR_RESET" \n",
                             driprivate->dpDevice->dc_EPAllocs[driprivate->dpEPID].dmaa_Ptr);
 
-        driprivate->dpCC = ccode;
-
         /* Avoid log storms for expected ISO conditions and short packets */
         if((ccode != TRB_CC_SUCCESS) && (ccode != TRB_CC_SHORT_PACKET) &&
                 !(ccode == TRB_CC_RING_UNDERRUN && (ioreq->iouh_Req.io_Command == UHCMD_ISOXFER))) {
@@ -3097,6 +3095,14 @@ BOOL xhciIntWorkProcess(struct PCIController *hc, struct IOUsbHWReq *ioreq, ULON
         }
 
         ioreq->iouh_Actual = transferred;
+        /*
+         * dpCC is what the done-queue scan polls to complete the request,
+         * possibly on another CPU: publish it only once every result field
+         * above is written, or the request can be replied with the previous
+         * transfer's length.
+         */
+        __asm__ __volatile__("" ::: "memory");
+        driprivate->dpCC = ccode;
         pciusbXHCIDebugTRBV("xHCI", DEBUGCOLOR_SET "IOReq Transfer done, %u bytes <io length %u, %u remaining>"
                             DEBUGCOLOR_RESET" \n", transferred, ioreq->iouh_Length, remaining);
 
