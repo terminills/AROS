@@ -194,7 +194,7 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
     ULONG  src_stride = 0, dst_stride = 0, bytes_pp = 0, row_bytes, done;
     OOP_Object *access_bm[2];
     ULONG held = 0, access_count;
-    BOOL copied = FALSE, download = FALSE;
+    BOOL copied = FALSE, download = FALSE, bounce = FALSE;
     UBYTE *dst_cpu = NULL;
     OOP_MethodID release_mid;
 
@@ -279,9 +279,17 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
     }
     row_bytes = (ULONG)msg->width * bytes_pp;
 
+    if (!download && src_mc == dst_mc)
+    {
+        LONG sx2 = msg->srcX + (LONG)msg->width - 1, sy2 = msg->srcY + (LONG)msg->height - 1;
+        LONG dx2 = msg->destX + (LONG)msg->width - 1, dy2 = msg->destY + (LONG)msg->height - 1;
+
+        bounce = !(sx2 < msg->destX || dx2 < msg->srcX || sy2 < msg->destY || dy2 < msg->srcY);
+    }
+
     /* AUDIT P1-5: total in 64-bit so a large box cannot wrap the size gate. */
     if ((UQUAD)row_bytes * (UQUAD)msg->height <
-        (download ? AMDGPU_COPYBOX_DN_MIN_BYTES : AMDGPU_COPYBOX_MIN_BYTES))
+        ((download || bounce) ? AMDGPU_COPYBOX_DN_MIN_BYTES : AMDGPU_COPYBOX_MIN_BYTES))
     {
         static ULONG nsmall = 0;
         if (++nsmall <= 8)
@@ -291,49 +299,6 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
                 (unsigned long)AMDGPU_COPYBOX_MIN_BYTES);
         OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
         return;
-    }
-
-    /*
-     * Any OVERLAP within one surface goes to the superclass.
-     *
-     * The first version of this test only looked for VERTICAL overlap, on the
-     * theory that ascending row order was the only hazard. That was wrong, and
-     * backspacing in the Shell proved it:
-     *
-     *   CopyBox (76,199)->(68,199) 1824x9  src mc == dst mc
-     *   CopyBox (68,199)->(60,199) 1832x9
-     *
-     * Same surface, same Y, shifted left 8 px -- the Shell scrolling a line.
-     * destY == srcY, so the vertical test was false and every one of these went
-     * to SDMA, smearing glyph fragments across the line.
-     *
-     * The real rule is simpler and does not depend on direction: overlapping
-     * source and destination in a single COPY_LINEAR is UNDEFINED for a DMA
-     * engine. It has no memmove semantics either way, so "dest is behind src,
-     * so left-to-right is safe" does not hold -- that is CPU reasoning applied
-     * to hardware that makes no such promise.
-     *
-     * So test for rectangle INTERSECTION and let the superclass handle it.
-     * Cross-surface blits, which is what compositing issues, still accelerate.
-     */
-    if (src_mc == dst_mc)
-    {
-        LONG sx1 = msg->srcX,  sy1 = msg->srcY;
-        LONG sx2 = sx1 + (LONG)msg->width - 1,  sy2 = sy1 + (LONG)msg->height - 1;
-        LONG dx1 = msg->destX, dy1 = msg->destY;
-        LONG dx2 = dx1 + (LONG)msg->width - 1,  dy2 = dy1 + (LONG)msg->height - 1;
-
-        if (!(sx2 < dx1 || dx2 < sx1 || sy2 < dy1 || dy2 < sy1))
-        {
-            static ULONG nov = 0;
-            if (++nov <= 8)
-                bug("[AmdgpuGfx] CopyBox overlap #%lu (%d,%d)->(%d,%d) %ux%u"
-                    " -- software (DMA has no memmove)\n",
-                    (unsigned long)nov, msg->srcX, msg->srcY,
-                    msg->destX, msg->destY, msg->width, msg->height);
-            OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
-            return;
-        }
     }
 
     /* CopyBox bypasses the bitmap methods which normally hide the software
@@ -398,6 +363,32 @@ VOID Amdgpu__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_Co
                 msg->width, msg->height, (unsigned long)bytes_pp,
                 (ULONG)(src_mc >> 32), (ULONG)src_mc, (unsigned long)src_stride,
                 (ULONG)(dst_mc >> 32), (ULONG)dst_mc, (unsigned long)dst_stride);
+    }
+
+    if (bounce)
+    {
+        UBYTE *tmp = AllocVec((IPTR)row_bytes * msg->height, MEMF_ANY);
+        UQUAD d_off = (UQUAD)msg->destY * dst_stride + (UQUAD)msg->destX * bytes_pp;
+
+        if (!tmp || !amdgpu_sdma_download_rect(XSD(cl)->device,
+                src_mc + (UQUAD)msg->srcY * src_stride + (UQUAD)msg->srcX * bytes_pp,
+                src_stride, tmp, row_bytes, row_bytes, msg->height, AMDGPU_XFER_RAW))
+        {
+            FreeVec(tmp);
+            goto release_access;
+        }
+        if (!amdgpu_sdma_upload_rect(XSD(cl)->device, tmp, row_bytes, dst_mc + d_off,
+                                     dst_stride, row_bytes, msg->height, AMDGPU_XFER_RAW))
+        {
+            UBYTE *d = (UBYTE *)XSD(cl)->data.vram_pool_cpu +
+                       (dst_mc - XSD(cl)->data.vram_pool_mc) + d_off;
+
+            for (done = 0; done < msg->height; done++)
+                CopyMem(tmp + (IPTR)done * row_bytes, d + (IPTR)done * dst_stride, row_bytes);
+        }
+        FreeVec(tmp);
+        copied = TRUE;
+        goto release_access;
     }
 
     if (download)
