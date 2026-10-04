@@ -377,6 +377,7 @@ AC_OUTPUT(Makefile
           Drivers/RPiHDMI/Makefile
           Drivers/RPiI2S/Makefile
           Drivers/NVHDMI/Makefile
+          Drivers/Bluetooth/Makefile
           Examples/Makefile
           Examples/Device/PlayTest/Makefile
           Examples/Extras/CloneAudioModes/Makefile

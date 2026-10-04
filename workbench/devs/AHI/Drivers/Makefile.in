@@ -50,6 +50,7 @@ SUBDIRS		+= NVHDMI
 SUBDIRS		+= SB128
 SUBDIRS		+= VIA-AC97
 SUBDIRS		+= CMI8738
+SUBDIRS		+= Bluetooth
 ifneq ($(host_cpu),x86_64)
 SUBDIRS		+= EMU10kx
 SUBDIRS		+= Envy24HT

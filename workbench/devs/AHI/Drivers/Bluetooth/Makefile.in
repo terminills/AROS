@@ -1,0 +1,19 @@
+#
+#  Makefile.in for the Bluetooth A2DP audio driver
+#
+
+VPATH		= @srcdir@
+
+srcdir		= @srcdir@
+
+DRIVER		= bluetooth.audio
+MODEFILE	= BLUETOOTH
+
+OBJECTS		= bluetooth-init.o bluetooth-main.o bluetooth-playslave.o bluetooth-accel.o
+LIBS		= -lbtcore
+
+include ../Common/Makefile.common
+
+# SBC encoder and A2DP/AVDTP signalling come from the portable Bluetooth
+# core (rom/bluetooth/stack), linked as libbtcore.a.
+CPPFLAGS	+= -I${top_srcdir}/../../../rom/bluetooth/stack/include

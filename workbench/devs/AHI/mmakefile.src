@@ -23,6 +23,8 @@ include $(SRCDIR)/config/aros.cfg
 #MM workbench-devs-AHI-subsystem : includes \
 #MM                         linklibs \
 #MM                         hidd-hdaudio-includes \
+#MM                         linklibs-btcore \
+#MM                         kernel-bluetooth-library-includes \
 #MM                         AHI-$(FLAVOUR)-prereqs \
 #MM                         workbench-libs-muimaster-includes
 
