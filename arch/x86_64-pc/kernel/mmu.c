@@ -292,6 +292,8 @@ void core_SetupMMU(struct CPUMMUConfig *MMU, IPTR memtop, IPTR maptop)
     D(bug("[Kernel] core_SetupMMU: Done\n"));
 }
 
+static volatile int protpage_lock;
+
 void core_ProtPage(intptr_t addr, char p, char rw, char us)
 {
     struct CPUMMUConfig *MMU;
@@ -313,6 +315,10 @@ void core_ProtPage(intptr_t addr, char p, char rw, char us)
     pdpe = (struct PDPE *)((((IPTR)pml4[pml4_off].base_low) << 12) | (((IPTR)pml4[pml4_off].base_high) << 32));
     pde  = (struct PDE4K *)((((IPTR)pdpe[pdpe_off].base_low) << 12) | (((IPTR)pdpe[pdpe_off].base_high) << 32));
     Pages4K = MMU->mmu_PTE;
+
+    while (__atomic_exchange_n(&protpage_lock, 1, __ATOMIC_ACQUIRE))
+        while (__atomic_load_n(&protpage_lock, __ATOMIC_RELAXED))
+            asm volatile("pause");
 
     if (pde[pde_off].ps)
     {
@@ -353,6 +359,7 @@ void core_ProtPage(intptr_t addr, char p, char rw, char us)
                     " raise KICKSTART_BOOTMEM_RESERVE\n",
                     (unsigned)MMU->mmu_PTEPageCount, addr, refused);
             }
+            __atomic_store_n(&protpage_lock, 0, __ATOMIC_RELEASE);
             return;
         }
 
@@ -387,6 +394,8 @@ void core_ProtPage(intptr_t addr, char p, char rw, char us)
     pte[pte_off].us = us ? 1:0;
     pte[pte_off].p = p ? 1:0;
     asm volatile ("invlpg (%0)"::"r"(addr));
+
+    __atomic_store_n(&protpage_lock, 0, __ATOMIC_RELEASE);
 }
 
 void core_ProtKernelArea(intptr_t addr, intptr_t length, char p, char rw, char us)
