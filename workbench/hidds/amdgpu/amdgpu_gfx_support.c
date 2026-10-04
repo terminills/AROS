@@ -447,7 +447,14 @@ void amdgpuGfxVRAMHandoff(struct AmdgpuGfx_staticdata *xsd)
             struct Library *KernelBase = OpenResource((STRPTR)"kernel.resource");
 
             if (KernelBase) {
-                int wcres = KrnMapGlobal(aper_cpu, (APTR)hw->framebuffer, map_size,
+                const IPTR big = 0x200000UL;
+                IPTR wc_off = (IPTR)aper_cpu & (big - 1);
+                int wcres = -1;
+
+                if ((((IPTR)hw->framebuffer) & (big - 1)) == wc_off)
+                    wcres = KrnMapGlobal((APTR)((IPTR)aper_cpu - wc_off),
+                                         (APTR)((IPTR)hw->framebuffer - wc_off),
+                                         (map_size + wc_off + big - 1) & ~(big - 1),
                                          MAP_Readable | MAP_Writable | MAP_WriteCombine);
                 bug("[AmdgpuGfx] handoff: fb aperture write-combining %s "
                     "(KrnMapGlobal -> %d); fbperf CPU-via-BAR is the check\n",
