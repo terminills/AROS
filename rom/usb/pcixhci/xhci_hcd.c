@@ -3459,7 +3459,19 @@ static AROS_INTH1(xhciIntCode, struct PCIController *, hc)
                  * already been finished, so never pin them on whatever is
                  * busy on the endpoint now.
                  */
+                /*
+                 * Only error completions may fall back to the request busy
+                 * on the endpoint. A SUCCESS or SHORT_PACKET event whose
+                 * ring slot is already empty is a duplicate delivery - the
+                 * interrupt handler can run on two CPUs at once and both
+                 * walk the same event ring window - and pinning it on the
+                 * request queued since would complete that request with the
+                 * previous transfer's length and data. Back-to-back
+                 * interrupt-in reads (HCI events) desynchronised that way.
+                 */
                 if(!req && devCtx && (trbe_epid < MAX_DEVENDPOINTS) &&
+                   (trbe_ccode != TRB_CC_SUCCESS) &&
+                   (trbe_ccode != TRB_CC_SHORT_PACKET) &&
                    (trbe_ccode != TRB_CC_STOPPED) &&
                    (trbe_ccode != TRB_CC_STOPPED_LENGTH_INVALID) &&
                    (trbe_ccode != TRB_CC_STOPPED_SHORT_PACKET)) {
@@ -3488,8 +3500,11 @@ static AROS_INTH1(xhciIntCode, struct PCIController *, hc)
                     BOOL isotail = ((trbe_ccode == TRB_CC_SUCCESS) ||
                                     (trbe_ccode == TRB_CC_SHORT_PACKET)) &&
                                    xhciEndpointIsIsoch(hc, devCtx, trbe_epid);
+                    /* a duplicate success (see above) is dropped quietly too */
+                    BOOL dupsuccess = (trbe_ccode == TRB_CC_SUCCESS) ||
+                                      (trbe_ccode == TRB_CC_SHORT_PACKET);
 
-                    if(!isotail &&
+                    if(!isotail && !dupsuccess &&
                        (trbe_ccode != TRB_CC_RING_UNDERRUN) &&
                        (trbe_ccode != TRB_CC_STOPPED) &&
                        (trbe_ccode != TRB_CC_STOPPED_LENGTH_INVALID) &&
