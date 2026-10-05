@@ -3,6 +3,7 @@
 
 #include <exec/libraries.h>
 #include <exec/ports.h>
+#include <exec/semaphores.h>
 #include <devices/timer.h>
 #include <dos/dos.h>
 #include <proto/dos.h>
@@ -12,9 +13,12 @@
 
 #include "DriverBase.h"
 
+struct BtaLink;
+
 struct BluetoothAudioBase {
     struct DriverBase driverbase;
     struct DosLibrary *dosbase;
+    struct BtaLink    *link;
 };
 
 #define DRIVERBASE_SIZEOF (sizeof (struct BluetoothAudioBase))
@@ -30,20 +34,38 @@ struct BluetoothAudioBase {
 struct BluetoothAudioData {
     struct DriverData   driverdata;
     BYTE                mastersignal;
-    BYTE                slavesignal;
     struct Process     *mastertask;
-    struct Process     *slavetask;
     struct BluetoothAudioBase *ahisubbase;
     APTR                mixbuffer;
     UBYTE               address[18];   /* sink chosen by the audio mode, "" = default */
     ULONG               volume;        /* output volume, Fixed (0x10000 = 0 dB) */
+};
 
-    /* owned by the slave process */
+/* The connection to the sink. It belongs to the driver, not to one
+   AllocAudio()/Start(), so the sink stays connected between sounds; the
+   link process closes it after BTA_IDLE_SECS without playback. */
+struct BtaLink {
+    struct SignalSemaphore lock;       /* held while ctrl is used or changed */
+    struct Process     *task;
+    struct Task        *creator;
+    BYTE                creatorsig;
+    BYTE                wakesig;
+    struct AHIAudioCtrlDrv *ctrl;      /* the one playing, NULL when stopped */
+    UBYTE               want_address[18];
+    ULONG               want_freq;
+    BOOL                quit;
+
+    /* owned by the link process */
+    struct DriverBase  *ahisubbase;
     struct Library     *btbase;
     struct MsgPort     *port;          /* channel replies */
     struct MsgPort     *timerport;
     struct timerequest *timereq;
     BOOL                timeropen;
+    UBYTE               address[18];   /* sink of the current session */
+    ULONG               freq;          /* mixing frequency of the current session */
+    BOOL                session;       /* signalling channels up and A2DP started */
+    BOOL                broken;        /* the sink went away: close and reconnect */
     APTR                device;
     APTR                sigep;
     APTR                mediaep;
@@ -73,6 +95,9 @@ struct BluetoothAudioData {
     ULONG               packetssent;
     ULONG               packetsdropped;
 };
+
+BOOL bta_link_play(struct BluetoothAudioBase *BluetoothAudioBase, struct AHIAudioCtrlDrv *AudioCtrl);
+void bta_link_release(struct BluetoothAudioBase *BluetoothAudioBase, struct AHIAudioCtrlDrv *AudioCtrl);
 
 /* AHIDB_Data of a per-device audio mode (added by C:BTAudioModes): the
    first ULONG is the size of the block, as AHI requires. */

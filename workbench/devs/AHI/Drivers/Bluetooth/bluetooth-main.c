@@ -23,15 +23,6 @@
 
 #define dd ((struct BluetoothAudioData*) AudioCtrl->ahiac_DriverData)
 
-void
-SlaveEntry(void);
-
-#ifdef PROCGW
-PROCGW(static, void,  slaveentry, SlaveEntry);
-#else
-#define slaveentry SlaveEntry
-#endif
-
 /*  There is probably no reason to support all these frequencies. If,
  *  for example, your hardware is locked at 48 kHz, it's ok to only
  *  present one single mixing/recording frequency to the user. If your
@@ -68,7 +59,6 @@ _AHIsub_AllocAudio(struct TagItem         *taglist,
                                            MEMF_CLEAR | MEMF_PUBLIC);
 
     if(dd != NULL) {
-        dd->slavesignal      = -1;
         dd->mastersignal     = AllocSignal(-1);
         dd->mastertask       = (struct Process *) FindTask(NULL);
         dd->ahisubbase       = BluetoothAudioBase;
@@ -154,36 +144,15 @@ _AHIsub_Start(ULONG                   flags,
     AHIsub_Stop(flags, AudioCtrl);
 
     if(flags & AHISF_PLAY) {
-        struct TagItem proctags[] = {
-            { NP_Entry, (IPTR) &slaveentry },
-            { NP_Name, (IPTR) LibName     },
-            { NP_Priority,  -1                  },
-            { TAG_DONE,     0                   }
-        };
-
         dd->mixbuffer = AllocVec(AudioCtrl->ahiac_BuffSize,
                                  MEMF_ANY | MEMF_PUBLIC);
 
         if(dd->mixbuffer == NULL) return AHIE_NOMEM;
 
-        Forbid();
-
-        dd->slavetask = CreateNewProc(proctags);
-
-        if(dd->slavetask != NULL) {
-            dd->slavetask->pr_Task.tc_UserData = AudioCtrl;
-        }
-
-        Permit();
-
-        if(dd->slavetask != NULL) {
-            Wait(1L << dd->mastersignal);    // Wait for slave to come alive
-
-            if(dd->slavetask == NULL) {      // Is slave alive or dead?
-                return AHIE_UNKNOWN;
-            }
-        } else {
-            return AHIE_NOMEM;                 // Well, out of memory or whatever...
+        if(!bta_link_play(BluetoothAudioBase, AudioCtrl)) {
+            FreeVec(dd->mixbuffer);
+            dd->mixbuffer = NULL;
+            return AHIE_UNKNOWN;
         }
     }
 
@@ -218,14 +187,7 @@ _AHIsub_Stop(ULONG                   flags,
              struct DriverBase      *AHIsubBase)
 {
     if(flags & AHISF_PLAY) {
-        if(dd->slavetask != NULL) {
-            if(dd->slavesignal != -1) {
-                Signal((struct Task *) dd->slavetask,
-                       1L << dd->slavesignal);          // Kill him!
-            }
-
-            Wait(1L << dd->mastersignal);              // Wait for slave to die
-        }
+        bta_link_release((struct BluetoothAudioBase *) AHIsubBase, AudioCtrl);
 
         FreeVec(dd->mixbuffer);
         dd->mixbuffer = NULL;

@@ -17,7 +17,14 @@ DriverInit(struct DriverBase *AHIsubBase)
         Req("Unable to open 'dos.library' version 37.\n");
         return FALSE;
     }
-    /* bluetooth.library is opened by the play slave when audio starts, so
+    BluetoothAudioBase->link = AllocVec(sizeof(struct BtaLink), MEMF_CLEAR | MEMF_PUBLIC);
+    if(BluetoothAudioBase->link == NULL) {
+        CloseLibrary((struct Library *) DOSBase);
+        return FALSE;
+    }
+    InitSemaphore(&BluetoothAudioBase->link->lock);
+    BluetoothAudioBase->link->wakesig = -1;
+    /* bluetooth.library is opened by the link process when audio starts, so
        the modes stay available while no radio is attached. */
     return TRUE;
 }
@@ -31,5 +38,6 @@ DriverCleanup(struct DriverBase *AHIsubBase)
 {
     struct BluetoothAudioBase *BluetoothAudioBase = (struct BluetoothAudioBase *) AHIsubBase;
 
+    FreeVec(BluetoothAudioBase->link);
     CloseLibrary((struct Library *) DOSBase);
 }
