@@ -42,6 +42,7 @@ typedef OOP_Object *HIDDT_GC;
 #define tHidd_Gfx_MemAttribBASE         (tHidd_Gfx_BASE + 0x3000)
 #define tHidd_Gfx_BMHistBASE            (tHidd_Gfx_BASE + 0x4000)
 #define tHidd_Gfx_SensorBASE            (tHidd_Gfx_BASE + 0x5000)
+#define tHidd_Gfx_InfoBASE              (tHidd_Gfx_BASE + 0x6000)
 
 /* Parameter tags for the QueryModeIDs method */
 enum
@@ -638,6 +639,20 @@ enum
     tHidd_Gfx_SensorMemTemp,                            // memory temperature in 1/1000 degC
     tHidd_Gfx_SensorPower,                              // board power in mW
     tHidd_Gfx_SensorFanRPM,                             // fan speed in RPM
+};
+
+/* Parameter tags for the InfoAttribs attribute. Each returns a CONST_STRPTR
+   owned by the driver; tags the driver cannot report are left unchanged. */
+enum
+{
+    tHidd_Gfx_InfoName = tHidd_Gfx_InfoBASE,            // product name
+    tHidd_Gfx_InfoChip,                                 // chip / codename
+    tHidd_Gfx_InfoArchitecture,                         // GPU architecture and core version
+    tHidd_Gfx_InfoMemory,                               // memory size, type and bus width
+    tHidd_Gfx_InfoBus,                                  // bus location and device IDs
+    tHidd_Gfx_InfoEngines,                              // other engines and their versions
+    tHidd_Gfx_InfoDriver,                               // driver name and version
+    tHidd_Gfx_InfoLogo,                                 // path of an image (any datatype) for the device
 };
 
 /* Compatability types */
