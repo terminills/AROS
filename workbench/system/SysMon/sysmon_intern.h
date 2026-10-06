@@ -1,5 +1,5 @@
 /*
-    Copyright 2010-2025, The AROS Development Team. All rights reserved.
+    Copyright 2010-2026, The AROS Development Team. All rights reserved.
 */
 
 #ifndef _SYSMON_INTERN_H
@@ -21,7 +21,7 @@
 #define MEMORY_VMEM             3
 #define MEMORY_VMEMWINDOW       4
 
-#define SYSMON_TABCOUNT         3
+#define SYSMON_TABCOUNT         4
 
 struct SysMonData
 {
@@ -53,6 +53,10 @@ struct SysMonData
     Object      *memorysize[5];
     Object      *memoryfree[5];
 
+    Object      *gpugraph;
+    Object      *gpuvalues[9];
+    Object      *gpuvram;
+
     STRPTR      msg_project;
     STRPTR      msg_refresh_speed;
     STRPTR      msg_fast;
@@ -78,6 +82,10 @@ VOID UpdateMemoryStaticInformation(struct SysMonData *);
 
 VOID UpdateVideoInformation(struct SysMonData *);
 VOID UpdateVideoStaticInformation(struct SysMonData *);
+
+BOOL GPUSensorsAvailable(VOID);
+Object *GPUPageObject(struct SysMonData *);
+VOID UpdateGPUInformation(struct SysMonData *);
 
 ULONG GetProcessorCount();
 VOID UpdateProcessorInformation(struct SysMonData *);

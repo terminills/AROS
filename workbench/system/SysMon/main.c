@@ -19,7 +19,7 @@
 
 #include "locale.h"
 
-#define VERSION "$VER: SysMon 1.10 (19.04.2019) \xA9 2011-2019 The AROS Development Team"
+#define VERSION "$VER: SysMon 1.11 (05.10.2026) \xA9 2011-2026 The AROS Development Team"
 
 CONST_STRPTR CPU_DEFSTR  = "CPU --\n--.- %";
 
@@ -86,6 +86,7 @@ BOOL CreateApplication(struct SysMonData * smdata)
 
     Object      * cpufreqgroup,
                 * cpufreqcntnr;
+    Object      * gpupage = NULL;
     char videowinstr[100];
     ULONG processorcount;
     IPTR i;
@@ -96,6 +97,15 @@ BOOL CreateApplication(struct SysMonData * smdata)
     smdata->tabs[1] = _(MSG_TAB_CPU);
     smdata->tabs[2] = _(MSG_TAB_SYSTEM);
     smdata->tabs[3] = NULL;
+    smdata->tabs[4] = NULL;
+
+    smdata->gpugraph = NULL;
+    if (GPUSensorsAvailable())
+    {
+        gpupage = GPUPageObject(smdata);
+        if (gpupage)
+            smdata->tabs[3] = _(MSG_TAB_GPU);
+    }
 
     smdata->tasklistinfobuf = AllocVec(30, MEMF_PUBLIC);
     smdata->tasklistrefreshhook.h_Entry = (APTR)tasklistrefreshfunction;
@@ -266,6 +276,7 @@ BOOL CreateApplication(struct SysMonData * smdata)
                             End,
                             Child, HVSpace,
                         End),
+                        gpupage ? Child : TAG_IGNORE, (IPTR)gpupage,
                     End,
             End,
     End;
@@ -432,6 +443,10 @@ int main()
                             UpdateMemoryInformation(&smdata);
                             UpdateVideoInformation(&smdata);
                         }
+                        break;
+                    case 3:
+                        if ((itercounter % 4) == 0)
+                            UpdateGPUInformation(&smdata);
                         break;
                     default:
                         break;

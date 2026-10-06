@@ -2,7 +2,7 @@
 
 include $(SRCDIR)/config/aros.cfg
 
-FILES	:= main locale memory video processor processor_gauge processor_graph tasks timer
+FILES	:= main locale memory video gpu processor processor_gauge processor_graph tasks timer
 EXEDIR	:= $(AROSDIR)/System
 
 #MM- workbench-system : workbench-system-sysmon
