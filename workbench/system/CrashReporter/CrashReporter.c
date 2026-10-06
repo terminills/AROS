@@ -611,7 +611,7 @@ static IPTR CR__OM_NEW(struct IClass *cl, Object *self, struct opSet *msg)
     struct PkgContext *ctx = (struct PkgContext *)GetTagData(MUIA_CR_Context, 0, msg->ops_AttrList);
     Object *txt_state, *txt_last, *txt_url, *txt_detail, *chk_auto, *btn_sendall, *btn_drawer;
     Object *win_popup, *txt_ptitle, *txt_pbody, *str_pdesc, *btn_pview, *btn_psend, *btn_plater;
-    Object *win_view, *flt_view, *btn_vclose;
+    Object *win_view, *flt_view, *lv_view, *btn_vclose;
 
     if (!ctx) return 0;
 
@@ -658,7 +658,8 @@ static IPTR CR__OM_NEW(struct IClass *cl, Object *self, struct opSet *msg)
         MUIA_Window_Width,  MUIV_Window_Width_Screen(60),
         MUIA_Window_Height, MUIV_Window_Height_Screen(60),
         WindowContents, VGroup,
-            Child, ListviewObject,
+            Child, lv_view = ListviewObject,
+                MUIA_CycleChain,     1,
                 MUIA_Listview_Input, FALSE,
                 MUIA_Listview_List, flt_view = FloattextObject,
                     ReadListFrame,
@@ -724,6 +725,7 @@ static IPTR CR__OM_NEW(struct IClass *cl, Object *self, struct opSet *msg)
     data->btn_plater  = btn_plater;
     data->win_view    = win_view;
     data->flt_view    = flt_view;
+    set(win_view, MUIA_Window_DefaultObject, (IPTR)lv_view);
     InitSemaphore(&data->qlock);
     NewList(&data->queue);
 
