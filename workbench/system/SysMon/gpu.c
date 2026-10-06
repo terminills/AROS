@@ -10,6 +10,7 @@
 #include <proto/muimaster.h>
 #include <hidd/gfx.h>
 #include <zune/graph.h>
+#include <proto/dos.h>
 
 #include "locale.h"
 
@@ -63,8 +64,16 @@ static VOID GPUSample(VOID)
 
 BOOL GPUSensorsAvailable(VOID)
 {
+    struct TagItem tags[] =
+    {
+        { tHidd_Gfx_InfoArchitecture, 0 },
+        { TAG_DONE, 0 }
+    };
+
+    if (gfxhidd)
+        OOP_GetAttr(gfxhidd, aHidd_Gfx_InfoAttribs, (IPTR *)tags);
     GPUSample();
-    return gpuSample[GPUS_LOAD] != GPU_UNSET;
+    return tags[0].ti_Data || gpuSample[GPUS_LOAD] != GPU_UNSET;
 }
 
 AROS_UFH3(IPTR, GraphReadGPUValueFunc,
@@ -89,13 +98,73 @@ static Object *GPUValueObject(Object **store)
             End;
 }
 
-Object *GPUPageObject(struct SysMonData *smdata)
+enum
 {
-    Object *page;
+    GPUI_NAME,
+    GPUI_CHIP,
+    GPUI_ARCH,
+    GPUI_MEMORY,
+    GPUI_BUS,
+    GPUI_ENGINES,
+    GPUI_DRIVER,
+    GPUI_LOGO,
+    GPUI_COUNT
+};
+
+static Object *GPUInfoObject(void)
+{
+    static const ULONG labels[GPUI_LOGO] =
+    {
+        MSG_GPU_NAME, MSG_GPU_CHIP, MSG_GPU_ARCH, MSG_GPU_MEMORY_INFO,
+        MSG_GPU_BUS, MSG_GPU_ENGINES, MSG_GPU_DRIVER
+    };
+    struct TagItem tags[GPUI_COUNT + 1];
+    Object *grp, *cols, *logo = NULL;
+    BPTR lock;
     ULONG i;
 
+    for (i = 0; i < GPUI_COUNT; i++)
+    {
+        tags[i].ti_Tag = tHidd_Gfx_InfoName + i;
+        tags[i].ti_Data = 0;
+    }
+    tags[GPUI_COUNT].ti_Tag = TAG_DONE;
+    OOP_GetAttr(gfxhidd, aHidd_Gfx_InfoAttribs, (IPTR *)tags);
+
+    if (tags[GPUI_LOGO].ti_Data && (lock = Lock((CONST_STRPTR)tags[GPUI_LOGO].ti_Data, SHARED_LOCK)))
+    {
+        UnLock(lock);
+        logo = MUI_NewObject(MUIC_Dtpic, MUIA_Dtpic_Name, tags[GPUI_LOGO].ti_Data, TAG_DONE);
+    }
+
+    cols = ColGroup(2), End;
+    if (!cols)
+        return NULL;
+    for (i = 0; i < GPUI_LOGO; i++)
+    {
+        if (!tags[i].ti_Data)
+            continue;
+        DoMethod(cols, OM_ADDMEMBER, (IPTR)Label(_(labels[i])));
+        DoMethod(cols, OM_ADDMEMBER, (IPTR)(TextObject, TextFrame, MUIA_Background, MUII_TextBack,
+            MUIA_Text_Contents, tags[i].ti_Data, End));
+    }
+
+    grp = HGroup, GroupFrameT(_(MSG_GPU_ADAPTER)),
+        logo ? Child : TAG_IGNORE, (IPTR)logo,
+        Child, (IPTR)cols,
+    End;
+    return grp;
+}
+
+Object *GPUPageObject(struct SysMonData *smdata)
+{
+    Object *page, *info;
+    ULONG i;
+
+    info = GPUInfoObject();
     page = VGroup,
         MUIA_CycleChain, 1,
+        info ? Child : TAG_IGNORE, (IPTR)info,
         Child, HGroup,
             GroupFrameT(_(MSG_USAGE)),
             Child, (IPTR)(smdata->gpugraph = GraphObject,
