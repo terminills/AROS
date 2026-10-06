@@ -512,6 +512,12 @@ VOID Amdgpu__Root__Get(OOP_Class *cl, OOP_Object *o, struct pRoot_Get *msg)
                 if (msg->storage)
                     amdgpu_gfx_sensor_tags(XSD(cl)->device, (struct TagItem *)msg->storage);
                 return;
+
+            case aoHidd_Gfx_InfoAttribs:
+                if (msg->storage)
+                    amdgpu_gfx_info_tags(XSD(cl)->device, (struct TagItem *)msg->storage,
+                                         VERSION_NUMBER, REVISION_NUMBER);
+                return;
         }
     }
     OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);

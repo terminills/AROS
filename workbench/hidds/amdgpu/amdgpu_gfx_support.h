@@ -89,6 +89,8 @@ void amdgpu_vram_free(struct HWData *hw, UQUAD mc, ULONG size);
 struct TagItem;
 void amdgpu_gfx_memory_tags(struct HWData *hw, struct TagItem *tags);
 void amdgpu_gfx_sensor_tags(struct AmdgpuDevice *ad, struct TagItem *tags);
+void amdgpu_gfx_info_tags(struct AmdgpuDevice *ad, struct TagItem *tags, ULONG version,
+                          ULONG revision);
 
 /* Caller owns pool_lock, and has verified new scanout latch/old retirement. */
 void amdgpu_vram_retire_scanout_locked(struct HWData *hw, UQUAD mc, ULONG size);

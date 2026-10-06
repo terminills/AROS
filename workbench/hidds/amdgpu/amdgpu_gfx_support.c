@@ -932,3 +932,150 @@ void amdgpu_gfx_sensor_tags(struct AmdgpuDevice *ad, struct TagItem *tags)
         }
     }
 }
+
+struct InfoStr
+{
+    char *p, *end;
+};
+
+static void is_s(struct InfoStr *b, const char *s)
+{
+    while (*s && b->p < b->end)
+        *b->p++ = *s++;
+    *b->p = 0;
+}
+
+static void is_n(struct InfoStr *b, ULONG v, ULONG base, ULONG digits)
+{
+    char t[12];
+    int n = 0;
+
+    do {
+        t[n++] = "0123456789ABCDEF"[v % base];
+        v /= base;
+    } while ((v || n < (int)digits) && n < (int)sizeof(t));
+    while (n && b->p < b->end)
+        *b->p++ = t[--n];
+    *b->p = 0;
+}
+
+static void is_ver(struct InfoStr *b, const char *name, const struct AmdgpuIpBase *ip, BOOL rev)
+{
+    if (!ip->valid)
+        return;
+    if (b->p[-1] != ' ' && b->p[-1] != 0)
+        is_s(b, ", ");
+    is_s(b, name);
+    is_s(b, " ");
+    is_n(b, ip->major, 10, 1);
+    is_s(b, ".");
+    is_n(b, ip->minor, 10, 1);
+    if (rev) {
+        is_s(b, ".");
+        is_n(b, ip->revision, 10, 1);
+    }
+}
+
+void amdgpu_gfx_info_tags(struct AmdgpuDevice *ad, struct TagItem *tags, ULONG version,
+                          ULONG revision)
+{
+    static char name[48], chip[32], arch[48], mem[48], bus[48], eng[96], drv[32];
+    static BOOL built;
+    struct TagItem *state = tags, *tag;
+
+    if (!ad)
+        return;
+    if (!built) {
+        struct AmdgpuAsicInfo ai;
+        struct InfoStr b;
+        const char *full = amdgpu_get_marketing_name(ad), *paren;
+        UBYTE pbus = 0, pdev = 0, pfn = 0;
+        ULONG i;
+
+        paren = full;
+        while (*paren && *paren != '(')
+            paren++;
+        for (i = 0; full + i < paren && i < sizeof(name) - 1; i++)
+            name[i] = full[i];
+        while (i && name[i - 1] == ' ')
+            i--;
+        name[i] = 0;
+        if (*paren == '(') {
+            for (i = 0; paren[i + 1] && paren[i + 1] != ')' && i < sizeof(chip) - 1; i++)
+                chip[i] = paren[i + 1];
+            chip[i] = 0;
+        }
+
+        b.p = arch; b.end = arch + sizeof(arch) - 1;
+        is_s(&b, amdgpu_gfx_level_name(ad->gfx_level));
+        is_s(&b, " ");
+        is_ver(&b, "GC", &ad->ip.gc, TRUE);
+
+        b.p = mem; b.end = mem + sizeof(mem) - 1;
+        is_n(&b, ad->vram_mb, 10, 1);
+        is_s(&b, " MB");
+        for (i = 0; i < sizeof(ai); i++)
+            ((UBYTE *)&ai)[i] = 0;
+        if (!amdgpu_query_asic_info(ad, &ai, sizeof(ai)) && (ai.flags & AMDGPU_ASIC_UMC_VALID)) {
+            const char *t = ai.atom_vram_type == 0x50 ? "GDDR5" : ai.atom_vram_type == 0x60 ? "HBM2" :
+                            ai.atom_vram_type == 0x61 ? "HBM2E" : ai.atom_vram_type == 0x70 ? "GDDR6" :
+                            ai.atom_vram_type == 0x80 ? "HBM3" : ai.atom_vram_type == 0x90 ? "GDDR7" : NULL;
+            if (t) {
+                is_s(&b, " ");
+                is_s(&b, t);
+            }
+            if (ai.memory_bus_width) {
+                is_s(&b, ", ");
+                is_n(&b, ai.memory_bus_width, 10, 1);
+                is_s(&b, "-bit");
+            }
+        }
+
+        b.p = bus; b.end = bus + sizeof(bus) - 1;
+        is_s(&b, "PCI ");
+        if (amdgpu_query_pci_bus_info(ad, NULL, &pbus, &pdev, &pfn)) {
+            is_n(&b, pbus, 16, 2);
+            is_s(&b, ":");
+            is_n(&b, pdev, 16, 2);
+            is_s(&b, ".");
+            is_n(&b, pfn, 10, 1);
+            is_s(&b, ", ");
+        }
+        is_n(&b, ad->vendorid, 16, 4);
+        is_s(&b, ":");
+        is_n(&b, ad->deviceid, 16, 4);
+        is_s(&b, " rev ");
+        is_n(&b, ad->revision, 16, 2);
+
+        b.p = eng; b.end = eng + sizeof(eng) - 1;
+        *b.p++ = 0;
+        b.p = eng;
+        is_ver(&b, "SDMA", &ad->ip.sdma0, FALSE);
+        is_ver(&b, "VCN", &ad->ip.vcn, TRUE);
+        is_ver(&b, "DCN", &ad->ip.dmu, FALSE);
+        is_ver(&b, "PSP", &ad->ip.psp, FALSE);
+        is_ver(&b, "SMU", &ad->ip.smu, FALSE);
+
+        b.p = drv; b.end = drv + sizeof(drv) - 1;
+        is_s(&b, "amdgpu.hidd ");
+        is_n(&b, version, 10, 1);
+        is_s(&b, ".");
+        is_n(&b, revision, 10, 1);
+        built = TRUE;
+    }
+
+    while ((tag = NextTagItem(&state)))
+    {
+        switch (tag->ti_Tag)
+        {
+            case tHidd_Gfx_InfoName:         if (name[0]) tag->ti_Data = (IPTR)name; break;
+            case tHidd_Gfx_InfoChip:         if (chip[0]) tag->ti_Data = (IPTR)chip; break;
+            case tHidd_Gfx_InfoArchitecture: tag->ti_Data = (IPTR)arch; break;
+            case tHidd_Gfx_InfoMemory:       tag->ti_Data = (IPTR)mem; break;
+            case tHidd_Gfx_InfoBus:          tag->ti_Data = (IPTR)bus; break;
+            case tHidd_Gfx_InfoEngines:      if (eng[0]) tag->ti_Data = (IPTR)eng; break;
+            case tHidd_Gfx_InfoDriver:       tag->ti_Data = (IPTR)drv; break;
+            case tHidd_Gfx_InfoLogo:         tag->ti_Data = (IPTR)"DEVS:Drivers/amdgpu.logo"; break;
+        }
+    }
+}
