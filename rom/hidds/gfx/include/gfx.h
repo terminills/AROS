@@ -41,6 +41,7 @@ typedef OOP_Object *HIDDT_GC;
 #define tHidd_Gfx_CursorBASE            (tHidd_Gfx_BASE + 0x2000)
 #define tHidd_Gfx_MemAttribBASE         (tHidd_Gfx_BASE + 0x3000)
 #define tHidd_Gfx_BMHistBASE            (tHidd_Gfx_BASE + 0x4000)
+#define tHidd_Gfx_SensorBASE            (tHidd_Gfx_BASE + 0x5000)
 
 /* Parameter tags for the QueryModeIDs method */
 enum
@@ -622,6 +623,21 @@ enum
     tHidd_Gfx_MemAddressableTotal,                      // Total addressable video memory
     tHidd_Gfx_MemAddressableFree,                       // unused addressable video memory
     tHidd_Gfx_MemClock,                                 // video card's memory clock in Hz
+};
+
+/* Parameter tags for the SensorAttribs attribute. Tags the driver cannot
+   report are left unchanged. */
+enum
+{
+    tHidd_Gfx_SensorLoad = tHidd_Gfx_SensorBASE,        // graphics engine load, 0-1000
+    tHidd_Gfx_SensorMemLoad,                            // memory controller load, 0-1000
+    tHidd_Gfx_SensorCoreClock,                          // graphics engine clock in Hz
+    tHidd_Gfx_SensorMemClock,                           // memory clock in Hz
+    tHidd_Gfx_SensorTemp,                               // edge temperature in 1/1000 degC
+    tHidd_Gfx_SensorHotspotTemp,                        // hotspot temperature in 1/1000 degC
+    tHidd_Gfx_SensorMemTemp,                            // memory temperature in 1/1000 degC
+    tHidd_Gfx_SensorPower,                              // board power in mW
+    tHidd_Gfx_SensorFanRPM,                             // fan speed in RPM
 };
 
 /* Compatability types */
