@@ -411,11 +411,11 @@ BOOL amdgpu_device_init(struct AmdgpuBase *base, struct AmdgpuDevice *ad)
     }
     bug("[amdgpu] IP ladder complete\n");
     /* Late init, as Linux amdgpu_device_ip_late_init: clock gating goes on only
-     * after every block is up. Opt-in until proven on hardware. */
-    if (amdgpu_boot_option("cg"))
+     * after every block is up. */
+    if (!amdgpu_boot_option("nocg"))
         amdgpu_gfx_set_clock_gating(ad, TRUE);
     else
-        bug("[amdgpu] GFX clock gating off (AMDGPU=cg or amdgpu_set_gfx_clock_gating enables it)\n");
+        bug("[amdgpu] GFX clock gating off (AMDGPU=nocg)\n");
     return TRUE;
 }
 
