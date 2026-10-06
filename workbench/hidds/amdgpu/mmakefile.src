@@ -95,6 +95,14 @@ USER_CPPFLAGS := \
 
 #MM hidd-amdgpu-cppoll : includes linklibs
 
+# One H.264 frame through VCN via the public BO/VA/VCN calls (ABI 0.15).
+%build_prog mmake=hidd-amdgpu-vcndecode \
+    progname=VcnDecodeProbe \
+    files=$(SRCDIR)/$(CURDIR)/test/VcnDecodeProbe \
+    targetdir=$(AROS_C)
+
+#MM hidd-amdgpu-vcndecode : includes linklibs
+
 # Runtime GFX clock gating switch (amdgpu_set_gfx_clock_gating, ABI 0.14).
 %build_prog mmake=hidd-amdgpu-clockgating \
     progname=AmdgpuClockGating \
