@@ -509,11 +509,17 @@ BOOL amdgpu_smu_read_metrics(struct AmdgpuDevice *ad, struct AmdgpuSmuMetrics *m
                                             SMU14_TABLE_SMU_METRICS, &val);
             if (st != SMU_RESP_OK)
                 continue;
-            for (poll = 0; poll < 200 && !ok; poll++) {
-                amdgpu_vram_read(ad, SMU_DRV_TABLE_VRAM_OFF, raw, n);
+            for (poll = 0; poll < 2000 && !ok; poll++) {
+                amdgpu_vram_read(ad, SMU_DRV_TABLE_VRAM_OFF + SMUM_METRICS_COUNTER,
+                                 &raw[SMUM_METRICS_COUNTER / 4], 1);
+                amdgpu_vram_read(ad, SMU_DRV_TABLE_VRAM_OFF + SMUM_AVG_TEMPERATURE,
+                                 &raw[SMUM_AVG_TEMPERATURE / 4], 1);
                 if (raw[SMUM_METRICS_COUNTER / 4] != SMUM_SENTINEL &&
                     raw[SMUM_AVG_TEMPERATURE / 4] != SMUM_SENTINEL) {
-                    UWORD edge = smum_le16(b + SMUM_AVG_TEMPERATURE);
+                    UWORD edge;
+
+                    amdgpu_vram_read(ad, SMU_DRV_TABLE_VRAM_OFF, raw, n);
+                    edge = smum_le16(b + SMUM_AVG_TEMPERATURE);
 
                     if (edge == 0 || edge > 150)
                         break;
