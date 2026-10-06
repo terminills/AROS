@@ -231,6 +231,15 @@ static BOOL amdgpu_smu_get_scpm_status(struct AmdgpuDevice *ad, ULONG *status)
 }
 
 /* Crude busy-delay — no timer.device at driver init (mirrors psp_spin). */
+static ULONG smu_msg_failures, smu_metrics_failures;
+
+/* The first few failures, then every 1024th. */
+static BOOL smu_log_allowed(ULONG *count)
+{
+    ULONG n = ++*count;
+    return n <= 8 || !(n & 1023);
+}
+
 static void smu_spin(ULONG loops)
 {
     volatile ULONG i = 0;
@@ -326,7 +335,7 @@ static ULONG amdgpu_smu_send_msg_locked(struct AmdgpuDevice *ad, ULONG msg,
     }
     if (result)
         *result = amdgpu_rreg32(ad, arg_reg);
-    if (resp != SMU_RESP_OK)
+    if (resp != SMU_RESP_OK && smu_log_allowed(&smu_msg_failures))
         bug("[amdgpu-smu] msg=0x%02lx arg=0x%lx -> resp=0x%08lx after %lu spins ; "
             "post 66=0x%08lx 82=0x%08lx 90=0x%08lx\n",
             (unsigned long)msg, (unsigned long)arg, (unsigned long)resp, (unsigned long)t,
@@ -529,7 +538,7 @@ BOOL amdgpu_smu_read_metrics(struct AmdgpuDevice *ad, struct AmdgpuSmuMetrics *m
                     smu_spin(1000);
             }
             smu_metrics_stats[ok ? 0 : 1]++;
-            if (!ok)
+            if (!ok && smu_log_allowed(&smu_metrics_failures))
                 bug("[amdgpu-smu] metrics: transfer %lu acknowledged but table "
                     "not delivered after %lu polls\n",
                     (unsigned long)attempt + 1, (unsigned long)poll);
