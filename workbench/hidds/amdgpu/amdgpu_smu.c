@@ -313,16 +313,6 @@ static ULONG amdgpu_smu_send_msg_locked(struct AmdgpuDevice *ad, ULONG msg,
     amdgpu_wreg32(ad, resp_reg, 0);
     amdgpu_wreg32(ad, arg_reg, arg);
     amdgpu_wreg32(ad, msg_reg, msg);
-    {
-        /* Prove the message + arg writes actually COMMIT to the mailbox (distinguish
-         * "write dropped" from "SMU not servicing"). arg uses a sentinel so a 0-arg
-         * message is still verifiable. */
-        ULONG mb = amdgpu_rreg32(ad, msg_reg);
-        ULONG ab = amdgpu_rreg32(ad, arg_reg);
-        bug("[amdgpu-smu] wrote msg=0x%02lx -> readback 0x%08lx ; arg=0x%lx -> readback 0x%08lx\n",
-            (unsigned long)msg, (unsigned long)mb, (unsigned long)arg, (unsigned long)ab);
-    }
-
     /* 4. Poll for a response — the SMU can be slow, especially the first message
      *    after OS handover, and EnableAllSmuFeatures (ramping every DPM/clock
      *    feature) is the heaviest: it accepts by clearing resp=0 then can take
@@ -336,12 +326,13 @@ static ULONG amdgpu_smu_send_msg_locked(struct AmdgpuDevice *ad, ULONG msg,
     }
     if (result)
         *result = amdgpu_rreg32(ad, arg_reg);
-    bug("[amdgpu-smu] msg=0x%02lx arg=0x%lx -> resp=0x%08lx after %lu spins ; "
-        "post 66=0x%08lx 82=0x%08lx 90=0x%08lx\n",
-        (unsigned long)msg, (unsigned long)arg, (unsigned long)resp, (unsigned long)t,
-        (unsigned long)amdgpu_rreg32(ad, msg_reg),
-        (unsigned long)amdgpu_rreg32(ad, arg_reg),
-        (unsigned long)amdgpu_rreg32(ad, resp_reg));
+    if (resp != SMU_RESP_OK)
+        bug("[amdgpu-smu] msg=0x%02lx arg=0x%lx -> resp=0x%08lx after %lu spins ; "
+            "post 66=0x%08lx 82=0x%08lx 90=0x%08lx\n",
+            (unsigned long)msg, (unsigned long)arg, (unsigned long)resp, (unsigned long)t,
+            (unsigned long)amdgpu_rreg32(ad, msg_reg),
+            (unsigned long)amdgpu_rreg32(ad, arg_reg),
+            (unsigned long)amdgpu_rreg32(ad, resp_reg));
     return resp;   /* raw C2PMSG_90 status (0 = no response) */
 }
 
@@ -521,8 +512,13 @@ BOOL amdgpu_smu_read_metrics(struct AmdgpuDevice *ad, struct AmdgpuSmuMetrics *m
             for (poll = 0; poll < 200 && !ok; poll++) {
                 amdgpu_vram_read(ad, SMU_DRV_TABLE_VRAM_OFF, raw, n);
                 if (raw[SMUM_METRICS_COUNTER / 4] != SMUM_SENTINEL &&
-                    raw[SMUM_AVG_TEMPERATURE / 4] != SMUM_SENTINEL)
+                    raw[SMUM_AVG_TEMPERATURE / 4] != SMUM_SENTINEL) {
+                    UWORD edge = smum_le16(b + SMUM_AVG_TEMPERATURE);
+
+                    if (edge == 0 || edge > 150)
+                        break;
                     ok = TRUE;
+                }
                 else
                     smu_spin(1000);
             }
