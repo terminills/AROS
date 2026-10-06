@@ -502,6 +502,16 @@ VOID Amdgpu__Root__Get(OOP_Class *cl, OOP_Object *o, struct pRoot_Get *msg)
             case aoHidd_Gfx_DisplayDefault:
                 *msg->storage = (IPTR)XSD(cl)->display;
                 return;
+
+            case aoHidd_Gfx_MemoryAttribs:
+                if (msg->storage)
+                    amdgpu_gfx_memory_tags(&XSD(cl)->data, (struct TagItem *)msg->storage);
+                return;
+
+            case aoHidd_Gfx_SensorAttribs:
+                if (msg->storage)
+                    amdgpu_gfx_sensor_tags(XSD(cl)->device, (struct TagItem *)msg->storage);
+                return;
         }
     }
     OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);

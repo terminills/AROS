@@ -85,6 +85,11 @@ BOOL amdgpu_vram_alloc(struct HWData *hw, ULONG size, ULONG align,
    otherwise records it in the free list. */
 void amdgpu_vram_free(struct HWData *hw, UQUAD mc, ULONG size);
 
+/* aHidd_Gfx_MemoryAttribs / aHidd_Gfx_SensorAttribs tag fillers. */
+struct TagItem;
+void amdgpu_gfx_memory_tags(struct HWData *hw, struct TagItem *tags);
+void amdgpu_gfx_sensor_tags(struct AmdgpuDevice *ad, struct TagItem *tags);
+
 /* Caller owns pool_lock, and has verified new scanout latch/old retirement. */
 void amdgpu_vram_retire_scanout_locked(struct HWData *hw, UQUAD mc, ULONG size);
 

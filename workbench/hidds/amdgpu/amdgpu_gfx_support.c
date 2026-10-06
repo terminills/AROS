@@ -848,3 +848,87 @@ void ClearBuffer(struct HWData *data)
 
     SetMem(data->framebuffer, 0, data->fb_height * data->bytesperline);
 }
+
+static ULONG amdgpu_vram_pool_in_use(struct HWData *hw)
+{
+    ULONG used;
+    UWORD i;
+
+    if (!hw->pool_lock_ready)
+        return 0;
+    ObtainSemaphore(&hw->pool_lock);
+    used = hw->vram_pool_used;
+    for (i = 0; i < hw->vram_free_count; i++)
+        used -= hw->vram_free[i].size;
+    ReleaseSemaphore(&hw->pool_lock);
+    return used;
+}
+
+void amdgpu_gfx_memory_tags(struct HWData *hw, struct TagItem *tags)
+{
+    struct TagItem *state = tags, *tag;
+    UQUAD total = hw->ad ? (UQUAD)hw->ad->vram_mb << 20 : 0;
+    ULONG used = amdgpu_vram_pool_in_use(hw);
+
+    while ((tag = NextTagItem(&state)))
+    {
+        switch (tag->ti_Tag)
+        {
+            case tHidd_Gfx_MemTotal:
+                tag->ti_Data = (IPTR)total;
+                break;
+            case tHidd_Gfx_MemFree:
+                tag->ti_Data = (IPTR)(total > used ? total - used : 0);
+                break;
+            case tHidd_Gfx_MemAddressableTotal:
+                tag->ti_Data = (IPTR)hw->vram_pool_size;
+                break;
+            case tHidd_Gfx_MemAddressableFree:
+                tag->ti_Data = (IPTR)(hw->vram_pool_size > used ? hw->vram_pool_size - used : 0);
+                break;
+        }
+    }
+}
+
+void amdgpu_gfx_sensor_tags(struct AmdgpuDevice *ad, struct TagItem *tags)
+{
+    struct TagItem *state = tags, *tag;
+    struct AmdgpuSmuMetrics m;
+
+    if (!ad || !amdgpu_smu_read_metrics(ad, &m))
+        return;
+
+    while ((tag = NextTagItem(&state)))
+    {
+        switch (tag->ti_Tag)
+        {
+            case tHidd_Gfx_SensorLoad:
+                tag->ti_Data = (m.gfx_activity > 100) ? 1000 : m.gfx_activity * 10;
+                break;
+            case tHidd_Gfx_SensorMemLoad:
+                tag->ti_Data = (m.uclk_activity > 100) ? 1000 : m.uclk_activity * 10;
+                break;
+            case tHidd_Gfx_SensorCoreClock:
+                tag->ti_Data = (IPTR)m.gfxclk_avg * 1000000;
+                break;
+            case tHidd_Gfx_SensorMemClock:
+                tag->ti_Data = (IPTR)m.uclk_avg * 1000000;
+                break;
+            case tHidd_Gfx_SensorTemp:
+                tag->ti_Data = (IPTR)m.temp_edge * 1000;
+                break;
+            case tHidd_Gfx_SensorHotspotTemp:
+                tag->ti_Data = (IPTR)m.temp_hotspot * 1000;
+                break;
+            case tHidd_Gfx_SensorMemTemp:
+                tag->ti_Data = (IPTR)m.temp_mem * 1000;
+                break;
+            case tHidd_Gfx_SensorPower:
+                tag->ti_Data = (IPTR)m.socket_power * 1000;
+                break;
+            case tHidd_Gfx_SensorFanRPM:
+                tag->ti_Data = m.fan_rpm;
+                break;
+        }
+    }
+}
