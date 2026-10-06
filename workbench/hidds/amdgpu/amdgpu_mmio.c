@@ -49,6 +49,7 @@ BOOL amdgpu_mmio_map(struct AmdgpuBase *base, struct AmdgpuDevice *ad)
      * device — so it is the correct place to arm the MM_INDEX aperture lock
      * (codex TRIG-0686) before discovery does its first amdgpu_vram_read(). */
     InitSemaphore(&ad->aperture_sem);
+    amdgpu_busy_init(ad);
     return TRUE;
 }
 

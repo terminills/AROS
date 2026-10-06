@@ -895,14 +895,33 @@ void amdgpu_gfx_sensor_tags(struct AmdgpuDevice *ad, struct TagItem *tags)
     struct TagItem *state = tags, *tag;
     struct AmdgpuSmuMetrics m;
 
-    if (!ad || !amdgpu_smu_read_metrics(ad, &m))
+    if (!ad)
         return;
+    amdgpu_vcn_busy_poll(ad);
+    for (state = tags; (tag = NextTagItem(&state)); )
+    {
+        switch (tag->ti_Tag)
+        {
+            case tHidd_Gfx_SensorLoad:
+                tag->ti_Data = amdgpu_busy_permille(ad, AMDGPU_ENGINE_GFX);
+                break;
+            case tHidd_Gfx_Sensor2DLoad:
+                tag->ti_Data = amdgpu_busy_permille(ad, AMDGPU_ENGINE_SDMA);
+                break;
+            case tHidd_Gfx_SensorVideoLoad:
+                tag->ti_Data = amdgpu_busy_permille(ad, AMDGPU_ENGINE_VCN);
+                break;
+        }
+    }
+    if (!amdgpu_smu_read_metrics(ad, &m))
+        return;
+    state = tags;
 
     while ((tag = NextTagItem(&state)))
     {
         switch (tag->ti_Tag)
         {
-            case tHidd_Gfx_SensorLoad:
+            case tHidd_Gfx_SensorFirmwareLoad:
                 tag->ti_Data = (m.gfx_activity > 100) ? 1000 : m.gfx_activity * 10;
                 break;
             case tHidd_Gfx_SensorMemLoad:

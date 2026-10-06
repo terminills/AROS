@@ -280,6 +280,7 @@ static BOOL vcn_ring_test(struct AmdgpuDevice *ad)
 
 static struct SignalSemaphore vcn_ring_lock;
 static APTR vcn_scratch_mem;
+static BOOL vcn_busy;
 static UBYTE *vcn_scratch;
 static UQUAD vcn_scratch_va;
 
@@ -329,6 +330,9 @@ static ULONG vcn_ring_submit_ib(struct AmdgpuDevice *ad, UQUAD ib_va, ULONG ib_d
     pkt[8] = seq;
     pkt[9] = VCN_ENC_CMD_TRAP;
     vcn_ring_emit(ad, pkt, 10);
+    if (!vcn_busy)
+        amdgpu_busy_begin(ad, AMDGPU_ENGINE_VCN);
+    vcn_busy = TRUE;
     ReleaseSemaphore(&vcn_ring_lock);
     return seq;
 }
@@ -480,5 +484,18 @@ LONG amdgpu_vcn_query_fence(struct AmdgpuDevice *ad, ULONG fence, ULONG *complet
     if (!ad || !ad->vcn_ready)
         return -ENODEV;
     *complete = (LONG)(vcn_fence_value(ad) - fence) >= 0;
+    amdgpu_vcn_busy_poll(ad);
     return 0;
+}
+
+void amdgpu_vcn_busy_poll(struct AmdgpuDevice *ad)
+{
+    if (!vcn_busy || !ad->vcn_ready)
+        return;
+    ObtainSemaphore(&vcn_ring_lock);
+    if (vcn_busy && (LONG)(vcn_fence_value(ad) - ad->vcn_fence_seq) >= 0) {
+        vcn_busy = FALSE;
+        amdgpu_busy_end(ad, AMDGPU_ENGINE_VCN);
+    }
+    ReleaseSemaphore(&vcn_ring_lock);
 }

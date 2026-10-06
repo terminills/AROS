@@ -770,7 +770,9 @@ static BOOL sdma_submit_and_wait(struct AmdgpuDevice *ad, ULONG inst,
 
     if (sdma_lock_ready)
         ObtainSemaphore(&sdma_submit_lock);
+    amdgpu_busy_begin(ad, AMDGPU_ENGINE_SDMA);
     ok = sdma_submit_and_wait_locked(ad, inst, pkt, dwords);
+    amdgpu_busy_end(ad, AMDGPU_ENGINE_SDMA);
     if (sdma_lock_ready)
         ReleaseSemaphore(&sdma_submit_lock);
     return ok;

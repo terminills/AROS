@@ -3401,6 +3401,8 @@ static BOOL managed_ring_drained(struct AmdgpuDevice *ad, ULONG rp, ULONG wb, UL
         gc0_r(ad, regCP_RB0_WPTR) == managed_wptr && gc0_r(ad, regCP_RB0_WPTR_HI) == 0;
 }
 
+static BOOL managed_busy;
+
 LONG gfx_v12_managed_submit(struct AmdgpuDevice *ad, UQUAD ib, ULONG dwords, UQUAD token)
 {
     volatile ULONG *rptr;
@@ -3459,6 +3461,10 @@ LONG gfx_v12_managed_submit(struct AmdgpuDevice *ad, UQUAD ib, ULONG dwords, UQU
     managed_wptr += 12;
     managed_token = token;
     managed_pending_polls = 0;
+    if (!managed_busy) {
+        managed_busy = TRUE;
+        amdgpu_busy_begin(ad, AMDGPU_ENGINE_GFX);
+    }
     gc0_w(ad, regCP_RB0_WPTR, managed_wptr);
     gc0_w(ad, regCP_RB0_WPTR_HI, 0);
     /* No negative return after publication. Even a subsequent fault pins refs. */
@@ -3513,6 +3519,10 @@ LONG gfx_v12_managed_retired(struct AmdgpuDevice *ad, UQUAD token)
             (unsigned long)rp, (unsigned long)*rptr,
             (unsigned long)managed_wptr, (unsigned long)state,
             (unsigned long)(managed_wptr / MANAGED_RING_DWORDS));
+    }
+    if (managed_busy) {
+        managed_busy = FALSE;
+        amdgpu_busy_end(ad, AMDGPU_ENGINE_GFX);
     }
     return 1;
 }

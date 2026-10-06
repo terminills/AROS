@@ -119,6 +119,14 @@ struct AmdgpuDevice {
      * Init'd in amdgpu_mmio_map before any aperture access. (codex TRIG-0686.) */
     struct SignalSemaphore aperture_sem;
 
+    /* Engine busy time from our own submissions (amdgpu_busy.c). */
+    struct AmdgpuEngineBusy {
+        UQUAD busy, start, last_busy, last_now;
+        ULONG inflight;
+    }                   busy[3];
+    struct SignalSemaphore busy_sem;
+    BOOL                busy_ready;
+
     /* large prefetchable BAR = VRAM aperture (mapped later tiers) */
     IPTR                vram_bar_phys;
     IPTR                vram_bar_size;
@@ -294,7 +302,19 @@ struct AmdgpuSmuMetrics {
 BOOL amdgpu_smu_read_metrics(struct AmdgpuDevice *ad, struct AmdgpuSmuMetrics *m);
 BOOL amdgpu_sdma_hw_init(struct AmdgpuDevice *ad);
 
+/* amdgpu_busy.c */
+#define AMDGPU_ENGINE_GFX   0
+#define AMDGPU_ENGINE_SDMA  1
+#define AMDGPU_ENGINE_VCN   2
+#define AMDGPU_ENGINE_COUNT 3
+void amdgpu_busy_init(struct AmdgpuDevice *ad);
+void amdgpu_busy_begin(struct AmdgpuDevice *ad, ULONG engine);
+void amdgpu_busy_end(struct AmdgpuDevice *ad, ULONG engine);
+/* Busy share since the previous call for this engine, 0-1000. */
+ULONG amdgpu_busy_permille(struct AmdgpuDevice *ad, ULONG engine);
+
 /* amdgpu_vcn.c */
+void amdgpu_vcn_busy_poll(struct AmdgpuDevice *ad);
 BOOL amdgpu_vcn_hw_init(struct AmdgpuDevice *ad);
 /* Map the doorbell BAR once; NULL when the device has none. */
 volatile ULONG *amdgpu_doorbell_map(struct AmdgpuDevice *ad);
