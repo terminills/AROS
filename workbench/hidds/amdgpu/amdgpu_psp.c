@@ -486,6 +486,8 @@ static BOOL psp_gpcom_submit(struct AmdgpuDevice *ad, UQUAD vram_start,
  * fw_mc is either a raw VRAM MC address (address-tolerant SMC/IMU) or a GART VA
  * (the autoload set — RLC/CP/MES — which the PSP resolves through the GART).
  * vram_start is still needed: psp_gpcom_submit's cmd/fence buffers live in VRAM. */
+#define FWT_VCN                13
+
 static BOOL psp_load_ip_fw_report(struct AmdgpuDevice *ad, UQUAD vram_start, UQUAD fw_mc,
                            ULONG fw_size, ULONG fw_type, const char *name, ULONG *response)
 {
@@ -517,6 +519,10 @@ static BOOL psp_load_ip_fw_report(struct AmdgpuDevice *ad, UQUAD vram_start, UQU
         completed ? "complete" : "TIMEOUT", (unsigned long)status,
         (unsigned long)fw_addr_hi, (unsigned long)fw_addr_lo,
         completed && status != 0 ? " (status advisory; response retained)" : "");
+    if (completed && status == 0 && fw_type == FWT_VCN) {
+        ad->vcn_fw_tmr_mc = ((UQUAD)fw_addr_hi << 32) | fw_addr_lo;
+        ad->vcn_fw_size = fw_size;
+    }
     if (ad->gart_ready && fw_mc < ((UQUAD)512 << 20))
         amdgpu_gart_dump_fault(ad, name);
     return completed;
@@ -528,12 +534,24 @@ static BOOL psp_load_ip_fw(struct AmdgpuDevice *ad, UQUAD vram_start, UQUAD fw_m
     return psp_load_ip_fw_report(ad, vram_start, fw_mc, fw_size, fw_type, name, NULL);
 }
 
+BOOL amdgpu_psp_load_ip_fw(struct AmdgpuDevice *ad, UQUAD fw_mc, ULONG fw_size,
+                           ULONG fw_type, const char *name, ULONG *status)
+{
+    const struct AmdgpuMmhubRegs *mr = amdgpu_mmhub_regs(ad);
+    UQUAD vram_start;
+
+    if (!ad->rmmio || !ad->ip.psp.valid || !ad->ip.mmhub.valid || !mr)
+        return FALSE;
+    vram_start = ((UQUAD)(amdgpu_rreg32(ad, ad->ip.mmhub.base + mr->fb_location_base) &
+                          0x00FFFFFFUL)) << 24;
+    return psp_load_ip_fw_report(ad, vram_start, fw_mc, fw_size, fw_type, name, status);
+}
+
 /* Have the PSP load the IMU firmware (IMU_I + IMU_D). The PSP writes+powers the
  * GFX/IMU block that amdgpu cannot (write-blocked in the live-GOP state); once the
  * IMU is loaded+powered it runs and releases the GFX reset. */
 /* GFX12 PSP firmware type IDs (psp_gfx_if.h) for the full RLC-autoload set. */
 #define FWT_SMU                18
-#define FWT_VCN                13
 #define FWT_RLC_G              8
 #define FWT_RLC_GPM_MEM        20
 #define FWT_RLC_SRM_MEM        21

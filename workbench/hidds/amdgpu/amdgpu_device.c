@@ -306,6 +306,20 @@ static BOOL sdma_supported(struct AmdgpuDevice *ad)
     return gate_block(ad, "SDMA", &ad->ip.sdma0, AMDGPU_LINUX_SDMA, NULL, have);
 }
 
+static BOOL vcn_supported(struct AmdgpuDevice *ad)
+{
+    const struct AmdgpuIpBase *ip = &ad->ip.vcn;
+
+    if (ip->valid && ip->major == 5 && ip->minor == 0)
+        return TRUE;
+    if (!ip->valid)
+        bug("[amdgpu] %s: VCN not found by IP discovery - skipped\n", ad->name);
+    else
+        bug("[amdgpu] %s: VCN %u.%u.%u not implemented yet (Linux: vcn_v%u_%u) - skipped\n",
+            ad->name, ip->major, ip->minor, ip->revision, ip->major, ip->minor);
+    return FALSE;
+}
+
 static BOOL dcn_supported(struct AmdgpuDevice *ad)
 {
     const struct AmdgpuIpBase *ip = &ad->ip.dmu;
@@ -331,6 +345,7 @@ static const struct AmdgpuIpBlock amdgpu_ip_blocks[] = {
     { "smu",     amdgpu_smu_hw_init,  smu_supported },  /* MP1 mailbox — display/pixel clock (Stage 3 P0) */
     { "gfx",     amdgpu_gfx_hw_init,  gfx_supported },  /* GFX12 engine — IMU power-up (P0), CP rings next */
     { "sdma",    amdgpu_sdma_hw_init, sdma_supported }, /* copy engine — the 2D blit path */
+    { "vcn",     amdgpu_vcn_hw_init,  vcn_supported },  /* video codec engine */
     { "dcn",     amdgpu_dcn_hw_init,  dcn_supported },  /* display — observe the live scanout */
     { NULL, NULL, NULL }
 };

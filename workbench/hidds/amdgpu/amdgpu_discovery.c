@@ -256,6 +256,11 @@ static BOOL amdgpu_discovery_parse(struct AmdgpuDevice *ad)
                     for (k = 0; k < 6; k++)
                         ad->mmhub_seg[k] = bb[k];
                 }
+                if (hw_id == AMDGPU_VCN_HWID && inst == 0) {
+                    UBYTE k;
+                    for (k = 0; k < 6; k++)
+                        ad->vcn_seg[k] = bb[k];
+                }
                 if (hw_id == AMDGPU_OSSSYS_HWID) {
                     UBYTE k;
                     for (k = 0; k < 6; k++)

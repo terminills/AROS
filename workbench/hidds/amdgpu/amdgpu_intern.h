@@ -145,6 +145,11 @@ struct AmdgpuDevice {
        registers are BASE_IDX 1. record_base keeps only base0, so the GFX IP
        block captures the whole segment map here (hw_id == AMDGPU_GC_HWID). */
     ULONG               gc_seg[6];
+    ULONG               vcn_seg[6];
+    UQUAD               vcn_fw_tmr_mc;
+    ULONG               vcn_fw_size;
+    ULONG               vcn_wptr;
+    BOOL                vcn_ready;
     ULONG               mmhub_seg[6];  /* MMHUB segment map — MES SET_HW_RESOURCES */
     ULONG               osssys_seg[6]; /* OSSSYS segment map — MES SET_HW_RESOURCES */
 
@@ -248,6 +253,10 @@ VOID amdgpu_release_firmware(UBYTE *data);
 
 /* amdgpu_psp.c — Platform Security Processor (MP0): the firmware gateway */
 BOOL amdgpu_psp_hw_init(struct AmdgpuDevice *ad);
+/* LOAD_IP_FW of an image already at fw_mc (VRAM MC or GART VA). TRUE when the
+   PSP completed the command; *status is its response status (0 = accepted). */
+BOOL amdgpu_psp_load_ip_fw(struct AmdgpuDevice *ad, UQUAD fw_mc, ULONG fw_size,
+                           ULONG fw_type, const char *name, ULONG *status);
 
 /* amdgpu_smu.c — System Management Unit (MP1): display/pixel clock control */
 BOOL amdgpu_smu_hw_init(struct AmdgpuDevice *ad);
@@ -282,6 +291,9 @@ struct AmdgpuSmuMetrics {
  * other SMU message. Returns FALSE if the SMU did not deliver the table. */
 BOOL amdgpu_smu_read_metrics(struct AmdgpuDevice *ad, struct AmdgpuSmuMetrics *m);
 BOOL amdgpu_sdma_hw_init(struct AmdgpuDevice *ad);
+
+/* amdgpu_vcn.c */
+BOOL amdgpu_vcn_hw_init(struct AmdgpuDevice *ad);
 /* GFX clock gating (Linux gfx_v12_0_update_gfx_clock_gating). */
 BOOL amdgpu_gfx_set_clock_gating(struct AmdgpuDevice *ad, BOOL enable);
 /* TRUE if AMDGPU=<...word...> is on the kernel command line. */
