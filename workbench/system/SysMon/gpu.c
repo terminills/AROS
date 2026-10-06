@@ -30,16 +30,20 @@ enum
     GPUS_MEMTEMP,
     GPUS_POWER,
     GPUS_FAN,
+    GPUS_2D,
+    GPUS_VIDEO,
+    GPUS_FWLOAD,
     GPUS_COUNT
 };
 
 static IPTR gpuSample[GPUS_COUNT];
-static struct Hook gpuReadHooks[2];
+static struct Hook gpuReadHooks[3];
 
 struct gpuPen { ULONG r, g, b; };
-static struct gpuPen gpuPens[2] =
+static struct gpuPen gpuPens[3] =
 {
     { 0x9B9B9B9B, 0xDEDEDEDE, 0xC0C0C0C0 },
+    { 0x9E9E9E9E, 0x9B9B9B9B, 0xDEDEDEDE },
     { 0xDEDEDEDE, 0xB5B5B5B5, 0x9B9B9B9B },
 };
 
@@ -168,7 +172,7 @@ Object *GPUPageObject(struct SysMonData *smdata)
         Child, HGroup,
             GroupFrameT(_(MSG_USAGE)),
             Child, (IPTR)(smdata->gpugraph = GraphObject,
-                MUIA_Graph_InfoText,        (IPTR)"GPU --\n--.- %",
+                MUIA_Graph_InfoText,        (IPTR)"3D --  2D --\nVideo --",
                 MUIA_Graph_ValueCeiling,    1000,
                 MUIA_Graph_ValueStep,       100,
                 MUIA_Graph_PeriodCeiling,   100000,
@@ -215,12 +219,14 @@ Object *GPUPageObject(struct SysMonData *smdata)
 
     if (page)
     {
-        for (i = 0; i < 2; i++)
+        static const ULONG traces[3] = { GPUS_LOAD, GPUS_2D, GPUS_VIDEO };
+
+        for (i = 0; i < 3; i++)
         {
             APTR src = (APTR)DoMethod(smdata->gpugraph, MUIM_Graph_GetSourceHandle, i);
 
             gpuReadHooks[i].h_Entry = (APTR)GraphReadGPUValueFunc;
-            gpuReadHooks[i].h_Data = (APTR)(IPTR)(i == 0 ? GPUS_LOAD : GPUS_MEMLOAD);
+            gpuReadHooks[i].h_Data = (APTR)(IPTR)traces[i];
             DoMethod(smdata->gpugraph, MUIM_Graph_SetSourceAttrib, src,
                 MUIV_Graph_Source_PenSrc, &gpuPens[i]);
             DoMethod(smdata->gpugraph, MUIM_Graph_SetSourceAttrib, src,
@@ -253,17 +259,23 @@ VOID UpdateGPUInformation(struct SysMonData *smdata)
         { tHidd_Gfx_MemFree,    0 },
         { TAG_DONE,             0 }
     };
-    ULONG load, memload;
+    ULONG v3d, v2d, vid, mem;
 
     if (!smdata->gpugraph)
         return;
 
     GPUSample();
 
-    load = (gpuSample[GPUS_LOAD] == GPU_UNSET) ? 0 : gpuSample[GPUS_LOAD];
-    memload = (gpuSample[GPUS_MEMLOAD] == GPU_UNSET) ? 0 : gpuSample[GPUS_MEMLOAD];
-    __sprintf(buffer, "GPU %d.%d %%\n%s %d.%d %%", load / 10, load % 10,
-        _(MSG_GPU_MEM_SHORT), memload / 10, memload % 10);
+#define GPUPCT(x) ((gpuSample[x] == GPU_UNSET) ? 0 : gpuSample[x])
+    v3d = GPUPCT(GPUS_LOAD);
+    v2d = GPUPCT(GPUS_2D);
+    vid = GPUPCT(GPUS_VIDEO);
+    mem = GPUPCT(GPUS_MEMLOAD);
+#undef GPUPCT
+    __sprintf(buffer, "3D %d.%d %%  2D %d.%d %%\n%s %d.%d %%  %s %d.%d %%",
+        v3d / 10, v3d % 10, v2d / 10, v2d % 10,
+        _(MSG_GPU_VIDEO), vid / 10, vid % 10,
+        _(MSG_GPU_MEM_SHORT), mem / 10, mem % 10);
     set(smdata->gpugraph, MUIA_Graph_InfoText, (IPTR)buffer);
 
     GPUSetValue(smdata, GPUS_CORECLK, "%ld MHz", 1000000);
