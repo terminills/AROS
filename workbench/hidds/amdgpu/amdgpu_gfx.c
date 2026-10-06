@@ -1666,12 +1666,7 @@ BOOL gfx_v12_compute_queue_ensure(struct AmdgpuDevice *ad)
      * the MEC — an MMIO wptr-register write only takes effect at connect time. The S2A
      * routing (gc_doorbell_init) makes the doorbell live. Compute doorbell index 0x08
      * (dword) is inside the routed GFX range and clear of MES(0x16)/KIQ(0x18). */
-    if (!ad->doorbell && ad->doorbell_phys && ad->pciDriver) {
-        ULONG dbsz = (ad->doorbell_size && ad->doorbell_size < 0x100000)
-                     ? (ULONG)ad->doorbell_size : 0x100000;
-        ad->doorbell = (volatile ULONG *)HIDD_PCIDriver_MapPCI(ad->pciDriver,
-                          (APTR)ad->doorbell_phys, dbsz);
-    }
+    amdgpu_doorbell_map(ad);
 
     /* Build the compute MQD (doorbell DISABLED — we use the proven connect-time path).
      * Do NOT activate here: gfx_v12_compute_submit installs the HQD with the work already
@@ -2531,12 +2526,7 @@ BOOL mes_v12_scheduler_bringup(struct AmdgpuDevice *ad)
     }
     if (!buf || !va) { bug("[amdgpu-mes] sched: no GART buffer\n"); return FALSE; }
 
-    if (!ad->doorbell && ad->doorbell_phys && ad->pciDriver) {
-        ULONG dbsz = (ad->doorbell_size && ad->doorbell_size < 0x100000)
-                     ? (ULONG)ad->doorbell_size : 0x100000;
-        ad->doorbell = (volatile ULONG *)HIDD_PCIDriver_MapPCI(ad->pciDriver,
-                          (APTR)ad->doorbell_phys, dbsz);
-    }
+    amdgpu_doorbell_map(ad);
     if (!ad->doorbell) { bug("[amdgpu-mes] sched: doorbell BAR not mapped\n"); return FALSE; }
 
     /* DISCRIMINATOR: map the VRAM BAR via the SAME runtime MapPCI path and read [0]
@@ -4071,6 +4061,17 @@ static BOOL cg_enter_safe_mode(struct AmdgpuDevice *ad)
 static void cg_exit_safe_mode(struct AmdgpuDevice *ad)
 {
     gc1_w(ad, CG_regRLC_SAFE_MODE, CG_RLC_SAFE_MODE_CMD);
+}
+
+volatile ULONG *amdgpu_doorbell_map(struct AmdgpuDevice *ad)
+{
+    if (!ad->doorbell && ad->doorbell_phys && ad->pciDriver) {
+        ULONG dbsz = (ad->doorbell_size && ad->doorbell_size < 0x100000)
+                     ? (ULONG)ad->doorbell_size : 0x100000;
+        ad->doorbell = (volatile ULONG *)HIDD_PCIDriver_MapPCI(ad->pciDriver,
+                          (APTR)ad->doorbell_phys, dbsz);
+    }
+    return ad->doorbell;
 }
 
 BOOL amdgpu_gfx_set_clock_gating(struct AmdgpuDevice *ad, BOOL enable)

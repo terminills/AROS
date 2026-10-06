@@ -149,6 +149,8 @@ struct AmdgpuDevice {
     UQUAD               vcn_fw_tmr_mc;
     ULONG               vcn_fw_size;
     ULONG               vcn_wptr;
+    ULONG               vcn_fence_seq;
+    BOOL                vcn_doorbell;
     BOOL                vcn_ready;
     ULONG               mmhub_seg[6];  /* MMHUB segment map — MES SET_HW_RESOURCES */
     ULONG               osssys_seg[6]; /* OSSSYS segment map — MES SET_HW_RESOURCES */
@@ -294,6 +296,8 @@ BOOL amdgpu_sdma_hw_init(struct AmdgpuDevice *ad);
 
 /* amdgpu_vcn.c */
 BOOL amdgpu_vcn_hw_init(struct AmdgpuDevice *ad);
+/* Map the doorbell BAR once; NULL when the device has none. */
+volatile ULONG *amdgpu_doorbell_map(struct AmdgpuDevice *ad);
 /* GFX clock gating (Linux gfx_v12_0_update_gfx_clock_gating). */
 BOOL amdgpu_gfx_set_clock_gating(struct AmdgpuDevice *ad, BOOL enable);
 /* TRUE if AMDGPU=<...word...> is on the kernel command line. */

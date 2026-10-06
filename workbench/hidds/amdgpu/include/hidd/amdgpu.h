@@ -173,9 +173,16 @@ struct AmdgpuSensorInfo {
 LONG amdgpu_query_sensors(struct AmdgpuDevice *ad, struct AmdgpuSensorInfo *out,
                           ULONG out_size);
 /* Turn GFX clock gating (CGCG/CGLS/MGCG/FGCG, Linux gfx_v12_0 set) on or off
- * at run time. Off by default after boot. 0 on success, -ENODEV, or -EIO if
+ * at run time. On by default after boot. 0 on success, -ENODEV, or -EIO if
  * the RLC did not enter safe mode (nothing changed). Since 0.14. */
 LONG amdgpu_set_gfx_clock_gating(struct AmdgpuDevice *ad, ULONG enable);
+/* Queue an IB on the VCN unified ring (VMID 0, trusted shared VM). The IB
+ * and every buffer it references must stay bound until the fence completes.
+ * *fence receives the sequence to pass to amdgpu_vcn_query_fence. 0 on
+ * success, -EINVAL, or -ENODEV when VCN is not running. Since 0.15. */
+LONG amdgpu_vcn_submit_ib(struct AmdgpuDevice *ad, UQUAD ib_va, ULONG ib_ndw, ULONG *fence);
+/* *complete = 1 once the VCN has signalled fence. Since 0.15. */
+LONG amdgpu_vcn_query_fence(struct AmdgpuDevice *ad, ULONG fence, ULONG *complete);
 
 LONG amdgpu_query_bo_caps(struct AmdgpuDevice *ad, struct AmdgpuBoCaps *out,
                          ULONG out_size);
