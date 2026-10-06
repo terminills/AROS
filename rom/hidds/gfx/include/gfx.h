@@ -630,7 +630,7 @@ enum
    report are left unchanged. */
 enum
 {
-    tHidd_Gfx_SensorLoad = tHidd_Gfx_SensorBASE,        // graphics engine load, 0-1000
+    tHidd_Gfx_SensorLoad = tHidd_Gfx_SensorBASE,        // 3D/compute engine busy share, 0-1000
     tHidd_Gfx_SensorMemLoad,                            // memory controller load, 0-1000
     tHidd_Gfx_SensorCoreClock,                          // graphics engine clock in Hz
     tHidd_Gfx_SensorMemClock,                           // memory clock in Hz
@@ -639,6 +639,9 @@ enum
     tHidd_Gfx_SensorMemTemp,                            // memory temperature in 1/1000 degC
     tHidd_Gfx_SensorPower,                              // board power in mW
     tHidd_Gfx_SensorFanRPM,                             // fan speed in RPM
+    tHidd_Gfx_Sensor2DLoad,                             // 2D/copy engine busy share, 0-1000
+    tHidd_Gfx_SensorVideoLoad,                          // video engine busy share, 0-1000
+    tHidd_Gfx_SensorFirmwareLoad,                       // graphics activity as the card's firmware reports it, 0-1000
 };
 
 /* Parameter tags for the InfoAttribs attribute. Each returns a CONST_STRPTR
