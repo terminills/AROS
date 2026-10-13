@@ -186,3 +186,19 @@ checks pass with posixc SHA256
 The same library passes first-launch Node worker, libuv work/process, and
 Chromium JavaScript/Canvas smoke checks in the private full ADT runtime.
 These are bounded regressions, not full browser/RPCS3 application qualification.
+
+The native `make -j1 tools` target now passes. Native link recipes retain the
+configured SDK/compiler flags; FlexCat includes its AROS support objects and
+uses pointer-width tag arguments. `native-flexcat.py` successfully generates
+an Input preferences header and German IFF catalog with the freshly built tool.
+The native AFS utility library includes its security implementation. Its host
+configuration probe uses the configured compiler, detects byte order without
+assuming 32-bit host long, fails on compiler errors, and avoids regenerating
+Make dependencies merely because its output directory changed.
+
+The passing tools run used a 16 GiB private hosted guest. An earlier 2 GiB
+parallel run produced a truncated temporary object; it remains retained as
+failed evidence, and its cause is not established. Native libiberty, codesets,
+Unicode data and pregenerated MetaMake configure remain bootstrap inputs.
+All 78 source submodules were staged at their pinned commits. This milestone
+still does not establish a complete native system build or boot.

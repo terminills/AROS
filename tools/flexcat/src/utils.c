@@ -238,10 +238,10 @@ char *ConvertString(char *str, const char *from_charset, const char *to_charset)
 
       if(fromIsUTF8 == TRUE)
       {
-        dstText = CodesetsUTF8ToStr(CSA_Source,      str,
-                                    CSA_DestCodeset, dstCodeset,
-                                    CSA_DestLenPtr,  &dstLen,
-                                    CSA_ErrPtr,      &errPtr,
+        dstText = CodesetsUTF8ToStr(CSA_Source,      (IPTR)str,
+                                    CSA_DestCodeset, (IPTR)dstCodeset,
+                                    CSA_DestLenPtr,  (IPTR)&dstLen,
+                                    CSA_ErrPtr,      (IPTR)&errPtr,
                                     TAG_DONE);
       }
       else
@@ -254,11 +254,11 @@ char *ConvertString(char *str, const char *from_charset, const char *to_charset)
 
         if(srcCodeset != NULL)
         {
-          dstText = CodesetsConvertStr(CSA_Source,        str,
-                                       CSA_SourceCodeset, srcCodeset,
-                                       CSA_DestCodeset,   dstCodeset,
-                                       CSA_DestLenPtr,    &dstLen,
-                                       CSA_ErrPtr,        &errPtr,
+          dstText = CodesetsConvertStr(CSA_Source,        (IPTR)str,
+                                       CSA_SourceCodeset, (IPTR)srcCodeset,
+                                       CSA_DestCodeset,   (IPTR)dstCodeset,
+                                       CSA_DestLenPtr,    (IPTR)&dstLen,
+                                       CSA_ErrPtr,        (IPTR)&errPtr,
                                        TAG_DONE);
         }
         else

@@ -32,10 +32,10 @@ all: depend $(OBJDIR) $(COPYTOAFS)
 
 $(COPYTOAFS): $(OBJS)
 	@$(ECHO) "Linking $@..."
-	@$(HOST_CC) $(OBJS) $(AFSLIB) -o $@ $(LIBS)
+	@$(HOST_CC) $(HOST_CFLAGS) $(HOST_LDFLAGS) $(OBJS) $(AFSLIB) -o $@ $(LIBS)
 
-$(OBJDIR)/config.h: $(OBJDIR) myconf.aros
-	@./myconf.aros $(TOP) >> $@
+$(OBJDIR)/config.h: myconf.aros | $(OBJDIR)
+	@./myconf.aros $(OBJDIR) $(HOST_CC) $(HOST_CFLAGS) $(HOST_LDFLAGS) > $@.tmp && mv $@.tmp $@
 
 $(OBJDIR)/%.o: %.c $(OBJDIR)/config.h
 	@$(ECHO) "Compiling $(notdir $@)..."

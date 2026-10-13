@@ -231,11 +231,11 @@ $(CREATEDTDESC): $(wildcard $(SRCDIR)/tools/dtdesc/*.[ch]) $(wildcard $(SRCDIR)/
 	@$(ECHO) Building $(notdir $@)...
 	@$(CALL) $(MAKE) $(MKARGS) -C $(SRCDIR)/tools/dtdesc -f Makefile.aros SRCDIR=$(SRCDIR) TOP=$(TOP)
 
-$(AFSLIB): $(wildcard $(SRCDIR)/rom/filesys/afs/*.[ch])
+$(AFSLIB): $(wildcard $(SRCDIR)/rom/filesys/afs/*.[ch]) $(SRCDIR)/tools/copytoafs/Makefile.afslib $(SRCDIR)/tools/copytoafs/myconf.aros
 	@$(ECHO) Building afslib...
 	@$(CALL) $(MAKE) $(MKARGS) -C $(SRCDIR)/tools/copytoafs -f Makefile.afslib SRCDIR=$(SRCDIR) TOP=$(TOP)
 
-$(COPYTOAFS): $(AFSLIB) $(SRCDIR)/tools/copytoafs/copytoafs.c
+$(COPYTOAFS): $(AFSLIB) $(SRCDIR)/tools/copytoafs/copytoafs.c $(SRCDIR)/tools/copytoafs/Makefile
 	@$(ECHO) Building $(notdir $@)...
 	@$(CALL) $(MAKE) $(MKARGS) -C $(SRCDIR)/tools/copytoafs SRCDIR=$(SRCDIR) TOP=$(TOP)
 

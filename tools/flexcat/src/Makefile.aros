@@ -30,6 +30,10 @@ OBJS := main.o \
         translators.o \
         locale_other.o
 
+ifeq ($(AROS_HOST_ARCH),aros)
+OBJS += getft.o openlibs.o
+endif
+
 OBJDIR := $(HOSTGENDIR)/tools/flexcat
 
 SDFILES	:=  C_h_aros.sd C_c_orig.sd C_h_orig.sd gcccatcomp.sd
@@ -40,7 +44,7 @@ all: $(OBJDIR) $(FLEXCAT) $(SD_OUT)
 
 $(FLEXCAT) : $(addprefix $(OBJDIR)/,$(OBJS))
 	@$(ECHO) "Linking $(notdir $@)..."
-	@$(HOST_CC)  $(HOST_LDFLAGS) $^ -o $@
+	@$(HOST_CC) $(HOST_CFLAGS) $(HOST_LDFLAGS) $^ -o $@
 #	@$(HOST_STRIP) $@
 
 $(OBJDIR)/%.o : %.c
