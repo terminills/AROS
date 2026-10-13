@@ -202,3 +202,13 @@ failed evidence, and its cause is not established. Native libiberty, codesets,
 Unicode data and pregenerated MetaMake configure remain bootstrap inputs.
 All 78 source submodules were staged at their pinned commits. This milestone
 still does not establish a complete native system build or boot.
+
+Native Clang now defaults its AROS SDK root to the parent of the executable's
+bin directory. Explicit sysroots take precedence; cross-hosted compilers keep
+their configured behavior. `native-sdk-default.py` compiles, links and runs C
+and C++ without a sysroot argument and checks explicit override paths. It and
+the existing native C/archive/response/C++/TLS/error-status suite pass with
+Clang SHA256 `2632e3f58866d126cd6908fedd7b45e73b4c9a2a3c68fe5cc4d255e1a5001c12`.
+The updated Clang patch replays cleanly on pristine 20.1.0 source. The initial
+system feature scan with the old driver could not find stdio.h; that scan is
+retained and must be rerun with this compiler before accepting its results.

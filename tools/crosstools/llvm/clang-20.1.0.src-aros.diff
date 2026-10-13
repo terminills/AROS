@@ -291,7 +291,7 @@ diff -ruN clang-20.1.0.src/lib/Driver/Driver.cpp clang-20.1.0.src.aros/lib/Drive
 diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.cpp clang-20.1.0.src.aros/lib/Driver/ToolChains/AROS.cpp
 --- clang-20.1.0.src/lib/Driver/ToolChains/AROS.cpp	1970-01-01 00:00:00.000000000 +0000
 +++ clang-20.1.0.src.aros/lib/Driver/ToolChains/AROS.cpp	2025-07-16 19:03:04.095289709 +0000
-@@ -0,0 +1,448 @@
+@@ -0,0 +1,458 @@
 +//===--- AROS.cpp - AROS Tool Chain -------------===//
 +//
 +//                     The LLVM Compiler Infrastructure
@@ -410,7 +410,7 @@ diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.cpp clang-20.1.0.src.aros/
 +      static_cast<const toolchains::AROSClang &>(getToolChain());
 +    const char *Exec = Args.MakeArgString(AROSTC.GetLinkerPath());
 +    const Driver &D = AROSTC.getDriver();
-+    const std::string &SysRoot = D.SysRoot;
++    const std::string &SysRoot = AROSTC.getAROSSysRoot();
 +    ArgStringList CmdArgs;
 +    const llvm::Triple &Target = AROSTC.getTriple();
 +    llvm::Triple CompilerTarget(LLVM_DEFAULT_TARGET_TRIPLE);
@@ -418,7 +418,7 @@ diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.cpp clang-20.1.0.src.aros/
 +    if (llvm::sys::path::filename(Exec) == "lld") {
 +        CmdArgs.push_back("-flavor");
 +        CmdArgs.push_back("gnu");
-+        if (!D.SysRoot.empty())
++        if (!SysRoot.empty())
 +            CmdArgs.push_back(Args.MakeArgString("--sysroot=" + SysRoot));
 +    }
 +
@@ -556,7 +556,17 @@ diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.cpp clang-20.1.0.src.aros/
 +AROSClang::AROSClang(const Driver &D,
 +                             const llvm::Triple &Triple,
 +                             const llvm::opt::ArgList &Args)
-+    : Generic_ELF(D, Triple, Args) {
++    : Generic_ELF(D, Triple, Args), SysRoot(D.SysRoot) {
++#ifdef __AROS__
++    // A native SDK is installed beside bin/. Explicit --sysroot always wins;
++    // cross compilers keep their configured sysroot semantics.
++    if (SysRoot.empty() && !Args.hasArg(options::OPT__sysroot_EQ)) {
++        SmallString<128> SDKRoot(D.Dir);
++        llvm::sys::path::append(SDKRoot, "..");
++        llvm::sys::path::remove_dots(SDKRoot, /*remove_dot_dot=*/true);
++        SysRoot = std::string(SDKRoot);
++    }
++#endif
 +    if (GetCXXStdlibType(Args) == ToolChain::CST_Libstdcxx) {
 +
 +    }
@@ -588,7 +598,7 @@ diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.cpp clang-20.1.0.src.aros/
 +AddAROSSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
 +                         llvm::opt::ArgStringList &CC1Args) const {
 +    const Driver &D = getDriver();
-+    const std::string &SysRoot = D.SysRoot;
++    const std::string &SysRoot = getAROSSysRoot();
 +
 +    if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
 +        addSystemInclude(DriverArgs, CC1Args, SysRoot + "/include");
@@ -704,7 +714,7 @@ diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.cpp clang-20.1.0.src.aros/
 +    if (!D.CCCIsCXX() && Args.hasArg(options::OPT_nostartfiles))
 +        return;
 +
-+    const std::string &SysRoot = D.SysRoot;
++    const std::string &SysRoot = getAROSSysRoot();
 +    SmallString<128> LibPath(SysRoot);
 +    const llvm::Triple &Target = getTriple();
 +    llvm::Triple CompilerTarget(LLVM_DEFAULT_TARGET_TRIPLE);
@@ -743,7 +753,7 @@ diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.cpp clang-20.1.0.src.aros/
 diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.h clang-20.1.0.src.aros/lib/Driver/ToolChains/AROS.h
 --- clang-20.1.0.src/lib/Driver/ToolChains/AROS.h	1970-01-01 00:00:00.000000000 +0000
 +++ clang-20.1.0.src.aros/lib/Driver/ToolChains/AROS.h	2025-07-16 10:20:52.784100568 +0000
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,120 @@
 +//===--- AROS.h - AROS ToolChain Implementations ----------*- C -*-===//
 +//
 +//                     The LLVM Compiler Infrastructure
@@ -802,6 +812,8 @@ diff -ruN clang-20.1.0.src/lib/Driver/ToolChains/AROS.h clang-20.1.0.src.aros/li
 +                const llvm::Triple &Triple,
 +                const llvm::opt::ArgList &Args);
 +  ~AROSClang() override = default;
++
++  const std::string &getAROSSysRoot() const { return SysRoot; }
 +
 +  static bool handlesTarget(const llvm::Triple &Triple);
 +
