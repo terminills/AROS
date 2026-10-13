@@ -4,6 +4,7 @@ import pathlib
 import pickle
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -11,6 +12,9 @@ import time
 sys.stderr = sys.stdout
 print("PYTHON-EXECUTABLE", sys.executable, flush=True)
 assert sys.platform.startswith("aros"), sys.platform
+assert sysconfig.get_config_var("MACHDEP") == "aros"
+assert sysconfig.get_path("purelib").endswith("/lib/python3.12/site-packages")
+print("PYTHON-SYSCONFIG-PASS", flush=True)
 assert pickle.loads(pickle.dumps({"value": [1, 2, 3]})) == {"value": [1, 2, 3]}
 with tempfile.TemporaryDirectory() as directory:
     path = pathlib.Path(directory) / "path with spaces.txt"

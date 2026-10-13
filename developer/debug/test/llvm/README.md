@@ -75,6 +75,20 @@ reproduce the tested source files from pristine archives.
 Autoconf 2.73 also needs its exit-trap shell argument protected from M4
 expansion. The bundled patch and corrected generated configure retain
 failure status; a generated intentional-error configure returns 1 inside AROS.
+The subsequent ABC shell fix `2b761d0d` handles escaped double quotes inside
+double-quoted backtick substitutions in POSIX mode. Native regression cases
+cover the Autoconf printf/sed forms and modern command substitution.
+
+Native configure also exposed buffered output left behind by posixc `fclose`
+on inherited handles. Flush output before closing the descriptor, including
+when close deliberately leaves the underlying DOS handle open. Without this,
+the shell writes a heredoc terminator before sed's buffered body; generated
+`config.status` input is invalid. The ordered-output shell regression now
+passes, as do the native Python/compiler gates and bounded consumer probes
+with candidate posixc SHA256
+`c23e96a31a14ea5649cc2f6289a386cfd7a7aca57e8062c59a711c2a2112f40c`.
+Waiting for the exact shell child did not fix the reproducer; that experiment
+was removed and its diff retained in the build's regression directory.
 
 The Python 3.12.12 bootstrap passes file/pickle operations, threading,
 ten captured subprocesses, child exit status, unsafe preexec rejection,
@@ -83,6 +97,8 @@ syslog, termios, and multiprocessing remain disabled. The email utility
 imports socket only when generating a hostname-based message ID; the
 bootstrap does not pretend to supply networking. AROS subprocesses use
 the standard descriptor-close fallback because there is no procfs.
+Install the generated `_sysconfigdata__aros_.py` alongside the standard
+library. The bootstrap recipe now does this and the native test checks it.
 
 Use the BFD backend for native collect-aros: the generic backend depends
 on ADT's unfinished popen/pclose path. The bootstrap recipe is
@@ -116,8 +132,11 @@ candidate posixc. Candidate libuv work-queue and process-lifecycle tests pass.
 Repeated Node launches still fault with both libraries; the user reports
 Claude is fixing uv1.library, so that result needs retesting against the fix.
 The earlier mixed-runtime internal-symbol fault is retained as failed setup
-evidence. Chromium runtime validation has not yet run. Existing application
-runtimes remain untouched.
+evidence. Chromium startup, JavaScript reduction over 100,000 elements, and
+Canvas rendering pass with original and candidate posixc in fresh private
+profiles. This requires a 16 GiB hosted guest for this Chromium artifact's
+address-space allocations. Media, GPU and broader browser regressions remain
+open. Existing application runtimes remain untouched.
 
 Regenerating posixc dispatch tables from baseline `cdafb29de` and the candidate
 confirms all 286 existing entries (including 282 stack calls) retain their
@@ -126,3 +145,5 @@ remains 575. New callers require the updated library. Any future movement of
 existing vectors requires rebuilding linked consumers before runtime testing.
 The generated comparison and JSON report are in the isolated build's
 `regression/posixc-vector-audit` directory.
+Repeat it with `tools/native-bootstrap/check-posixc-vectors.py SOURCE GENMODULE
+BASELINE OUTPUT`; any changed or removed dispatch entry produces failure.

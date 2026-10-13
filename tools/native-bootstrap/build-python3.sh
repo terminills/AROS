@@ -38,4 +38,9 @@ syslog
 termios
 _multiprocessing
 EOF
-make -j"${JOBS:-8}" python
+make -j"${JOBS:-8}" python pybuilddir.txt
+mkdir -p "$sysroot/bin" "$sysroot/lib/python3.12"
+cp python "$sysroot/bin/python3"
+cp -R ../Python-3.12.12/Lib/. "$sysroot/lib/python3.12/"
+# sysconfig needs the target build metadata, not just the source Lib directory.
+cp "$(cat pybuilddir.txt)"/_sysconfigdata_*.py "$sysroot/lib/python3.12/"

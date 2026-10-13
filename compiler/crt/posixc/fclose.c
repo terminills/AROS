@@ -8,6 +8,7 @@
 #include <proto/dos.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
 #include "__stdio.h"
 
 #include "__posixc_intbase.h"
@@ -49,9 +50,17 @@
     struct PosixCIntBase *PosixCBase =
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
     FILENODE * fn;
+    int error = 0;
 
+    /* Close() flushes owned DOS handles, but inherited standard handles are
+       kept open by close(). Flush output before releasing either kind. */
+    if ((stream->flags & __POSIXC_STDIO_WRITE) && fflush(stream) == EOF)
+        error = errno;
     if (close(stream->fd) == -1)
-        return EOF;
+    {
+        if (!error)
+            error = errno;
+    }
 
     fn = FILE2FILENODE (stream);
     ObtainSemaphore(&PosixCBase->stdio_sem);
@@ -60,6 +69,10 @@
 
     FreePooled(PosixCBase->internalpool, fn, sizeof(FILENODE));
 
+    if (error)
+    {
+        errno = error;
+        return EOF;
+    }
     return 0;
 } /* fclose */
-

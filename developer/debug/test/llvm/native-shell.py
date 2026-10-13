@@ -18,6 +18,10 @@ tests = [
     ("trap 'echo CLEANUP' 0; exit 7", 7, "CLEANUP\n"),
     ("f() { return $1; }; g() { set +e; f $1; exit $1; }; g 7", 7, ""),
     ("printf 'flex 2.6.4\\n' | /SYS/Developer/bin/cut -d' ' -f2", 0, "2.6.4\n"),
+    ("{ echo START && printf 'one\\ntwo\\n' | /SYS/Developer/bin/sed 's/$/!/' "
+     "&& echo END; } > /T/native-shell-order; "
+     "/SYS/Developer/bin/cat /T/native-shell-order",
+     0, "START\none!\ntwo!\nEND\n"),
 ]
 tests += [
     ('x="`printf \\"%s\\\\n\\" hello`"; printf "%s\\n" "$x"', 0, 'hello\n'),
