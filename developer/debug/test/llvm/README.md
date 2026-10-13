@@ -212,3 +212,10 @@ Clang SHA256 `2632e3f58866d126cd6908fedd7b45e73b4c9a2a3c68fe5cc4d255e1a5001c12`.
 The updated Clang patch replays cleanly on pristine 20.1.0 source. The initial
 system feature scan with the old driver could not find stdio.h; that scan is
 retained and must be rerun with this compiler before accepting its results.
+
+MetaMake now honors TMPDIR (falling back to /T on AROS) when writing the
+makefile-generation list. Its build configures against the real source tree,
+not the stale copy used to bootstrap Autoconf. After rebuilding it natively,
+the full target passes its source scan, creates the list under /T, and starts
+regenerating 1,217 makefiles. The previous /tmp failure and the no-op rebuild
+against copied sources are retained as failed evidence.
