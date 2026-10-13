@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #define DEBUG 1
@@ -78,7 +78,7 @@ __realpath(const char *path, char *resolved_path, int count);
 {
     char *ret;
     int dofree = 0;
-    int fd;
+    char saved[PATH_MAX];
 
     if (resolved_path == NULL) {
         resolved_path = malloc(PATH_MAX);
@@ -88,9 +88,9 @@ __realpath(const char *path, char *resolved_path, int count);
         dofree = 1;
     }
 
-    /* Save current working directory by opening "." */
-    fd = open(".", O_RDONLY);
-    if (fd == -1) {
+    /* Save the current directory by name: AmigaDOS has no "." entry to
+       open */
+    if (getcwd(saved, sizeof(saved)) == NULL) {
         if (dofree)
             free(resolved_path);
         return NULL;
@@ -98,9 +98,7 @@ __realpath(const char *path, char *resolved_path, int count);
 
     ret = __realpath(path, resolved_path, SYMLOOP_MAX);
 
-    /* Restore current working directory */
-    fchdir(fd);
-    close(fd);
+    chdir(saved);
 
     if (ret == NULL && dofree) {
         free(resolved_path);
@@ -141,9 +139,20 @@ __realpath(const char *path, char *resolved_path, int count)
         return resolved_path;
     }
 
-    /* Otherwise, find the last '/' in path */
+    /* Otherwise, find the last '/' in path, or the ':' of a volume */
     slash = strrchr(path, '/');
-    if (slash) {
+    if (!slash && (slash = strrchr(path, ':')) != NULL) {
+        len = slash - path + 1;
+        if (len > PATH_MAX) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        memcpy(buf, path, len);
+        buf[len] = '\0';
+        if (chdir(buf) == -1)
+            return NULL;
+        path = slash + 1;
+    } else if (slash) {
         len = slash - path;
         if (len > PATH_MAX) {
             errno = ENAMETOOLONG;
@@ -159,10 +168,6 @@ __realpath(const char *path, char *resolved_path, int count)
 
         /* Move past the '/' */
         path = slash + 1;
-    } else {
-        /* No directory part: use current directory */
-        if (chdir(".") == -1)
-            return NULL;
     }
 
     /* Try to readlink the last component */
@@ -177,7 +182,10 @@ __realpath(const char *path, char *resolved_path, int count)
         return __realpath(buf, resolved_path, count - 1);
     }
 
-    /* Not a symlink, build the absolute path */
+    /* Not a symlink: it has to exist */
+    if (access(path, F_OK) == -1)
+        return NULL;
+
     if (getcwd(resolved_path, PATH_MAX) == NULL)
         return NULL;
 
@@ -188,7 +196,8 @@ __realpath(const char *path, char *resolved_path, int count)
     }
 
     /* Append '/' and the final component */
-    if (len > 0 && resolved_path[len - 1] != '/') {
+    if (len > 0 && resolved_path[len - 1] != '/' &&
+        resolved_path[len - 1] != ':') {
         resolved_path[len++] = '/';
     }
 
