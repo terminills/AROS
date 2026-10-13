@@ -9,7 +9,7 @@ Historical LLVM 11/OPAL work is reference material, not LLVM 20 validation.
 2. Run `native-toolchain.sh` **inside AROS**. This checks separate C
    compilation, archive creation, driver/linker spawning, loading and running
    the result, response files with spaces, C++ static initialization and STL,
-   and nonzero compiler/linker failures.
+   emulated TLS isolation between threads, and nonzero compiler/linker failures.
 3. Run the native shell, make, configure dependencies and AROS generators on
    AROS. Build a real AROS component through MetaMake, then the base system.
 4. Build the configured AROS target entirely inside AROS, retaining the
@@ -24,8 +24,8 @@ and `collect-aros` with its linker backend. Put their executables on PATH.
 Run from the AROS POSIX shell:
 
 ```sh
-export CFLAGS='--sysroot=/SYS/Developer -nix'
-export CXXFLAGS='--sysroot=/SYS/Developer -nix'
+export CFLAGS='--sysroot=/SYS/Developer -mcmodel=large -mno-red-zone -nix'
+export CXXFLAGS='--sysroot=/SYS/Developer -mcmodel=large -mno-red-zone -nix'
 sh native-toolchain.sh /T/llvm-native-test
 ```
 

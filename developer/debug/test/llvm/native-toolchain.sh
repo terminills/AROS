@@ -56,6 +56,29 @@ EOF
 "$CXX" ${CXXFLAGS:-} -std=c++17 main.cpp ${LDFLAGS:-} -o native-cxx
 ./native-cxx
 
+# Emulated TLS must provide different storage to two live AROS tasks.
+cat > tls.c <<'EOF'
+#include <pthread.h>
+static _Thread_local int value = 7;
+static void *worker(void *arg) {
+    int *result = arg;
+    if (value != 7) { *result = 1; return 0; }
+    value = 42;
+    *result = value != 42;
+    return 0;
+}
+int main(void) {
+    pthread_t thread;
+    int result = -1;
+    value = 19;
+    if (pthread_create(&thread, 0, worker, &result)) return 1;
+    if (pthread_join(thread, 0)) return 2;
+    return result || value != 19;
+}
+EOF
+"$CC" ${CFLAGS:-} -std=c11 -pthread tls.c ${LDFLAGS:-} -o native-tls
+./native-tls
+
 # A failed child must propagate failure through the compiler driver and shell.
 printf '%s\n' '#error EXPECTED_NATIVE_COMPILE_FAILURE' > invalid.c
 if "$CC" ${CFLAGS:-} -c invalid.c -o invalid.o; then
