@@ -41,7 +41,7 @@ POSIXC := \
     chmod \
     chown \
     clearerr \
-    clock_gettime \
+    clock_getres clock_gettime \
     close \
     closedir \
     creat \
