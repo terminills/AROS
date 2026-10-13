@@ -2704,7 +2704,7 @@ ac_dump_debugging_info ()
 # config.log.
 ac_exit_trap ()
 {
-  exit_status=
+  exit_status=$1
   # Sanitize IFS.
   IFS=" ""	$as_nl"
   # Save into config.log some information that might help in debugging.

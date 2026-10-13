@@ -60,9 +60,21 @@ and nonzero compile/link failure status (`NATIVE-TOOLCHAIN-PASS`). Native
 Clang SHA256: `c067d4b89f6a5cfea0d01278d49a30eb423b45c3a79b1bf4817f272c895d3edb`.
 LLVM source buffers must use the normal read path on AROS: the malloc-based
 mapping fallback does not provide mmap's zero-filled tail page, causing
-out-of-bounds source parsing and diagnostic crashes. The bundled ABC shell
-still needs separate validation; its initial run advanced past missing
-executables and is not accepted as evidence of success.
+out-of-bounds source parsing and diagnostic crashes. The shell-driven native
+toolchain gate also passes after fixing ABC shell status propagation, option
+table alignment, and inherited local environment variables. Its broader
+configure compatibility is still under test. Use `-m 2048` (separate arguments)
+for the hosted bootstrap; `-m2048` is ignored and leaves only 256 MiB.
+
+The private contrib clone includes `ef8adf7d` (following `a65885d6` for ABC shell).
+Flex skips a redundant no-child wait because its AROS filters already reap
+children synchronously. Coreutils now recognizes read-only posixc streams
+instead of treating every stream as output during cleanup. Native direct
+input, pipeline, and redirected-file cut probes pass. Both saved patches
+reproduce the tested source files from pristine archives.
+Autoconf 2.73 also needs its exit-trap shell argument protected from M4
+expansion. The bundled patch and corrected generated configure retain
+failure status; a generated intentional-error configure returns 1 inside AROS.
 
 The Python 3.12.12 bootstrap passes file/pickle operations, threading,
 ten captured subprocesses, child exit status, unsafe preexec rejection,
@@ -93,11 +105,24 @@ isolated runtime until these gates pass:
 - Retain logs and distinguish baseline failures from new failures. A compile
   probe alone does not establish application runtime compatibility.
 
-These gates are pending; no consumer regression pass is claimed yet.
+Full application gates remain pending; the bounded results below do not
+establish complete application compatibility.
 The C/C++ header-order matrix passes with identical probe machine code.
 RPCS3's platform/backend seam compiles, but its VM probe needs exception
 interfaces absent from this ADT baseline; baseline headers reproduce it.
-Copied Node/V8 runtime artifacts fault in the libuv internal-symbol base
-wrapper in both candidate and baseline posixc A/B runs. That comparison
-does not establish a passing Node/V8 baseline. Chromium runtime validation
-has not yet run. Existing application runtimes remain untouched.
+An isolated copy of the complete ADT runtime passes Node 22.23.1 array execution
+and the existing worker-thread/MessageChannel probe with both original and
+candidate posixc. Candidate libuv work-queue and process-lifecycle tests pass.
+Repeated Node launches still fault with both libraries; the user reports
+Claude is fixing uv1.library, so that result needs retesting against the fix.
+The earlier mixed-runtime internal-symbol fault is retained as failed setup
+evidence. Chromium runtime validation has not yet run. Existing application
+runtimes remain untouched.
+
+Regenerating posixc dispatch tables from baseline `cdafb29de` and the candidate
+confirms all 286 existing entries (including 282 stack calls) retain their
+vector numbers. `clock_getres` occupies reserved slot 574; `clock_gettime`
+remains 575. New callers require the updated library. Any future movement of
+existing vectors requires rebuilding linked consumers before runtime testing.
+The generated comparison and JSON report are in the isolated build's
+`regression/posixc-vector-audit` directory.
