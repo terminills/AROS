@@ -935,50 +935,37 @@ diff --color -ruN llvm-20.1.0.src/lib/Support/Unix/Memory.inc llvm-20.1.0.src.ar
  
  #if defined(__powerpc__) && defined(__GNUC__)
    const size_t LineSize = 32;
-diff --color -ruN llvm-20.1.0.src/lib/Support/Unix/Path.inc llvm-20.1.0.src.aros/lib/Support/Unix/Path.inc
---- llvm-20.1.0.src/lib/Support/Unix/Path.inc	2025-03-04 20:51:43
-+++ llvm-20.1.0.src.aros/lib/Support/Unix/Path.inc	2026-09-07 00:13:53
-@@ -16,6 +16,9 @@
- //===----------------------------------------------------------------------===//
- 
- #include "Unix.h"
+--- llvm-20.1.0.src/lib/Support/Unix/Path.inc
++++ llvm-20.1.0.src.aros/lib/Support/Unix/Path.inc
+@@ -18,0 +19,4 @@
 +#if defined(__AROS__)
 +#include <cstdlib>
++#include <proto/dos.h>
 +#endif
- #include <limits.h>
- #include <stdio.h>
- #include <sys/stat.h>
-@@ -107,6 +110,7 @@
- #endif
- 
- #if defined(__NetBSD__) || defined(__DragonFly__) || defined(__GNU__) ||       \
+@@ -109,0 +114 @@
 +    defined(__AROS__) ||                                                       \
-     defined(__MVS__)
- #define STATVFS_F_FLAG(vfs) (vfs).f_flag
- #else
-@@ -329,6 +333,9 @@
-   char link_path[PATH_MAX];
-   if (realpath(DLInfo.dli_fname, link_path))
-     return link_path;
+@@ -331,0 +337,17 @@
 +#elif defined(__AROS__)
 +  (void)MainAddr;
++  // The CLI may supply only a command name, or an Amiga-style path. Use the
++  // process's program directory rather than its current working directory.
++  char Dir[PATH_MAX];
++  char Name[PATH_MAX];
++  if (GetProgramDir() && NameFromLock(GetProgramDir(), Dir, sizeof(Dir))) {
++    const char *Program = GetProgramName(Name, sizeof(Name)) ? Name : argv0;
++    if (Program && AddPart(Dir, FilePart(Program), sizeof(Dir))) {
++      // LLVM paths use POSIX spelling, even when launched by the AROS CLI.
++      if (char *Colon = strchr(Dir, ':')) {
++        *Colon = '/';
++        return std::string("/") + Dir;
++      }
++    }
++  }
 +  return "";
- #else
- #error GetMainExecutable is not implemented on this host yet.
- #endif
-@@ -550,6 +557,8 @@
-   // The file system can have an arbitrary structure on z/OS; must go with the
-   // conservative answer.
-   return false;
+@@ -552,0 +575,2 @@
 +#elif defined(__AROS__)
 +  return true;
- #else
-   return !!(STATVFS_F_FLAG(Vfs) & MNT_LOCAL);
- #endif
-@@ -826,6 +835,29 @@
-                                          mapmode Mode) {
-   assert(Size != 0);
- 
+@@ -828,0 +853,23 @@
 +#if defined(__AROS__)
 +  // AROS has no mmap(): read the range into an ordinary allocation. Writes
 +  // are therefore private and never reach the file, which is all LLVM's
@@ -1002,37 +989,18 @@ diff --color -ruN llvm-20.1.0.src/lib/Support/Unix/Path.inc llvm-20.1.0.src.aros
 +  }
 +  return std::error_code();
 +#else
-   int flags = (Mode == readwrite) ? MAP_SHARED : MAP_PRIVATE;
-   int prot = (Mode == readonly) ? PROT_READ : (PROT_READ | PROT_WRITE);
- #if defined(MAP_NORESERVE)
-@@ -855,6 +887,7 @@
-   if (Mapping == MAP_FAILED)
-     return errnoAsErrorCode();
-   return std::error_code();
+@@ -857,0 +905 @@
 +#endif
- }
- 
- mapped_file_region::mapped_file_region(int fd, mapmode mode, size_t length,
-@@ -868,14 +901,18 @@
- 
- void mapped_file_region::unmapImpl() {
-   if (Mapping)
+@@ -870,0 +919,3 @@
 +#if defined(__AROS__)
 +    std::free(Mapping);
 +#else
-     ::munmap(Mapping, Size);
+@@ -871,0 +923 @@
 +#endif
- }
- 
- void mapped_file_region::dontNeedImpl() {
-   assert(Mode == mapped_file_region::readonly);
-   if (!Mapping)
-     return;
+@@ -878 +930 @@
 -#if defined(__MVS__) || defined(_AIX)
 +#if defined(__MVS__) || defined(_AIX) || defined(__AROS__)
-     // If we don't have madvise, or it isn't beneficial, treat this as a no-op.
- #elif defined(POSIX_MADV_DONTNEED)
-   ::posix_madvise(Mapping, Size, POSIX_MADV_DONTNEED);
+
 diff --color -ruN llvm-20.1.0.src/lib/Support/Unix/Process.inc llvm-20.1.0.src.aros/lib/Support/Unix/Process.inc
 --- llvm-20.1.0.src/lib/Support/Unix/Process.inc	2025-03-04 20:51:43
 +++ llvm-20.1.0.src.aros/lib/Support/Unix/Process.inc	2026-09-07 00:13:53

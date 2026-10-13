@@ -41,9 +41,24 @@ tools target is `workbench-libs-llvm-tools`. Initial configuration uses a
 fresh `linux-x86_64` hosted build with `--with-llvm-version=20.1.0` and the
 existing ADT GCC 15.2 cross compiler to bootstrap native executables.
 
-No native runtime or self-hosting pass has been established yet. The
-LLVM 20 process-spawning implementation and current ADT posixc must be
-tested together before deciding whether an older spawn workaround applies.
+The isolated hosted ADT runtime has now run Clang 20.1.0, compiled a C
+program, linked it through native collect-aros/binutils, and executed it
+(`NATIVE-LINK-RUN-PASS`). Its executable directory is resolved through
+GetProgramDir, including when invoked using an AROS volume path. This is
+a component bootstrap result, not a self-hosting pass.
+
+The Python 3.12.12 bootstrap passes file/pickle operations, threading,
+ten captured subprocesses, child exit status, unsafe preexec rejection,
+and Mako/YAML imports and rendering (`NATIVE-PYTHON-PASS`). Networking,
+syslog, termios, and multiprocessing remain disabled. The email utility
+imports socket only when generating a hostname-based message ID; the
+bootstrap does not pretend to supply networking. AROS subprocesses use
+the standard descriptor-close fallback because there is no procfs.
+
+Use the BFD backend for native collect-aros: the generic backend depends
+on ADT's unfinished popen/pclose path. The bootstrap recipe is
+`tools/native-bootstrap/build-collect-aros.sh`; first build
+`development-binutils` to supply the native BFD/libiberty archives.
 
 ## Consumer regression gates
 
@@ -62,3 +77,10 @@ isolated runtime until these gates pass:
   probe alone does not establish application runtime compatibility.
 
 These gates are pending; no consumer regression pass is claimed yet.
+The C/C++ header-order matrix passes with identical probe machine code.
+RPCS3's platform/backend seam compiles, but its VM probe needs exception
+interfaces absent from this ADT baseline; baseline headers reproduce it.
+Copied Node/V8 runtime artifacts fault in the libuv internal-symbol base
+wrapper in both candidate and baseline posixc A/B runs. That comparison
+does not establish a passing Node/V8 baseline. Chromium runtime validation
+has not yet run. Existing application runtimes remain untouched.

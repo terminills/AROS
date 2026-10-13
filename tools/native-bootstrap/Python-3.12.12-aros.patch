@@ -24,6 +24,11 @@
 +#elif SIZEOF_TIME_T == SIZEOF_INT
 +#  define PY_TIME_T_MAX INT_MAX
 +#  define PY_TIME_T_MIN INT_MIN
+--- a/Python/fileutils.c
++++ b/Python/fileutils.c
+@@ -2593 +2593 @@
+-#elif defined(HAVE_FCNTL_H) && defined(F_DUPFD_CLOEXEC)
++#elif defined(HAVE_FCNTL_H) && defined(F_DUPFD_CLOEXEC) && !defined(__AROS__)
 --- a/Modules/_pickle.c
 +++ b/Modules/_pickle.c
 @@ -51,0 +52,8 @@
@@ -44,22 +49,29 @@
 +# if defined(__AROS__) && !defined(_NSIG)
 +#  define _NSIG NSIG
 +# endif
-@@ -828,0 +832 @@
-+#ifdef HAVE_FORK
-@@ -834,0 +839 @@
+@@ -430,0 +434,4 @@
++#ifdef __AROS__
++        /* AROS has no procfs; probing it can display a volume requester. */
++        proc_fd_dir = NULL;
++#else
+@@ -431,0 +439 @@
 +#endif
-@@ -837,0 +843 @@
+@@ -828,0 +837 @@
 +#ifdef HAVE_FORK
-@@ -838,0 +845,4 @@
+@@ -834,0 +844 @@
++#endif
+@@ -837,0 +848 @@
++#ifdef HAVE_FORK
+@@ -838,0 +850,4 @@
 +#else
 +        errno = ENOTSUP;
 +        pid = -1;
 +#endif
-@@ -855,0 +866 @@
+@@ -855,0 +871 @@
 +#ifdef HAVE_FORK
-@@ -856,0 +868 @@
+@@ -856,0 +873 @@
 +#endif
-@@ -948,0 +961,9 @@
+@@ -948,0 +966,9 @@
 +#ifndef HAVE_FORK
 +    /* AROS shares the parent's address space: Python callbacks are unsafe. */
 +    if (preexec_fn != Py_None) {
@@ -69,13 +81,13 @@
 +    }
 +#endif
 +
-@@ -1126,0 +1148 @@
+@@ -1126,0 +1153 @@
 +#ifdef HAVE_FORK
-@@ -1127,0 +1150 @@
+@@ -1127,0 +1155 @@
 +#endif
-@@ -1188,0 +1212 @@
+@@ -1188,0 +1217 @@
 +#ifdef HAVE_FORK
-@@ -1190,0 +1215 @@
+@@ -1190,0 +1220 @@
 +#endif
 --- a/Modules/resource.c
 +++ b/Modules/resource.c
@@ -83,3 +95,10 @@
 +#ifdef __AROS__
 +#define RLIM_NLIMITS (RLIMIT_AS + 1)
 +#endif
+--- a/Lib/email/utils.py
++++ b/Lib/email/utils.py
+@@ -29 +28,0 @@
+-import socket
+@@ -307,0 +307,2 @@
++        # Bootstrap builds may omit networking; import only when needed.
++        import socket
