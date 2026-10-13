@@ -95,6 +95,7 @@ POSIXC := \
     fsetpos64 \
     fstat \
     fstatat \
+    fstatat64 \
     fstatvfs \
     fstat64 \
     fdatasync \

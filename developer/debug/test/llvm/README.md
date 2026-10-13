@@ -171,3 +171,18 @@ instead of reading an unspecified third argument. `native-make.py` checks
 inherited variables, newly exported recipe variables, recursive make and
 nonzero recipe status. All pass in the current candidate runtime; the tools
 build is underway, and a complete self-hosted system/boot remains outstanding.
+
+The next libc candidate fixes two independently reproduced bootstrap failures:
+`exec` must apply a supplied environment even when its vector address matches
+`environ`, since programs can edit the vector directly; and large-file callers
+of `fstatat` need the wide structure implementation. `fstatat64` is appended at
+vector 798 (posixc 0.43), with all 286 baseline dispatch entries unchanged.
+Rebuild large-file callers against the corrected header to select the new
+entry; their runtime must provide it. Existing calls have not moved.
+
+Native `native-env.py`, `native-stat.py`, Python, shell, make and LLVM C/C++/TLS
+checks pass with posixc SHA256
+`a751eca74f4c2895ec1fc337a44105577b8bfb0b40c073e406b0b61c05b67651`.
+The same library passes first-launch Node worker, libuv work/process, and
+Chromium JavaScript/Canvas smoke checks in the private full ADT runtime.
+These are bounded regressions, not full browser/RPCS3 application qualification.
