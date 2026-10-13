@@ -219,3 +219,18 @@ not the stale copy used to bootstrap Autoconf. After rebuilding it natively,
 the full target passes its source scan, creates the list under /T, and starts
 regenerating 1,217 makefiles. The previous /tmp failure and the no-op rebuild
 against copied sources are retained as failed evidence.
+
+The full system run now generates all 1,217 makefiles, completes dependency
+scanning, builds genmodule natively and starts installing SDK headers. Running
+the vector audit with that native genmodule and an exported baseline config
+confirms all 286 existing entries remain unchanged.
+
+`native-fetch.py SHELL FETCH_SCRIPT` passes cached gzip extraction (including a
+256 KiB payload), patch application, repeat calls, lock cleanup and invalid
+arguments on Linux sh and native AROS sh. The fetch script uses portable shell
+constructs. Native tar no longer pulls in remote-tape socket startup for its
+local-only AROS port; its vfork call executes in the caller frame rather than
+returning through a wrapper before exec. The original socket requester and
+dup2 failure are retained as failed evidence. The tar patch replays cleanly
+on pristine 1.35 source. Tar and hostname remain cross-built bootstrap inputs.
+The complete system build and boot are still outstanding.

@@ -11,13 +11,16 @@ parser.add_argument("source", type=Path)
 parser.add_argument("genmodule", type=Path)
 parser.add_argument("baseline")
 parser.add_argument("output", type=Path)
+parser.add_argument("--baseline-config", type=Path,
+                    help="use an exported baseline config when git is unavailable")
 args = parser.parse_args()
 source = args.source.resolve()
 generator = args.genmodule.resolve()
 output = args.output.resolve()
 config = "compiler/crt/posixc/posixc.conf"
-baseline = subprocess.check_output(
-    ["git", "show", args.baseline + ":" + config], cwd=source)
+baseline = (args.baseline_config.read_bytes() if args.baseline_config else
+            subprocess.check_output(
+                ["git", "show", args.baseline + ":" + config], cwd=source))
 maps = {}
 for label, contents in [("baseline", baseline),
                         ("candidate", (source / config).read_bytes())]:
