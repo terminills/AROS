@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix='native-fetch-') as directory:
     (cache / 'sample.patch').write_text('--- a/input.txt\n+++ b/input.txt\n@@ -1 +1 @@\n-before\n+after\n')
     command = [shell, script, '-a', 'sample', '-s', 'tar.gz', '-ao', str(cache),
                '-l', str(cache), '-d', str(output), '-b', str(output),
-               '-po', str(cache), '-p', 'sample.patch:sample:-p1']
+               '-po', str(cache), '-p', 'sample.patch:sample:-f,-p1']
     for attempt in range(2):
         subprocess.run(command, check=True)
         assert (output / 'sample/input.txt').read_text() == 'after\n'

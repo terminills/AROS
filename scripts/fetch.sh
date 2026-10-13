@@ -435,9 +435,9 @@ do_patch()
     local old_PWD="$PWD"
     cd "$location"
     
-    local patch=$(echo "$patch_spec": | cut -d: -f1)
-    local subdir=$(echo "$patch_spec": | cut -d: -f2)
-    local patch_opt=$(echo "$patch_spec": | cut -d: -f3 | sed -e "s/,/ /g")
+    local patch="$(echo "$patch_spec": | cut -d: -f1)"
+    local subdir="$(echo "$patch_spec": | cut -d: -f2)"
+    local patch_opt="$(echo "$patch_spec": | cut -d: -f3 | sed -e "s/,/ /g")"
     local patch_cmd="patch -Z -E $patch_opt < $BASE/$patch"
         
     cd "${subdir:-.}"  2> /dev/null;
@@ -457,7 +457,7 @@ patch_cached()
 {
     local location="$1" patch="$2";
     
-    local patchname=$(echo "$patch" | cut -d: -f1)
+    local patchname="$(echo "$patch" | cut -d: -f1)"
     
     if test "x$patchname" != "x"; then
         if ! test -f "$BASE/.${patchname}.applied";  then
@@ -488,7 +488,7 @@ fetchlock()
                 echo "$(hostname):$$" > "$lockfile"
                 break
             else
-                local owner=$(tr -d '\0' < "$lockfile")
+                local owner="$(tr -d '\0' < "$lockfile")"
                 local host="${owner%%:*}" pid="${owner##*:}"
                 case "$pid" in
                     ""|*[!0-9]*)
