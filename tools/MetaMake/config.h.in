@@ -1,6 +1,11 @@
 /* config.h.in.  Generated from configure.in by autoheader.  */
 #ifndef CONFIG_H
 #define CONFIG_H
+
+/* MetaMake uses POSIX.1-2008/XSI interfaces including setenv and mkstemp. */
+#ifndef _XOPEN_SOURCE
+# define _XOPEN_SOURCE 700
+#endif
 /* Define to the name of the distribution.  */
 #undef PACKAGE
 

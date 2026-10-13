@@ -157,3 +157,17 @@ The generated comparison and JSON report are in the isolated build's
 `regression/posixc-vector-audit` directory.
 Repeat it with `tools/native-bootstrap/check-posixc-vectors.py SOURCE GENMODULE
 BASELINE OUTPUT`; any changed or removed dispatch entry produces failure.
+
+Native top-level configure now completes for `pc-x86_64` with LLVM 20.1.0.
+MetaMake compiles and links inside AROS after its configuration header requests
+POSIX.1-2008/XSI declarations. The matching pregenerated MetaMake configure
+script is still a bootstrap input: native Perl/Autoconf regeneration is not
+validated. Load the hosted clock with `C:SetClock LOAD` and assign
+`bin: SYS:Developer/bin` before starting the native build runner.
+
+Private contrib commit `6761ca0f` fixes GNU Make 4.4.1 startup: AROS passes
+only argc/argv to main, so the port must obtain the environment from `environ`
+instead of reading an unspecified third argument. `native-make.py` checks
+inherited variables, newly exported recipe variables, recursive make and
+nonzero recipe status. All pass in the current candidate runtime; the tools
+build is underway, and a complete self-hosted system/boot remains outstanding.
