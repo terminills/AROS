@@ -1440,3 +1440,11 @@ diff --color -ruN llvm-20.1.0.src/include/llvm/Support/Threading.h llvm-20.1.0.s
  #define LLVM_THREADING_USE_STD_CALL_ONCE 1
  #elif defined(LLVM_ON_UNIX) &&                                                 \
      (defined(__powerpc__) && defined(__LITTLE_ENDIAN__))
+--- llvm-20.1.0.src.orig/lib/Support/MemoryBuffer.cpp
++++ llvm-20.1.0.src/lib/Support/MemoryBuffer.cpp
+@@ -364,2 +364,3 @@
+-#if defined(__MVS__)
+-  // zOS Enhanced ASCII auto convert does not support mmap.
++#if defined(__MVS__) || defined(__AROS__)
++  // zOS cannot mmap converted text. AROS emulates mappings with malloc
++  // and cannot supply the zero-filled tail page required by source buffers.

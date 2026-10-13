@@ -6,7 +6,7 @@ Historical LLVM 11/OPAL work is reference material, not LLVM 20 validation.
 ## Acceptance gates
 
 1. Cross-build LLVM 20.1.0 native tools from ADT's shared patches.
-2. Run `native-toolchain.sh` **inside AROS**. This checks separate C
+2. Run `native-toolchain.py` **inside AROS** with the bootstrap Python. This checks separate C
    compilation, archive creation, driver/linker spawning, loading and running
    the result, response files with spaces, C++ static initialization and STL,
    emulated TLS isolation between threads, and nonzero compiler/linker failures.
@@ -21,7 +21,14 @@ Historical LLVM 11/OPAL work is reference material, not LLVM 20 validation.
 
 Install the native Clang resource headers, SDK, runtime libraries, archiver,
 and `collect-aros` with its linker backend. Put their executables on PATH.
-Run from the AROS POSIX shell:
+The checked subprocess gate is independent of the shell:
+
+```text
+SYS:Developer/bin/python3 /SYS/Developer/native-toolchain.py
+```
+
+`native-toolchain.sh` exercises the same operations through the POSIX shell,
+which must also be validated before using it for configure:
 
 ```sh
 export CFLAGS='--sysroot=/SYS/Developer -mcmodel=large -mno-red-zone -nix'
@@ -46,6 +53,16 @@ program, linked it through native collect-aros/binutils, and executed it
 (`NATIVE-LINK-RUN-PASS`). Its executable directory is resolved through
 GetProgramDir, including when invoked using an AROS volume path. This is
 a component bootstrap result, not a self-hosting pass.
+
+The checked Python-driven native LLVM gate passes C/archive/link/run,
+response files with spaces, C++ static initialization/STL, emulated TLS,
+and nonzero compile/link failure status (`NATIVE-TOOLCHAIN-PASS`). Native
+Clang SHA256: `c067d4b89f6a5cfea0d01278d49a30eb423b45c3a79b1bf4817f272c895d3edb`.
+LLVM source buffers must use the normal read path on AROS: the malloc-based
+mapping fallback does not provide mmap's zero-filled tail page, causing
+out-of-bounds source parsing and diagnostic crashes. The bundled ABC shell
+still needs separate validation; its initial run advanced past missing
+executables and is not accepted as evidence of success.
 
 The Python 3.12.12 bootstrap passes file/pickle operations, threading,
 ten captured subprocesses, child exit status, unsafe preexec rejection,
