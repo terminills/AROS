@@ -396,7 +396,12 @@ unpack()
 	    if ! unzip "$archivepath/$archive"; then ret=false; fi
 	    ;;
         *.tar.xz)
-	    if ! tar xfJ "$archivepath/$archive"; then ret=false; fi
+            if ! command -v xz >/dev/null 2>&1 && command -v xzdec >/dev/null 2>&1; then
+                # The bootstrap SDK may provide the standalone decoder.
+                if ! tar xf "$archivepath/$archive" -I xzdec; then ret=false; fi
+            else
+                if ! tar xfJ "$archivepath/$archive"; then ret=false; fi
+            fi
 	    ;;
 	*)
 	    echo "Unknown archive format for \`$archive'."

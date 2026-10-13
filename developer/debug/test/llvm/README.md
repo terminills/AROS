@@ -245,3 +245,10 @@ round trips. Native stat, rename, make and default-SDK checks plus first-launch
 Node workers, libuv work/process, and Chromium JavaScript/Canvas checks pass
 with the corrected handler. No shared C library or vector changes were needed
 for these fixes; full RPCS3 runtime validation remains outstanding.
+
+The bootstrap SDK now also carries the standalone xzdec decoder. When xz is
+absent, fetch uses tar with that explicit decoder for .tar.xz archives. An
+isolated private ADT guest passed 256 KiB extraction/content comparison and
+rejected a truncated XZ archive. `native-xzdec.py` carries the same fixture.
+The full xz command is not ported by this change; xzdec remains a cross-built
+bootstrap input, and compression is not claimed.
