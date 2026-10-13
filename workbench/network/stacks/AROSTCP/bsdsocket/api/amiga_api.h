@@ -141,6 +141,7 @@ struct SocketBase {
   struct DataBuffer	netents;
   struct DataBuffer	protoents;
   struct DataBuffer	servents;
+  struct DataBuffer	resmask;
 /* -- variables for the syslog (see netinclude:sys/syslog.h) -- */
   UBYTE			LogStat;                                  /* status */
   UBYTE			LogMask;                     /* mask for log events */

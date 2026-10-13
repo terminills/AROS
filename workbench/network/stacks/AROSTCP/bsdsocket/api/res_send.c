@@ -57,6 +57,7 @@ static char sccsid[] = "@(#)res_send.c	6.27 (Berkeley) 2/24/91";
 #include <api/amiga_api.h>
 #include <kern/amiga_subr.h>
 #include <kern/amiga_netdb.h>
+#include <api/allocdatabuffer.h>
 #include <stdio.h>
 
 #ifndef AMITCP /* AmiTCP has this in the SocketBase */
@@ -88,7 +89,8 @@ res_send(struct SocketBase 	*libPtr,
     int connreset = 0;
     u_short id, len;
     char *cp;
-    fd_set dsmask;
+    fd_set *dsmask;
+    int dsmasksize;
     struct timeval timeout;
     struct in_addr *ns;
     struct sockaddr_in host;
@@ -375,9 +377,21 @@ usevc:
                                 timeout.tv_sec = 1;
                             timeout.tv_usec = 0;
 wait:
-                            FD_ZERO(&dsmask);
-                            FD_SET(res_sock, &dsmask);
-                            n = __WaitSelect(res_sock + 1, &dsmask, NULL,
+                            /* res_sock is numbered system-wide, so it can
+                               lie far beyond a fixed fd_set */
+                            dsmasksize = howmany(res_sock + 1, NFDBITS) *
+                                         sizeof(fd_mask);
+                            if(allocDataBuffer(&libPtr->resmask,
+                                               dsmasksize) == FALSE) {
+                                __CloseSocket(res_sock, libPtr);
+                                res_sock = -1;
+                                writeErrnoValue(libPtr, ENOMEM);
+                                return (-1);
+                            }
+                            dsmask = (fd_set *)libPtr->resmask.db_Addr;
+                            bzero(dsmask, dsmasksize);
+                            FD_SET(res_sock, dsmask);
+                            n = __WaitSelect(res_sock + 1, dsmask, NULL,
                                              NULL, &timeout, NULL, libPtr);
                             if(n < 0) {
 #if defined(__AROS__)

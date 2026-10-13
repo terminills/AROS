@@ -409,6 +409,7 @@ ULONG *__UL_Close(struct SocketBase *libPtr)
     freeDataBuffer(&libPtr->netents);
     freeDataBuffer(&libPtr->protoents);
     freeDataBuffer(&libPtr->servents);
+    freeDataBuffer(&libPtr->resmask);
 
     if(libPtr->dTable)
         FreeMem(libPtr->dTable, libPtr->dTableSize * sizeof(struct socket *) +
