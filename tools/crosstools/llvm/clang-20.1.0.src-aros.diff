@@ -873,3 +873,25 @@ diff -ruN clang-20.1.0.src/lib/Lex/InitHeaderSearch.cpp clang-20.1.0.src.aros/li
    case llvm::Triple::AIX:
    case llvm::Triple::DragonFly:
    case llvm::Triple::ELFIAMCU:
+--- clang-20.1.0.src/lib/APINotes/APINotesYAMLCompiler.cpp
++++ clang-20.1.0.src.aros/lib/APINotes/APINotesYAMLCompiler.cpp
+@@ -450,4 +450,4 @@
+-struct Tag;
+-typedef std::vector<Tag> TagsSeq;
+-
+-struct Tag {
++struct APINotesTag;
++typedef std::vector<APINotesTag> TagsSeq;
++
++struct APINotesTag {
+@@ -478 +478 @@
+-LLVM_YAML_IS_SEQUENCE_VECTOR(Tag)
++LLVM_YAML_IS_SEQUENCE_VECTOR(APINotesTag)
+@@ -490,2 +490,2 @@
+-template <> struct MappingTraits<Tag> {
+-  static void mapping(IO &IO, Tag &T) {
++template <> struct MappingTraits<APINotesTag> {
++  static void mapping(IO &IO, APINotesTag &T) {
+@@ -964 +964 @@
+-  void convertTagContext(std::optional<Context> ParentContext, const Tag &T,
++  void convertTagContext(std::optional<Context> ParentContext, const APINotesTag &T,

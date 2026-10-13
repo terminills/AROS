@@ -44,3 +44,21 @@ existing ADT GCC 15.2 cross compiler to bootstrap native executables.
 No native runtime or self-hosting pass has been established yet. The
 LLVM 20 process-spawning implementation and current ADT posixc must be
 tested together before deciding whether an older spawn workaround applies.
+
+## Consumer regression gates
+
+Before integration into a shared ADT SDK or runtime, record the exact source
+and toolchain revisions for Chromium, RPCS3, Node, and V8 and compare each
+against its existing passing baseline. Keep candidate libraries in an
+isolated runtime until these gates pass:
+
+- Compile the changed headers in C and C++, including pthread and socket
+  headers in both orders; preserve public types and library vector offsets.
+- Rebuild affected consumer objects and link targets with the candidate SDK.
+- Run Chromium startup and its existing browser smoke workload, RPCS3's
+  existing startup/JIT smoke workload, Node's existing process/thread tests,
+  and V8's existing execution/JIT/thread tests in the candidate runtime.
+- Retain logs and distinguish baseline failures from new failures. A compile
+  probe alone does not establish application runtime compatibility.
+
+These gates are pending; no consumer regression pass is claimed yet.

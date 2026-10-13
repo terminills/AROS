@@ -526,7 +526,9 @@ int unlink(const char *path);
 POSIXCFUNC(ssize_t, write, (int fd, const void *buf, size_t nbytes));
 
 /* POSIX.1-2001 and later */
-#if defined(__cplusplus) || !defined(__STRICT_ANSI__)
+#if defined(_GNU_SOURCE) || defined(_POSIX_SOURCE) || \
+    defined(_POSIX_C_SOURCE) || defined(_XOPEN_SOURCE) || \
+    defined(__cplusplus) || !defined(__STRICT_ANSI__)
 int execvp(const char *path, char *const argv[]);
 int execlp(const char *path, const char *arg, ...);
 char *getcwd(char *buf, size_t size);
@@ -539,7 +541,7 @@ extern int optind, opterr, optopt;
 #endif
 
 /* POSIX.1-2008 and XSI (or available as extensions) */
-#if defined(__cplusplus) || (!defined(__STRICT_ANSI__) && \
+#if defined(_GNU_SOURCE) || defined(__cplusplus) || (!defined(__STRICT_ANSI__) && \
     (!defined(_POSIX_SOURCE) || defined(_XOPEN_SOURCE)))
 int ftruncate(int fd, off_t length);
 # if defined(__off64_t_defined)
@@ -560,7 +562,7 @@ pid_t tcgetpgrp(int fd);
 #endif
 
 /* GNU or BSD extensions */
-#if defined(__cplusplus) || (!defined(__STRICT_ANSI__) && \
+#if defined(_GNU_SOURCE) || defined(__cplusplus) || (!defined(__STRICT_ANSI__) && \
     (defined(_BSD_SOURCE) || defined(_GNU_SOURCE) || defined(_XOPEN_SOURCE)))
 #include <aros/types/useconds_t.h>
 char *getpass(const char *prompt);
@@ -577,7 +579,8 @@ int unlinkat(int dirfd, const char *pathname, int flags);
 #endif
 
 /* POSIX.1-2024 / BSD entropy interface (also declared in <sys/random.h>). */
-#if defined(__cplusplus) || !defined(__STRICT_ANSI__)
+#if defined(_GNU_SOURCE) || (_POSIX_C_SOURCE >= 202405L) || \
+    defined(__cplusplus) || !defined(__STRICT_ANSI__)
 int getentropy(void *buffer, size_t length);
 #endif
 
