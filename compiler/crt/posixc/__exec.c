@@ -409,7 +409,9 @@ static APTR __exec_prepare_regular(char * filename2, char *const argv[], char *c
 
     me = (struct Process *)FindTask(NULL);
 
-    if (envp && envp != environ)
+    /* Even the registered vector may have been edited directly by the caller
+     * (e.g. env or make). Apply it to DOS local variables before RunCommand. */
+    if (envp)
     {
         struct MinList tempenv;
         struct LocalVar *lv, *lv2;
