@@ -234,3 +234,14 @@ returning through a wrapper before exec. The original socket requester and
 dup2 failure are retained as failed evidence. The tar patch replays cleanly
 on pristine 1.35 source. Tar and hostname remain cross-built bootstrap inputs.
 The complete system build and boot are still outstanding.
+
+The timestamped, multi-option fetch case now also passes, and the real ACPICA
+20260408 source patch applies natively. GNU patch guards a missing tm_zone
+when parsing timestamps. The hosted Unix filesystem handler initializes the
+entire host struct tm and requests automatic daylight-saving detection before
+calling host mktime; leaving tm_isdst uninitialized lost an hour on winter
+file dates. `native-utime.py` verifies repeated winter, summer and leap-day
+round trips. Native stat, rename, make and default-SDK checks plus first-launch
+Node workers, libuv work/process, and Chromium JavaScript/Canvas checks pass
+with the corrected handler. No shared C library or vector changes were needed
+for these fixes; full RPCS3 runtime validation remains outstanding.
