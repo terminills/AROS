@@ -7191,7 +7191,7 @@ if test "$req_avail" = "no"; then
 fi
 { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking version of $FLEX" >&5
 printf %s "checking version of $FLEX... " >&6; }
-ax_cv_flex_version="`$FLEX --version | cut -d\" \" -f2`"
+ax_cv_flex_version=$($FLEX --version | cut -d ' ' -f2)
 { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: $ax_cv_flex_version" >&5
 printf '%s\n' "$ax_cv_flex_version" >&6; }
 # Extract the first word of "pngtopnm", so it can be a program name with args.

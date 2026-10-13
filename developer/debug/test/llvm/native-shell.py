@@ -19,6 +19,11 @@ tests = [
     ("f() { return $1; }; g() { set +e; f $1; exit $1; }; g 7", 7, ""),
     ("printf 'flex 2.6.4\\n' | /SYS/Developer/bin/cut -d' ' -f2", 0, "2.6.4\n"),
 ]
+tests += [
+    ('x="`printf \\"%s\\\\n\\" hello`"; printf "%s\\n" "$x"', 0, 'hello\n'),
+    ('x="`printf clang20 | /SYS/Developer/bin/sed -e \\"s/clang//g\\"`"; printf "%s\\n" "$x"', 0, '20\n'),
+    ('x=$(printf \'flex 2.6.4\\n\' | /SYS/Developer/bin/cut -d \' \' -f2); printf \'%s\\n\' "$x"', 0, '2.6.4\n'),
+]
 for command, status, output in tests:
     result = subprocess.run(["/SYS/Developer/bin/sh", "-c", command],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
