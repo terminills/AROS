@@ -412,11 +412,10 @@ static LONG rename_object(struct emulbase * emulbase, struct filehandle *fh,
   
   char *filename = NULL , *newfilename = NULL;
  
-  /* FIXME: fh2 is unused! */
   ret = makefilename(emulbase, &filename, NULL, fh, file);
   if (!ret)
   {
-        ret = makefilename(emulbase, &newfilename, NULL, fh, newname);
+        ret = makefilename(emulbase, &newfilename, NULL, fh2, newname);
         if (!ret)
         {
             ret = DoRename(emulbase, filename, newfilename);

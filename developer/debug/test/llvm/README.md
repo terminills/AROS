@@ -90,6 +90,16 @@ with candidate posixc SHA256
 Waiting for the exact shell child did not fix the reproducer; that experiment
 was removed and its diff retained in the build's regression directory.
 
+Hosted `emul-handler` must resolve a rename destination against the destination
+lock, not the source lock. `native-rename.py` checks all eight Python/mv
+relative/absolute combinations and failure when the destination parent is
+missing. Node/libuv and Chromium smoke gates also pass with this handler.
+Its SHA256 is `04c667dff79f36759832174b56892b04efe1fc79d1ebba59501f144c0efbab7b`.
+Python's generic nested-directory `shutil.rmtree` rejected a normal directory
+as a symbolic link during fixture cleanup; that separate metadata issue remains
+open. The rename test explicitly removes its known fixtures; its original
+cleanup failure is retained as `native-rename-cleanup-failure.log`.
+
 The Python 3.12.12 bootstrap passes file/pickle operations, threading,
 ten captured subprocesses, child exit status, unsafe preexec rejection,
 and Mako/YAML imports and rendering (`NATIVE-PYTHON-PASS`). Networking,
