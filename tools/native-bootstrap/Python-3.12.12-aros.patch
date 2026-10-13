@@ -1,0 +1,85 @@
+--- a/configure
++++ b/configure
+@@ -4267,0 +4268,3 @@
++	*-*-aros*)
++		ac_sys_system=AROS
++		;;
+@@ -4329,0 +4333,3 @@
++	*-*-aros*)
++		_host_cpu=$host_cpu
++		;;
+--- a/configure.ac
++++ b/configure.ac
+@@ -543,0 +544,3 @@
++	*-*-aros*)
++		ac_sys_system=AROS
++		;;
+@@ -603,0 +607,3 @@
++	*-*-aros*)
++		_host_cpu=$host_cpu
++		;;
+--- a/Python/pytime.c
++++ b/Python/pytime.c
+@@ -38,0 +39,3 @@
++#elif SIZEOF_TIME_T == SIZEOF_INT
++#  define PY_TIME_T_MAX INT_MAX
++#  define PY_TIME_T_MIN INT_MIN
+--- a/Modules/_pickle.c
++++ b/Modules/_pickle.c
+@@ -51,0 +52,8 @@
++#endif
++
++#ifdef __AROS__
++/* Keep the pickle opcode names local despite AROS system typedefs/macros. */
++#define FLOAT PICKLE_FLOAT
++#define LONG PICKLE_LONG
++#undef GLOBAL
++#define GLOBAL PICKLE_GLOBAL
+--- a/Modules/_posixsubprocess.c
++++ b/Modules/_posixsubprocess.c
+@@ -44 +44 @@
+-#if defined(__linux__) && defined(HAVE_VFORK) && defined(HAVE_SIGNAL_H) && \
++#if (defined(__linux__) || defined(__AROS__)) && defined(HAVE_VFORK) && defined(HAVE_SIGNAL_H) && \
+@@ -49,0 +50,3 @@
++# if defined(__AROS__) && !defined(_NSIG)
++#  define _NSIG NSIG
++# endif
+@@ -828,0 +832 @@
++#ifdef HAVE_FORK
+@@ -834,0 +839 @@
++#endif
+@@ -837,0 +843 @@
++#ifdef HAVE_FORK
+@@ -838,0 +845,4 @@
++#else
++        errno = ENOTSUP;
++        pid = -1;
++#endif
+@@ -855,0 +866 @@
++#ifdef HAVE_FORK
+@@ -856,0 +868 @@
++#endif
+@@ -948,0 +961,9 @@
++#ifndef HAVE_FORK
++    /* AROS shares the parent's address space: Python callbacks are unsafe. */
++    if (preexec_fn != Py_None) {
++        PyErr_SetString(PyExc_ValueError,
++                        "preexec_fn requires fork and is unsupported on AROS");
++        return NULL;
++    }
++#endif
++
+@@ -1126,0 +1148 @@
++#ifdef HAVE_FORK
+@@ -1127,0 +1150 @@
++#endif
+@@ -1188,0 +1212 @@
++#ifdef HAVE_FORK
+@@ -1190,0 +1215 @@
++#endif
+--- a/Modules/resource.c
++++ b/Modules/resource.c
+@@ -3,0 +4,3 @@
++#ifdef __AROS__
++#define RLIM_NLIMITS (RLIMIT_AS + 1)
++#endif
