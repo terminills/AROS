@@ -5,6 +5,8 @@
 */
 
 #include <dos/bptr.h>
+#include <stdint.h>
+#include <stddef.h>
 
 #ifndef BITSPERBYTE
 #   define BITSPERBYTE 8
@@ -22,7 +24,11 @@
 #undef AROS_HAVE_LONG_LONG
 #endif
 
+#ifdef AROS_HAVE_LONG_LONG
+#define MININTSIZE (sizeof(unsigned long long)*BITSPERBYTE/3+1)
+#else
 #define MININTSIZE (sizeof(unsigned long)*BITSPERBYTE/3+1)
+#endif
 #define MINPOINTSIZE (sizeof(void *)*BITSPERBYTE/4+1)
 #if defined(FULL_SPECIFIERS)
 /* Number of significant digits generated for floating point conversions.
@@ -35,7 +41,7 @@
                         (MININTSIZE>MINFLOATSIZE?MININTSIZE:MINFLOATSIZE): \
                         (MINPOINTSIZE>MINFLOATSIZE?MINPOINTSIZE:MINFLOATSIZE))
 #else
-#define REQUIREDBUFFER 17 // Hexadecimal output of QUAD needs 16 characters
+#define REQUIREDBUFFER (MININTSIZE > 17 ? MININTSIZE : 17)
 #endif
 #define ALTERNATEFLAG 1  /* '#' is set */
 #define ZEROPADFLAG   2  /* '0' is set */

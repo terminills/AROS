@@ -296,3 +296,23 @@ vector maps with all 286 existing entries unchanged. Native FlexCat also
 passes its real catalog/header generation test again. No target-system
 executable had been produced at this checkpoint; those executable tests
 cover the native build tools, not a newly built operating-system image.
+
+The next Mesa checkpoint reached GNU patch and faulted in stdc strlen after
+printing literal `%jd`/`%td` conversions. The shared narrow/wide formatter
+had not consumed these arguments, so a later `%s` received the numeric offset.
+It now reads intmax_t/uintmax_t and ptrdiff_t/its unsigned counterpart, supports
+`%jn`/`%tn`, and computes negative magnitudes without overflowing at signed
+minimum. The wide-integer scratch buffer also accommodates 64-bit decimal
+values on 32-bit builds. `native-format.py` checks x86-64 limits, flags, mixed
+arguments, wide output, and real GNU patch offset/rejection messages. Native
+checks and a host ASan/UBSan formatter harness pass; 32-bit runtime execution
+has not been validated. Clang still warns that its built-in intmax_t type
+and the SDK typedef differ (long versus long long); the tested x86-64 ABI
+widths agree, but this diagnostic mismatch remains a separate issue.
+
+With the candidate stdc and the paired existing stdcio/posixc, Node worker
+messaging, libuv work, a fresh process-lifecycle run (exit 0), and Chromium's
+100000-element JavaScript/Canvas smoke pass. The first combined process test
+left an empty log and is retained separately, not counted as a pass. No
+public headers or library dispatch layouts change. RPCS3 runtime and the
+full application regression suites remain unqualified.
