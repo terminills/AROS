@@ -640,3 +640,27 @@ work. No shared runtime library or library vector changed. This does not replace
 full Chromium, RPCS3, Node or V8 qualification. Reproducers, binaries, hashes and
 logs are retained in `aros-adt-selfhost-build/regression/native-compiler-lifetime/`
 and `aros-adt-selfhost-build/qemu-parallel/clang-cleanup-1/`.
+
+
+## Native LLVM tool dead stripping
+
+The native release build completed LLVMSupport and LLVMTableGen but failed
+linking llvm-min-tblgen: GNU ld reported that gc-sections requires an entry or
+undefined symbol. LLVM's release defaults supplied --gc-sections to AROS's
+relocatable executable link. The native host-tool recipe now sets
+LLVM_NO_DEAD_STRIP=ON; non-AROS host options and shared runtime ABIs are unchanged.
+This preserves startup and registration sections without inventing GC roots.
+
+Relinking snapshots of the existing native objects and archives with only
+--gc-sections removed succeeded in both the build guest and an isolated
+validation guest. Both executables passed --version, --help and -gen-attrs
+against LLVM 20 Attributes.td. Their generated headers matched the Linux
+reference byte for byte (SHA-256
+6aa199ba78aa86ec2cd09e71af225a4f4ea01935640dc1713f37005568d8b857).
+Evidence is retained in aros-adt-selfhost-build/regression/native-llvm-dead-strip/
+
+Native CMake regeneration passed and removed the link option. Recovery used
+/SYS instead of the previous equivalent /System include paths, causing
+avoidable recompilation; compiler options otherwise matched. Future recovery
+should preserve the configured path spelling. Full native LLVM and OS builds
+remain in progress; this gate proves one usable native TableGen executable.

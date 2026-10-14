@@ -280,7 +280,9 @@ endif
 else
 # Native AROS tools use relocatable executables. Large-model PIC introduces
 # GOTPC64 relocations which the AROS ELF loader cannot load.
-LLVM_CMAKEOPTIONS += -DLLVM_ENABLE_PIC=OFF
+# AROS links relocatable executables; GNU ld cannot garbage-collect these
+# without explicit roots. Preserve startup and registration sections.
+LLVM_CMAKEOPTIONS += -DLLVM_ENABLE_PIC=OFF -DLLVM_NO_DEAD_STRIP=ON
 endif
 
 # Enable ccache if it is in use, to aid in recompilation times
