@@ -273,3 +273,8 @@ remain outstanding.
 
 Offline PortsSources staging must preserve nested archive paths, including
 utf8proc/v2.11.3.tar.gz. A top-level-only copy misses these dependencies.
+
+The paired CRT runtime passes Node worker messaging, libuv work/process, and
+Chromium JavaScript/Canvas smoke checks in the established 16 GiB guest. A
+4 GiB run failed Chromium partition address allocation before the browser
+smoke; that failed run is retained and is not counted as a pass.
