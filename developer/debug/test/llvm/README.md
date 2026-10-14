@@ -664,3 +664,11 @@ Native CMake regeneration passed and removed the link option. Recovery used
 avoidable recompilation; compiler options otherwise matched. Future recovery
 should preserve the configured path spelling. Full native LLVM and OS builds
 remain in progress; this gate proves one usable native TableGen executable.
+
+The generated Makefile target subsequently linked and ran llvm-min-tblgen
+successfully. Full native make all passed the original failure and generated
+LLVM's attributes and intrinsic headers using that executable. Its Attributes.inc
+again matched the Linux reference. The native SYS/System path alias was
+verified with samefile; recovery reused 308 flags.make timestamps only when
+contents differed solely by that verified alias, avoiding a second unnecessary
+recompile. The full LLVM and system builds remain unfinished.
