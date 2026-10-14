@@ -552,7 +552,7 @@ The resumed full LLVM build confirmed four live compiler processes, but
 TaskBT snapshots exposed substantial allocator semaphore contention in this
 single-CPU hosted runtime. A separate quiet hosted guest using the identical
 compiler and flags compiled ItaniumDemangle.cpp successfully in 46.64 seconds;
-the contended build took several minutes. This is a diagnostic comparison,
+the contended compilation was still unfinished after several minutes. This is a diagnostic comparison,
 not a controlled SMP speedup benchmark. The full hosted build was therefore
 resumed with `-j1`, retaining completed objects and quarantining incomplete
 temporary files. The four-core QEMU parallel validation remains passing.
@@ -560,3 +560,28 @@ No allocator or shared runtime changes were made. Evidence includes
 `fullbuild-processes.log`, `fullbuild-allocator-contention.log`,
 `single-compile-details.json` and `fullbuild-j4-output.log` in the jobserver
 evidence directory.
+
+
+## Native LLVM executable relocation regression
+
+The first native-built LLVMDemangle archive linked successfully, but a test
+executable failed to load: the AROS ELF loader reported unknown relocation
+29 (`R_X86_64_GOTPC64`). The host-tool recipe had left LLVM_ENABLE_PIC at
+its default ON. The executable contained 466 GOTPC64 relocations, along
+with GOT64/GOTOFF64 relocations. Linking alone did not establish usability.
+
+The recipe now sets LLVM_ENABLE_PIC=OFF only when AROS_HOST_ARCH is aros,
+matching the existing native LLVM library build policy. Other host settings
+are unchanged. Recompiling all six demangler sources inside AROS with the
+same options except removal of -fPIC, archiving, linking and running
+`native-demangle.cpp` passes 1,000 symbol checks. The passing executable has
+no GOT relocations. The failing and passing binaries, relocation listings,
+compile arguments and logs are retained in
+`aros-adt-selfhost-build/regression/native-demangle/`.
+
+To repeat against a full native LLVM build, compile this test with native
+clang++ (`-nix -mcmodel=large -mno-red-zone -std=c++17`), include the LLVM
+source `include` directory, and link the build's `lib/libLLVMDemangle.a`.
+Run the resulting executable and require `NATIVE-LLVM-DEMANGLE-PASS` with
+exit status zero. The full build is regenerating its non-PIC configuration;
+its generated-archive repeat and full compiler/system build remain pending.

@@ -277,6 +277,10 @@ LLVM_CMAKEOPTIONS +=                                                            
     -DBUILD_SHARED_LIBS=ON                                                                                                              \
     -DLLVM_ENABLE_LTO=ON
 endif
+else
+# Native AROS tools use relocatable executables. Large-model PIC introduces
+# GOTPC64 relocations which the AROS ELF loader cannot load.
+LLVM_CMAKEOPTIONS += -DLLVM_ENABLE_PIC=OFF
 endif
 
 # Enable ccache if it is in use, to aid in recompilation times
