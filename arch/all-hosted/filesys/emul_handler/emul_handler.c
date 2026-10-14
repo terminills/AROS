@@ -480,12 +480,16 @@ static LONG read_softlink(struct emulbase *emulbase, struct filehandle *fh, CONS
                     if (target)
                     {
                         strcpy(target, buffer);
-                        if (shrink(target))
+                        strcpy(buffer, ln);
+                        strcat(buffer, target);
+                        /* Parents are relative to the link's directory.
+                           Normalize the combined path, not the target alone. */
+                        if (shrink(buffer))
                         {
-                            strcpy(buffer, ln);
-                            strcat(buffer, target);
                             *size = strlen(buffer);
                         }
+                        else
+                            ret = ERROR_OBJECT_NOT_FOUND;
 
                         FreeVecPooled(emulbase->mempool, target);
                     }

@@ -368,7 +368,8 @@ static inline int nocase_link(struct emulbase *emulbase, char *oldpath, char *ne
 
 static inline int nocase_symlink(struct emulbase *emulbase, char *oldpath, char *newpath)
 {
-    fixcase(emulbase, oldpath);
+    /* A relative target is interpreted from the link's directory, not the
+       handler's host working directory. It may not exist yet. */
     fixcase(emulbase, newpath);
 
     return emulbase->pdata.SysIFace->symlink(oldpath, newpath);
@@ -787,14 +788,55 @@ LONG DoHardLink(struct emulbase *emulbase, char *fn, char *oldfile)
 LONG DoSymLink(struct emulbase *emulbase, char *dest, char *src)
 {
     LONG error;
+    char *target = dest;
+
+    /* DOS represents each parent component with an empty path component:
+       /file means ../file, and dir//file means dir/../file. Passing these
+       strings to Unix symlink() verbatim makes leading parents absolute.
+       Keep relative targets relative so forward references also work. */
+    if (!strchr(dest, ':'))
+    {
+        const char *p;
+        char *out;
+        BOOL component_start = TRUE;
+
+        target = AllocVecPooled(emulbase->mempool, strlen(dest) * 3 + 2);
+        if (!target)
+            return ERROR_NO_FREE_STORE;
+        out = target;
+        for (p = dest; *p; p++)
+        {
+            if (*p == '/')
+            {
+                if (component_start)
+                {
+                    *out++ = '.';
+                    *out++ = '.';
+                }
+                *out++ = '/';
+                component_start = TRUE;
+            }
+            else
+            {
+                *out++ = *p;
+                component_start = FALSE;
+            }
+        }
+        if (out == target)
+            *out++ = '.';
+        *out = '\0';
+    }
 
     HostLib_Lock();
 
-    error = nocase_symlink(emulbase, dest, src);
+    error = nocase_symlink(emulbase, target, src);
     if (error)
         error = err_u2a(emulbase);
 
     HostLib_Unlock();
+
+    if (target != dest)
+        FreeVecPooled(emulbase->mempool, target);
 
     return error;
 }
@@ -811,6 +853,34 @@ int DoReadLink(struct emulbase *emulbase, char *filename, char *buffer, ULONG si
     else if (res == size)
         /* Buffer was too small */
         res = -2;
+    else if (res > 0 && buffer[0] != '/')
+    {
+        char *in = buffer, *out = buffer;
+
+        /* Return DOS path syntax to ACTION_READ_LINK. Unix parent
+           components must not reach the DOS path validator as "..". */
+        buffer[res] = '\0';
+        while (*in)
+        {
+            char *end = strchr(in, '/');
+            size_t length = end ? (size_t)(end - in) : strlen(in);
+
+            if (length == 2 && in[0] == '.' && in[1] == '.')
+                *out++ = '/';
+            else if (!(length == 1 && in[0] == '.'))
+            {
+                memmove(out, in, length);
+                out += length;
+                if (end)
+                    *out++ = '/';
+            }
+            if (!end)
+                break;
+            in = end + 1;
+        }
+        *out = '\0';
+        res = out - buffer;
+    }
 
     HostLib_Unlock();
 

@@ -278,3 +278,21 @@ The paired CRT runtime passes Node worker messaging, libuv work/process, and
 Chromium JavaScript/Canvas smoke checks in the established 16 GiB guest. A
 4 GiB run failed Chromium partition address allocation before the browser
 smoke; that failed run is retained and is not counted as a pass.
+
+Mesa extraction exposed hosted symlink path translation defects: a DOS
+parent target such as /bin/ci was passed to Unix symlink() as an absolute
+host path. The Unix handler now converts relative targets in both directions;
+DOS read-link resolution normalizes the target after joining the link's
+parent directory. Targets are not case-resolved against the handler's host
+working directory. native-symlink-archive.py checks parent and ancestor links,
+forward references, directory traversal and file contents. Its initial native
+tar failure, create-only intermediate failure and successful full path are
+retained. Native timestamp/stat/rename/make and paired CRT Node/libuv/Chromium
+smokes pass. These changes do not modify library vectors.
+
+At the Mesa failure checkpoint, native genmodule has an x86-64 AROS ELF
+header and no undefined symbols; running it again generates the expected
+vector maps with all 286 existing entries unchanged. Native FlexCat also
+passes its real catalog/header generation test again. No target-system
+executable had been produced at this checkpoint; those executable tests
+cover the native build tools, not a newly built operating-system image.
