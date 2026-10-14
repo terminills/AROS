@@ -727,3 +727,20 @@ ratio, a complete native compiler build, or a self-built OS boot. The existing
 SMP baseline OS was used. Source and object hashes, archive and executable
 hashes, original flags, complete commands, scripts and serial evidence are in
 `aros-adt-selfhost-build/qemu-parallel/native-demangle-build-1/`.
+
+
+## Pending native bitcode round-trip gate
+
+`native-bitcode.cpp` writes and reads 100 LLVM bitcode modules, checking each
+module's constant value, source filename and verifier result. It also damages
+each bitcode signature and requires a recoverable parse error. Its success
+marker is `NATIVE-LLVM-BITCODE-PASS roundtrips=100 rejected_invalid=100`.
+This checks serialization and parsing, not execution of generated code.
+
+The probe compiles successfully with the native compiler and matching LLVM 20
+source/generated headers. Linking and execution remain pending until the full
+native build produces LLVMBitWriter and its dependencies. Use a consistent
+native-built archive set for LLVM BitWriter and BitReader, including their
+transitive libraries, and the same libc++ ABI as the native IR gate. Preparation
+and compile evidence are in `aros-adt-selfhost-build/regression/native-bitcode/`;
+this section does not claim that the runtime gate has passed.
