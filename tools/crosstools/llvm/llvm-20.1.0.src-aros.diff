@@ -1,3 +1,11 @@
+--- llvm-20.1.0.src/cmake/config.guess
++++ llvm-20.1.0.src.aros/cmake/config.guess
+@@ -145,2 +145,5 @@
+ case "${UNAME_MACHINE}:${UNAME_SYSTEM}:${UNAME_RELEASE}:${UNAME_VERSION}" in
++    *:AROS:*:*)
++	echo "${UNAME_MACHINE}-unknown-aros"
++	exit ;;
+     *:NetBSD:*:*)
 diff --color -ruN llvm-20.1.0.src/cmake/config-ix.cmake llvm-20.1.0.src.aros/cmake/config-ix.cmake
 --- llvm-20.1.0.src/cmake/config-ix.cmake	2025-03-04 20:51:43
 +++ llvm-20.1.0.src.aros/cmake/config-ix.cmake	2026-09-07 00:05:43

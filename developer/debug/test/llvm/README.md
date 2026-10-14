@@ -486,3 +486,13 @@ The network check additionally followed GitHub's LLVM release redirect using
 the guest's configured `CURL_CA_BUNDLE`, downloaded the CMake 20.1.0 source
 archive, and matched it byte-for-byte against the cached archive. Logs and
 SHA-256 are retained as `native-cmake-bootstrap/network-github-*`.
+
+
+Native LLVM's own CMake configuration subsequently reached host detection,
+where its bundled config.guess lacked AROS support. The LLVM 20 source patch
+now recognizes the AROS uname tuple and emits `<machine>-unknown-aros`.
+This older script uses direct echo/exit cases, unlike ADT's newer GUESS-based
+script. Native x86_64 detection and the unchanged Linux host result pass;
+the patch replays against the original LLVM archive. Evidence is retained in
+`regression/llvm-native-host-triple/`. Full LLVM configuration/build remains
+in progress; the host-triple probe alone does not qualify the complete build.
