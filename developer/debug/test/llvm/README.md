@@ -386,3 +386,15 @@ consolidated recipe is still pending. It intentionally builds only the
 extensions required by this bootstrap. Full Perl tests, locale support and
 its reported missing PATH in `%ENV` remain unqualified. The complete native
 AROS build resumes beyond CIA; no full system image has yet been validated.
+
+## Native concurrent build gate (2026-10-14)
+
+`native-parallel-build.py` exercises recursive GNU make `-j4`, eight C/C++
+compilations and four links, then executes all four programs and checks their
+independent checksums. Per-command process IDs, timings and logs are retained.
+The private four-vCPU QEMU SMP run passed with four overlapping compiler jobs.
+Evidence: `aros-adt-selfhost-build/qemu-parallel/serial.log` and
+`concurrent-build-result.json`. CPU time was concentrated on vCPU 0, so this
+proves concurrent builds, not multicore scheduling or speedup. The boot image
+is an existing SMP baseline with the tested SDK/CRT staged; it is not a
+self-built full system. No shared library or application code changed.
