@@ -252,3 +252,24 @@ isolated private ADT guest passed 256 KiB extraction/content comparison and
 rejected a truncated XZ archive. `native-xzdec.py` carries the same fixture.
 The full xz command is not ported by this change; xzdec remains a cross-built
 bootstrap input, and compression is not claimed.
+
+The curl 8.21.0 bootstrap now passes native file transfer, HTTP to the host,
+and DNS plus certificate-verified HTTPS in the isolated hosted ADT runtime.
+The Contrib patch uses TCP wakeup sockets rather than POSIX pipes, uses
+IoctlSocket for nonblocking mode, and avoids socket flags and SO_NOSIGPIPE
+that the SDK advertises but this AROSTCP stack does not implement. Retained
+failure traces distinguish the wakeup pipe EBADF, unsupported SO_NOSIGPIPE,
+and unsupported socket creation flags. A pristine source patch replay passes.
+The executable is a cross-built bootstrap input, not proof of a native curl
+build. Its private link uses the existing ADT libzstd-static.a.
+
+Keep stdc, stdcio and posixc from a compatible SDK together when constructing
+a regression runtime. Curl exposed a mismatch in the older consumer image:
+its stdc exit list was at offset 0x370, while the newer posixc expected 0x378.
+Pairing the libraries removes that startup fault without changing vectors.
+The earlier bounded consumer smoke passes do not qualify untested paths
+through the mixed runtime. Full system build/boot and RPCS3 runtime validation
+remain outstanding.
+
+Offline PortsSources staging must preserve nested archive paths, including
+utf8proc/v2.11.3.tar.gz. A top-level-only copy misses these dependencies.
