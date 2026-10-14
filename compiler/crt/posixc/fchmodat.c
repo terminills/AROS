@@ -38,7 +38,8 @@
         dirfd    - descriptor of an open directory, or AT_FDCWD
         pathname - file to change
         mode     - new permission bits
-        flags    - 0 or AT_SYMLINK_NOFOLLOW (ignored: AROS has no lchmod())
+        flags    - 0 or AT_SYMLINK_NOFOLLOW; changing a symlink itself
+                   is unsupported and fails with ENOTSUP
 
     RESULT
         0 on success, -1 with errno set on failure.
@@ -59,6 +60,12 @@
     BPTR oldcd, dirlock;
     int result;
 
+    if (flags & ~AT_SYMLINK_NOFOLLOW)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
     if (!pathname)
     {
         errno = EFAULT;
@@ -70,7 +77,24 @@
     else if (__at_isabsolute(pathname))
         oldcd = dirlock = BNULL;
 
-    result = chmod(pathname, mode);
+    if (flags & AT_SYMLINK_NOFOLLOW)
+    {
+        struct stat64 st;
+        result = lstat64(pathname, &st);
+        if (result == 0)
+        {
+            if (S_ISLNK(st.st_mode))
+            {
+                /* Do not silently change the target of the link. */
+                errno = ENOTSUP;
+                result = -1;
+            }
+            else
+                result = chmod(pathname, mode);
+        }
+    }
+    else
+        result = chmod(pathname, mode);
 
     __at_leave(oldcd, dirlock);
     return result;

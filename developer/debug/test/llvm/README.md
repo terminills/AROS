@@ -327,3 +327,35 @@ successfully, including intmax limits, pointer differences, octal/hex output
 and count pointers. This adds ILP32 core coverage, not AROS 32-bit runtime
 qualification. Native `make all` resumes after this dependency checkpoint;
 completion of Mesa fetch does not establish a successful system build.
+
+The next native dependency failure was zstd's same-directory forward link
+`unzstd -> zstd`, encountered before its target in the archive. lstat and
+lstat64 now query the handler without DOS Lock automatically following the
+final soft link. Parent-directory fallback preserves each entry's inode
+identity; POSIX trailing slashes still require directories, including `/`
+and `///`. fchmodat rejects unsupported no-follow link changes instead of
+changing the target. Contrib tar also needs its gnulib fchmodat fallback to
+retain no-follow semantics when readlinkat is unavailable.
+
+`native-lstat.py` checks forward/dangling links, intermediate directory links,
+trailing slashes, roots, dirfd operations, no-follow chmod and GNU mkdir -p.
+It and the expanded archive fixture pass alongside native timestamp, stat,
+rename, make and SDK checks. Fresh native zstd fetch passes. A root-path
+regression found by the full build's makedirs target was corrected and that
+target now passes. No library vectors move. Evidence is retained in
+`NativeJobs/lstat-root-filesystem-gates-passed-*`,
+`NativeJobs/post-failure-tools-zstd-passed-*` and
+`regression/lstat-root-artifacts.json` in the private build tree.
+
+With the final runtime, Node workers, libuv work/process and Chromium's
+JavaScript/Canvas smoke pass. Intermediate Chromium black-window captures
+remain retained: an unchanged intermediate candidate also passed a repeat,
+so those captures alone do not establish their cause. RPCS3 and full V8
+regression qualification remain pending.
+
+`native-aros-command.py` separately compiles stock workbench/c/Which.c with
+native Clang and the installed SDK, links it, then runs the resulting AROS
+command to resolve SYS:C/Version. This passes with an ELF64 AROS ABI 1 output.
+Evidence is `NativeJobs/which-and-makedirs-passed-*` and the actual console
+capture `logs/aros-native-which-linked.png`. This proves a real OS command
+can be built and run on AROS; it is not completion of the full system build.

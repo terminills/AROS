@@ -1,5 +1,6 @@
 """Extract and follow relative archive symlinks, including forward references."""
 import io
+import stat
 from pathlib import Path
 import subprocess
 import tarfile
@@ -10,11 +11,13 @@ with tempfile.TemporaryDirectory(prefix='native-symlink-') as temporary:
     archive = root / 'fixture.tar'
     links = {
         'tree/sub/parent': '../payload.txt',
+        'tree/sub/local-forward': 'later.txt',
+        'tree/sub/dangling': 'absent.txt',
         'tree/sub/deep/ancestor': '../../payload.txt',
         'tree/sub/forward': '../later.txt',
         'tree/sub/directory': '../other',
     }
-    files = ['tree/payload.txt', 'tree/later.txt', 'tree/other/child.txt']
+    files = ['tree/payload.txt', 'tree/later.txt', 'tree/sub/later.txt', 'tree/other/child.txt']
     with tarfile.open(archive, 'w') as stream:
         # Links deliberately precede the files to which they refer.
         for name, target in links.items():
@@ -36,9 +39,16 @@ with tempfile.TemporaryDirectory(prefix='native-symlink-') as temporary:
         'tree/sub/parent': files[0],
         'tree/sub/deep/ancestor': files[0],
         'tree/sub/forward': files[1],
-        'tree/sub/directory/child.txt': files[2],
+        'tree/sub/directory/child.txt': files[3],
+        'tree/sub/local-forward': files[2],
     }
     for name, target in expected.items():
         assert (root / name).read_text() == target + '\n', name
         assert (root / name).stat().st_size == len(target) + 1, name
+    for name in links:
+        assert stat.S_ISLNK((root / name).lstat().st_mode), name
+    assert not (root / 'tree/sub/dangling').exists()
+    assert (root / 'tree/sub/dangling').lstat().st_ino != (root / 'tree/sub/local-forward').lstat().st_ino
+    assert (root / 'tree/sub/directory' / 'child.txt').is_file()
+    assert (root / 'tree').is_dir()
 print('NATIVE-SYMLINK-ARCHIVE-PASS', flush=True)
