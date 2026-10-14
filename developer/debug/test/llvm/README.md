@@ -546,3 +546,17 @@ archive and matches the tested candidate source. The full native build has
 resumed with that candidate and without `CMAKE_BUILD_PARALLEL_LEVEL=4`, so
 CMake's nested Make inherits the outer job budget. Full LLVM compilation,
 full system image generation and boot remain outstanding.
+
+
+The resumed full LLVM build confirmed four live compiler processes, but
+TaskBT snapshots exposed substantial allocator semaphore contention in this
+single-CPU hosted runtime. A separate quiet hosted guest using the identical
+compiler and flags compiled ItaniumDemangle.cpp successfully in 46.64 seconds;
+the contended build took several minutes. This is a diagnostic comparison,
+not a controlled SMP speedup benchmark. The full hosted build was therefore
+resumed with `-j1`, retaining completed objects and quarantining incomplete
+temporary files. The four-core QEMU parallel validation remains passing.
+No allocator or shared runtime changes were made. Evidence includes
+`fullbuild-processes.log`, `fullbuild-allocator-contention.log`,
+`single-compile-details.json` and `fullbuild-j4-output.log` in the jobserver
+evidence directory.
