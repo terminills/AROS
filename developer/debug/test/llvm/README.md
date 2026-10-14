@@ -593,3 +593,26 @@ passed all 1,000 checks. The integrated executable has no GOT relocations.
 The `integrated-*` evidence files retain the cache, flags, archive, executable,
 relocation listing, hashes and log. Full native `make -j1 all` has resumed;
 full LLVM compilation and the bootable system remain outstanding.
+
+
+## Native LLVM TableGen configure cost
+
+Native CMake repeatedly traversed the entire LLVM source include tree for
+TableGen's global `.td` dependency list. Ten identical scans took 58.925
+seconds. The LLVM 20 patch now caches that list in a CMake GLOBAL property
+only on AROS, keyed by a hash of LLVM_MAIN_INCLUDE_DIR. Local per-target
+inputs remain independently scanned. The global source inputs are assumed
+unchanged during one configure; a new CMake process rescans them.
+
+Ten native calls with the cache took 7.67 seconds and returned exactly the
+same 45 entries and list hash. Host-side edge tests check distinct include
+roots, empty results, fresh-config discovery of new inputs, and the unchanged
+Linux path. The updated module patch replays against the original archive
+and preserves the existing externally supplied TableGen exclusion fix.
+
+Full native LLVM configuration fell from 934.3 to 48.1 seconds; generation
+remained 57.0 seconds. The generated library build, link and 1,000-iteration
+runtime test passed again, then full `make -j1 all` resumed. Evidence and
+reproducers are in `aros-adt-selfhost-build/regression/native-tablegen-glob/`.
+This is a configuration-time improvement; it is not an SMP compile speedup
+claim or evidence that the full system build has completed.

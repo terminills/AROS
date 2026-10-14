@@ -41,22 +41,32 @@ diff --color -ruN llvm-20.1.0.src/cmake/config-ix.cmake llvm-20.1.0.src.aros/cma
  endif()
  
  if(LLVM_ENABLE_ZLIB)
-diff --color -ruN llvm-20.1.0.src/cmake/modules/TableGen.cmake llvm-20.1.0.src.aros/cmake/modules/TableGen.cmake
---- llvm-20.1.0.src/cmake/modules/TableGen.cmake	2025-03-04 20:51:43
-+++ llvm-20.1.0.src.aros/cmake/modules/TableGen.cmake	2026-09-07 08:35:11
-@@ -199,6 +199,12 @@
-   if(ADD_TABLEGEN_EXPORT)
-     set(${project}_TABLEGEN "${${project}_TABLEGEN_DEFAULT}" CACHE
-       STRING "Native TableGen executable. Saves building one when cross-compiling.")
+--- llvm-20.1.0.src/cmake/modules/TableGen.cmake
++++ llvm-20.1.0.src.aros/cmake/modules/TableGen.cmake
+@@ -43 +43,15 @@
+-    file(GLOB_RECURSE global_tds "${LLVM_MAIN_INCLUDE_DIR}/llvm/*.td")
++    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "AROS")
++      # Source TableGen inputs are unchanged during one configure. Avoid rescanning
++      # the complete include tree for every generated target on native AROS.
++      string(SHA256 global_tds_key "${LLVM_MAIN_INCLUDE_DIR}")
++      set(global_tds_property "LLVM_AROS_TABLEGEN_TDS_${global_tds_key}")
++      get_property(global_tds_cached GLOBAL PROPERTY "${global_tds_property}" SET)
++      if(global_tds_cached)
++        get_property(global_tds GLOBAL PROPERTY "${global_tds_property}")
++      else()
++        file(GLOB_RECURSE global_tds "${LLVM_MAIN_INCLUDE_DIR}/llvm/*.td")
++        set_property(GLOBAL PROPERTY "${global_tds_property}" "${global_tds}")
++      endif()
++    else()
++      file(GLOB_RECURSE global_tds "${LLVM_MAIN_INCLUDE_DIR}/llvm/*.td")
++    endif()
+@@ -201,0 +216,6 @@
 +    # An externally supplied tablegen means this one is never run. Building it
 +    # is then pure waste, and on a target that cannot link host-style
 +    # executables it is a hard error, so keep it out of the default build.
 +    if(NOT LLVM_BUILD_UTILS AND NOT "${${project}_TABLEGEN}" STREQUAL "${target}")
 +      set_target_properties(${target} PROPERTIES EXCLUDE_FROM_ALL ON)
 +    endif()
-   else()
-     # Internal tablegen
-     set(${project}_TABLEGEN "${${project}_TABLEGEN_DEFAULT}")
 diff --color -ruN llvm-20.1.0.src/include/llvm/ADT/bit.h llvm-20.1.0.src.aros/include/llvm/ADT/bit.h
 --- llvm-20.1.0.src/include/llvm/ADT/bit.h	2025-03-04 20:51:43
 +++ llvm-20.1.0.src.aros/include/llvm/ADT/bit.h	2026-09-07 08:04:53
