@@ -35,18 +35,20 @@ pthread_t pthread_self(void)
 
     task = GET_THIS_TASK;
 
+    thread = GetOwnThreadId(task);
+    if (thread != PTHREAD_THREADS_MAX)
+        return thread;
+
+    // The main task: it carries no ThreadInfo in tc_UserData.
+    if (task == threads[0].task)
+        return 0;
+
     thread = GetThreadId(task);
 
+    // A task some other pthread copy created (or a plain exec task):
+    // give it a slot of its own instead of aliasing the main task's TLS.
     if (thread == PTHREAD_THREADS_MAX)
-    {
-        // The main task: GetThreadId() cannot mark it via NP_UserData.
-        if (task == threads[0].task)
-            return 0;
-
-        // A task some other pthread copy created (or a plain exec task):
-        // give it a slot of its own instead of aliasing the main task's TLS.
         return AdoptForeignThread(task);
-    }
 
     return thread;
 }

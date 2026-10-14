@@ -95,11 +95,32 @@ ThreadInfo *GetThreadInfo(pthread_t thread)
     return 0;
 }
 
+pthread_t GetOwnThreadId(struct Task *task)
+{
+#if defined(__AROS__)
+    ThreadInfo *inf;
+
+    if (task != NULL)
+    {
+        inf = task->tc_UserData;
+        if (inf >= &threads[0] && inf < &threads[PTHREAD_THREADS_MAX] &&
+            inf->task == task && !inf->finished)
+            return inf - threads;
+    }
+#endif
+
+    return PTHREAD_THREADS_MAX;
+}
+
 pthread_t GetThreadId(struct Task *task)
 {
     pthread_t i;
 
     DB2(bug("%s(%p)\n", __FUNCTION__, task));
+
+    i = GetOwnThreadId(task);
+    if (i != PTHREAD_THREADS_MAX)
+        return i;
 
     // 0 is main task, First thread id will be 1 so that it is different than default value of pthread_t
     for (i = 0; i < PTHREAD_THREADS_MAX; i++)

@@ -134,6 +134,7 @@ extern struct SignalSemaphore tls_sem;
 extern int SemaphoreIsInvalid(struct SignalSemaphore *sem);
 extern int SemaphoreIsMine(struct SignalSemaphore *sem);
 extern ThreadInfo *GetThreadInfo(pthread_t thread);
+extern pthread_t GetOwnThreadId(struct Task *task);
 extern pthread_t GetThreadId(struct Task *task);
 extern pthread_t AdoptForeignThread(struct Task *task);
 extern BOOL ReapAbnormalThread(ThreadInfo *inf);
