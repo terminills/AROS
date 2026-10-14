@@ -469,3 +469,20 @@ changed. Native curl verified HTTPS using the staged CA bundle. IPv6 remains
 unqualified. Evidence is under `native-cmake-bootstrap/network-passed-*`.
 The integrated native CMake, concurrent compiler and libuv process gates
 pass with this network configuration, and the full native build has resumed.
+
+
+A second SMP run allowed the parent build process on all four CPUs and used
+unmodified `native-parallel-build.py`, with no per-compiler assignment. The
+recursive `make -j4` workload again passed eight compilations, four links and
+all four executable checks, with four overlapping compiler jobs. All four
+vCPU threads accumulated substantial work during the workload. Evidence and
+the exact all-CPU launcher are retained under
+`aros-adt-selfhost-build/qemu-parallel/affinity/all-cpus/`.
+The default boot process tree remains pinned to CPU 0; an explicitly widened
+parent mask is inherited by this build tree. No scheduler or library changes
+were needed for either test. These runs do not measure controlled speedup.
+
+The network check additionally followed GitHub's LLVM release redirect using
+the guest's configured `CURL_CA_BUNDLE`, downloaded the CMake 20.1.0 source
+archive, and matched it byte-for-byte against the cached archive. Logs and
+SHA-256 are retained as `native-cmake-bootstrap/network-github-*`.
