@@ -494,8 +494,10 @@ now recognizes the AROS uname tuple and emits `<machine>-unknown-aros`.
 This older script uses direct echo/exit cases, unlike ADT's newer GUESS-based
 script. Native x86_64 detection and the unchanged Linux host result pass;
 the patch replays against the original LLVM archive. Evidence is retained in
-`regression/llvm-native-host-triple/`. Full LLVM configuration/build remains
-in progress; the host-triple probe alone does not qualify the complete build.
+`regression/llvm-native-host-triple/`. The original LLVM/Clang/LLD CMake target now also passes native configuration
+and Unix Makefile generation (`configure-passed-*`, CMakeCache.txt and
+CMakeConfigureLog.yaml in that evidence directory). Native compilation and
+the full system build remain in progress.
 
 
 The Contrib Git port is `contrib/development/scm/git` (2.55.0). The existing
