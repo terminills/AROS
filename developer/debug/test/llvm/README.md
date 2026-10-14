@@ -709,3 +709,21 @@ establish thread safety within one shared LLVM context, JIT correctness, or a
 self-built OS boot. The VM shut down cleanly. Commands, the exact executable,
 serial output, per-worker intervals and vCPU samples are retained under
 `aros-adt-selfhost-build/qemu-parallel/native-ir-1/`.
+
+
+## Parallel native LLVM source build on QEMU
+
+A private four-vCPU QEMU run compiled all six LLVM Demangle sources and
+`native-demangle.cpp` using native make -j4 and the bootstrap Clang. It reused
+the native full build's release compiler flags and defines, with staged source
+and generated include directories. Seven compilations passed, with peak
+launch-to-return overlap four. Native llvm-ar created the archive, native
+Clang linked the probe, and its 1,000 runtime iterations passed. All four
+vCPUs accumulated work; the private VM exited cleanly.
+
+This extends the earlier small parallel compiler probes to real LLVM sources.
+It establishes this bounded parallel build and runtime result, not a speedup
+ratio, a complete native compiler build, or a self-built OS boot. The existing
+SMP baseline OS was used. Source and object hashes, archive and executable
+hashes, original flags, complete commands, scripts and serial evidence are in
+`aros-adt-selfhost-build/qemu-parallel/native-demangle-build-1/`.
