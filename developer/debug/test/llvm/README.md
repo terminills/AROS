@@ -496,3 +496,16 @@ script. Native x86_64 detection and the unchanged Linux host result pass;
 the patch replays against the original LLVM archive. Evidence is retained in
 `regression/llvm-native-host-triple/`. Full LLVM configuration/build remains
 in progress; the host-triple probe alone does not qualify the complete build.
+
+
+The Contrib Git port is `contrib/development/scm/git` (2.55.0). The existing
+ADT bootstrap installation from `Developer/git` and `C/git` has been staged
+in both private guests. With GIT_EXEC_PATH pointing at
+`/SYS/Developer/git/libexec/git-core` and GIT_TEMPLATE_DIR at
+`/SYS/Developer/git/share/git-core/templates`, init/add/commit/show/status/fsck
+pass in fresh local test repositories. The executable SHA-256 is
+`e6b9c42f981cd5ef89f39be2a790ec54c9f78e2d413e004ab3543156fca2e7e1`.
+This is existing bootstrap support, not a native Git rebuild. Its installation
+lacks git-remote-https, and discovery outside a repository fails at stat(`/`);
+network Git operations are not qualified. Native curl HTTPS downloads pass
+independently. Evidence is in `regression/native-git-bootstrap/`.
