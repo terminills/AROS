@@ -616,3 +616,27 @@ runtime test passed again, then full `make -j1 all` resumed. Evidence and
 reproducers are in `aros-adt-selfhost-build/regression/native-tablegen-glob/`.
 This is a configuration-time improvement; it is not an SMP compile speedup
 claim or evidence that the full system build has completed.
+
+
+## Native Clang frontend cleanup
+
+The bootstrap driver passed `-disable-free`, which skips frontend destruction.
+AROS shares an address space, so native compiler invocations must perform normal
+cleanup. The Clang 20 patch now omits this default argument when the compiler
+itself is built for AROS; other hosts retain their existing behavior.
+
+Ten minimal C compiles retained roughly 1.84 MB per invocation before this change
+and 1.09 MB afterward (Avail-only control: about 12 KB). A controlled native
+ItaniumDemangle.cpp compile retained 52,051,264 bytes before and 1,498,464 bytes
+afterward. Both large and small object files were byte-identical. The large
+compile took 207.46 seconds before and 170.87 seconds afterward in this sample;
+these timings are not a general performance guarantee. Some retention remains.
+
+Native C/C++ CMake configure, build and execution passed, as did an expected
+invalid-source failure followed by successful compilation. A private four-vCPU
+QEMU run passed eight compilations, four links and four executions, with peak
+compiler overlap three within the jobserver limit of four; all four CPUs did
+work. No shared runtime library or library vector changed. This does not replace
+full Chromium, RPCS3, Node or V8 qualification. Reproducers, binaries, hashes and
+logs are retained in `aros-adt-selfhost-build/regression/native-compiler-lifetime/`
+and `aros-adt-selfhost-build/qemu-parallel/clang-cleanup-1/`.
