@@ -316,3 +316,14 @@ messaging, libuv work, a fresh process-lifecycle run (exit 0), and Chromium's
 left an empty log and is retained separately, not counted as a pass. No
 public headers or library dispatch layouts change. RPCS3 runtime and the
 full application regression suites remain unqualified.
+
+With that formatter, a fresh native `mesa3d-fetch` completes extraction and
+all patches with exit 0. Host inspection confirms all ten originally failing
+relative symlinks resolve. Evidence is retained as
+`NativeJobs/mesa-format-fixed-passed-{output.log,result.json}` and
+`regression/mesa-native-symlink-inspection.json` in the isolated build tree.
+A freestanding Linux i386 harness also executes the shared integer formatter
+successfully, including intmax limits, pointer differences, octal/hex output
+and count pointers. This adds ILP32 core coverage, not AROS 32-bit runtime
+qualification. Native `make all` resumes after this dependency checkpoint;
+completion of Mesa fetch does not establish a successful system build.
