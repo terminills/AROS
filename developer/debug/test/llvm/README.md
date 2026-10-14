@@ -585,3 +585,11 @@ source `include` directory, and link the build's `lib/libLLVMDemangle.a`.
 Run the resulting executable and require `NATIVE-LLVM-DEMANGLE-PASS` with
 exit status zero. The full build is regenerating its non-PIC configuration;
 its generated-archive repeat and full compiler/system build remain pending.
+
+The full LLVM CMake regeneration subsequently passed (934.3 seconds configure,
+57.0 seconds generate) with LLVM_ENABLE_PIC=OFF. Its generated Makefiles rebuilt
+LLVMDemangle; linking and executing the same test against that archive also
+passed all 1,000 checks. The integrated executable has no GOT relocations.
+The `integrated-*` evidence files retain the cache, flags, archive, executable,
+relocation listing, hashes and log. Full native `make -j1 all` has resumed;
+full LLVM compilation and the bootable system remain outstanding.
