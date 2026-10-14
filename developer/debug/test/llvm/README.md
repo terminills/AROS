@@ -398,3 +398,33 @@ Evidence: `aros-adt-selfhost-build/qemu-parallel/serial.log` and
 proves concurrent builds, not multicore scheduling or speedup. The boot image
 is an existing SMP baseline with the tested SDK/CRT staged; it is not a
 self-built full system. No shared library or application code changed.
+
+## Native CMake bootstrap (2026-10-14)
+
+`native-cmake.py FRESH_DIRECTORY` passes in the isolated hosted runtime:
+CMake 3.31.8 captures subprocess output and nonzero status, detects native
+Clang 20 C/C++ through real ABI compile/link tests, generates Unix Makefiles,
+builds with `--parallel 4`, and runs both resulting executables. The C++ test
+uses `std::vector` and checks its result. Evidence is retained under
+`aros-adt-selfhost-build/native-cmake-bootstrap/native-gate-evidence` and
+`consolidated-gate-passed-*`. CMake itself is cross-built bootstrap support;
+this does not establish a native CMake self-build or a complete AROS image.
+
+The source patch and `build-cmake.py` are under `tools/native-bootstrap`.
+The recipe requires explicit SDK, curl and uv1 inputs and retains its command
+list. A fresh recipe build and the resulting binary's complete native gate
+both pass (`recipe-check.log` and `recipe-native-gate-evidence`).
+Its uv thunks use the existing aros-web generator and must match the
+supplied uv1 module. No uv1 vectors or shared runtime libraries are changed.
+The AROS platform module selects Unix process behavior and static libraries.
+The unused legacy fork backend reports ENOSYS; it must not emulate fork with
+an unsafe vfork substitution.
+
+DOS PIPE: rejects the ChangeMode operation used by `fcntl(O_NONBLOCK)`.
+CMake-created pipes therefore use uv1's existing DOS pipe registration,
+WaitForChar readiness and read wrapper, just as uv_spawn's pipes do. This
+adapter is local to the CMake executable and depends on the exact uv1 build.
+Normal CMake path searches also need DOS requesters disabled so nonexistent
+volumes return errors without blocking unattended builds. The guest needs
+`bin:` and `usr:` assigned to its SDK, plus a running bsdsocket provider for
+the linked curl support; the validation guest uses loopback only.

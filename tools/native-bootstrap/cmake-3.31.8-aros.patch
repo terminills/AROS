@@ -1,0 +1,140 @@
+--- a/Source/kwsys/ProcessUNIX.c
++++ b/Source/kwsys/ProcessUNIX.c
+@@ -2452,6 +2452,14 @@
+ static pid_t kwsysProcessFork(kwsysProcess* cp,
+                               kwsysProcessCreateInformation* si)
+ {
++#if defined(__AROS__)
++  /* AROS has no fork address-space duplication. Keep the legacy process
++     API explicitly unsupported; modern CMake execution uses libuv. */
++  (void)cp;
++  (void)si;
++  errno = ENOSYS;
++  return -1;
++#else
+   /* Create a detached process if requested.  */
+   if (cp->OptionDetach) {
+     /* Create an intermediate process.  */
+@@ -2492,6 +2500,7 @@
+   }
+   /* Not creating a detached process.  Use normal fork.  */
+   return fork();
++#endif
+ }
+ #endif
+ 
+--- a/Source/cmStateTypes.h
++++ b/Source/cmStateTypes.h
+@@ -11,6 +11,11 @@
+ struct SnapshotDataType;
+ using PositionType = cmLinkedTree<cmStateDetail::SnapshotDataType>::iterator;
+ }
++
++// AROS SDK defines STATIC as a storage-class macro.
++#if defined(__AROS__) && defined(STATIC)
++#  undef STATIC
++#endif
+ 
+ namespace cmStateEnums {
+ 
+--- a/Source/cmProperty.h
++++ b/Source/cmProperty.h
+@@ -3,6 +3,11 @@
+ #pragma once
+ 
+ #include "cmConfigure.h" // IWYU pragma: keep
++
++// AROS SDK defines GLOBAL as a storage-class macro.
++#if defined(__AROS__) && defined(GLOBAL)
++#  undef GLOBAL
++#endif
+ 
+ class cmProperty
+ {
+--- a/Source/cmGetPipes.cxx
++++ b/Source/cmGetPipes.cxx
+@@ -4,6 +4,28 @@
+ 
+ #include <cm3p/uv.h>
+ #include <fcntl.h>
++#if defined(__AROS__)
++extern "C" void uv__aros_register_dos_pipe(int);
++extern "C" int uv__aros_is_dos_pipe(int);
++extern "C" int uv__stream_open(uv_stream_t*, int, int);
++extern "C" int __real_uv_pipe_open(uv_pipe_t*, uv_file);
++// PIPE: has no ChangeMode-based O_NONBLOCK. Registered DOS pipes use
++// uv1's existing WaitForChar readiness and read wrapper instead, as do
++// pipes created by uv_spawn. Only pipes created below take this path.
++extern "C" int __wrap_uv_pipe_open(uv_pipe_t* handle, uv_file fd)
++{
++  if (!uv__aros_is_dos_pipe(fd)) return __real_uv_pipe_open(handle, fd);
++  int mode = fcntl(fd, F_GETFL);
++  if (mode < 0) return UV_EBADF;
++  // These flags are from uv-common.h in the matching uv1 build.
++  constexpr int readable = 0x00004000;
++  constexpr int writable = 0x00008000;
++  int flags = 0;
++  if ((mode & O_ACCMODE) != O_WRONLY) flags |= readable;
++  if ((mode & O_ACCMODE) != O_RDONLY) flags |= writable;
++  return uv__stream_open(reinterpret_cast<uv_stream_t*>(handle), fd, flags);
++}
++#endif
+ 
+ #if defined(_WIN32) && !defined(__CYGWIN__)
+ #  include <io.h>
+@@ -33,6 +55,14 @@
+ 
+ int cmGetPipes(int* fds)
+ {
++#if defined(__AROS__)
++  int result = uv_pipe(fds, 0, 0);
++  if (result == 0) {
++    uv__aros_register_dos_pipe(fds[0]);
++    uv__aros_register_dos_pipe(fds[1]);
++  }
++  return result;
++#endif
+   if (pipe(fds) == -1) {
+     return uv_translate_sys_error(errno);
+   }
+--- a/Source/cmakemain.cxx
++++ b/Source/cmakemain.cxx
+@@ -1125,8 +1125,15 @@
+ }
+ } // namespace
+ 
++#ifdef __AROS__
++extern "C" void cmArosDisableRequesters(void);
++#endif
++
+ int main(int ac, char const* const* av)
+ {
++#ifdef __AROS__
++  cmArosDisableRequesters();
++#endif
+   cmSystemTools::EnsureStdPipes();
+ 
+   // Replace streambuf so we can output Unicode to console
+--- a/Source/CMakeLists.txt
++++ b/Source/CMakeLists.txt
+@@ -1381,3 +1381,8 @@
+ 
+ # Unset temporary variables
+ unset(_tools)
++
++if(CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  target_sources(cmake PRIVATE cmArosNative.c)
++  set_source_files_properties(cmArosNative.c PROPERTIES COMPILE_OPTIONS "-std=gnu11")
++endif()
+--- a/Source/cmArosNative.c
++++ b/Source/cmArosNative.c
+@@ -0,0 +1,9 @@
++/* CMake is a noninteractive POSIX command: missing volume paths must
++ * return errors, not block unattended builds with DOS requesters. */
++#include <proto/exec.h>
++#include <dos/dosextens.h>
++void cmArosDisableRequesters(void)
++{
++  struct Process *process = (struct Process *)FindTask(NULL);
++  process->pr_WindowPtr = (APTR)-1;
++}
