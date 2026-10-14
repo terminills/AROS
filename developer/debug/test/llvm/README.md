@@ -359,3 +359,30 @@ command to resolve SYS:C/Version. This passes with an ELF64 AROS ABI 1 output.
 Evidence is `NativeJobs/which-and-makedirs-passed-*` and the actual console
 capture `logs/aros-native-which-linked.png`. This proves a real OS command
 can be built and run on AROS; it is not completion of the full system build.
+
+The full build subsequently passed zstd and libpng fetch and reached the CIA
+include generator, whose `/usr/bin/perl` interpreter was missing. Contrib's
+Perl 5.7.2 x86_64 port has now been compiled and linked with native LLVM 20,
+including static Fcntl and IO extensions. Its old configuration needs
+`i_time=define` for the modern SDK. A locale warning can initialize PerlIO
+before PerlIO_init: registering exit cleanup independently of the I/O table
+fixes lost buffered stdout. Native script/module/output checks pass.
+
+Perl's Cwd module also exposed GNU pwd dropping the AROS volume component.
+Coreutils' gnulib fallback walks Unix parents and loses that component;
+preferring native AROS getcwd preserves it. The rebuilt bootstrap pwd passes
+default, -L and -P checks against native getcwd, and Perl File::Find can return
+to its starting directory. This pwd is cross-built bootstrap support; the Perl
+interpreter itself was built natively. Neither fix changes shared libraries.
+
+With a private `usr:` assign to `SYS:Developer`, the unmodified sfdc script
+generates clib, macros and proto CIA headers that byte-match host Perl output.
+The original kernel-cia-includes make target passes. Evidence resides in
+`NativeJobs/perl-sfdc-passed-*`, `NativeJobs/cia-includes-perl-passed-*`,
+`regression/perl-sfdc-artifacts.json` and `regression/perl-sfdc-host`.
+The consolidated `tools/native-bootstrap/build-perl.py` recipe captures the
+bootstrap commands and is syntax-checked; a fresh end-to-end run of that
+consolidated recipe is still pending. It intentionally builds only the
+extensions required by this bootstrap. Full Perl tests, locale support and
+its reported missing PATH in `%ENV` remain unqualified. The complete native
+AROS build resumes beyond CIA; no full system image has yet been validated.
