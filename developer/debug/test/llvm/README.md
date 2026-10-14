@@ -672,3 +672,29 @@ again matched the Linux reference. The native SYS/System path alias was
 verified with samefile; recovery reused 308 flags.make timestamps only when
 contents differed solely by that verified alias, avoiding a second unnecessary
 recompile. The full LLVM and system builds remain unfinished.
+
+
+## Native LLVM IR library runtime gate
+
+`native-ir.cpp` links against the freshly native-built LLVM archives and runs
+inside isolated hosted AROS. It constructs and verifies 100 valid modules,
+requires rejection of 100 modules with an invalid return type, removes each
+invalid function, and checks verification and IR printing again. This exercises
+IR construction, diagnostics and object lifetimes; it does not execute generated
+IR or qualify a JIT. The native link and runtime gate passed with exit zero.
+
+Compile with native clang++ using `-nix --sysroot=/SYS/Developer -mcmodel=large
+-mno-red-zone -std=c++17 -fno-exceptions -fno-rtti`, with the matching LLVM source
+and generated include directories. Link the object with a linker group containing
+LLVMCore, LLVMBinaryFormat, LLVMRemarks, LLVMBitstreamReader, LLVMSupport,
+LLVMTargetParser and LLVMDemangle, followed by `-lpthread -lm -lz`.
+Require `NATIVE-LLVM-IR-PASS modules=100 rejected_invalid=100` and exit zero.
+
+Keep the archive set and C++ standard library consistent: the existing GCC
+cross-built archives use libstdc++, while this native set uses libc++. They are
+not interchangeable baselines. The validation guest needed real local snapshots
+of the include trees because its external host symlink exposed duplicate native
+inode identities and caused Clang to discard a source include directory.
+The full build guest uses its own real directories. Neither issue prompted a
+shared runtime or ABI change. Logs, object, executable and archive hashes are
+retained in `aros-adt-selfhost-build/regression/native-ir/`.
