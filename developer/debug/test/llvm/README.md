@@ -428,3 +428,44 @@ Normal CMake path searches also need DOS requesters disabled so nonexistent
 volumes return errors without blocking unattended builds. The guest needs
 `bin:` and `usr:` assigned to its SDK, plus a running bsdsocket provider for
 the linked curl support; the validation guest uses loopback only.
+
+
+## Explicit SMP compiler placement (2026-10-14)
+
+The follow-up private four-vCPU QEMU test also passes with explicit inherited
+CPU affinity. The standalone fixture in `smp/` retains the exact tested
+launcher and scripts. Build `affinity-launch.c` with the matching AROS SDK,
+then install its executable and both Python scripts in `SYS:Parallel`.
+Run `native-parallel-build.py` with `AROS_PARALLEL_OUTPUT=/RAM/NativeChecks`.
+It uses the existing `NP_Affinity` CPU mask interface; no library vector is
+added or moved. The child probe checks the inherited CPU before launching
+each compiler/linker. This fixture uses fixed paths and generated argument
+names without shell metacharacters; it is not a general command launcher.
+
+All eight compilation jobs, four links and four executable checksum checks
+passed, with four overlapping compilation jobs. Each of CPUs 0 through 3
+was observed by three guest probes, and all four QEMU vCPU threads accumulated
+CPU time. Evidence, exact commands and artifact hashes are retained in
+`aros-adt-selfhost-build/qemu-parallel/affinity/attempt2/result.json`,
+`serial.log`, `qemu-command.json` and `vcpu-samples.jsonl`.
+This validates explicit placement, not automatic scheduler distribution or
+speedup. The image still uses the existing SMP baseline kernel.
+
+## Build guest networking (2026-10-14)
+
+The full-build hosted guest now passes DNS lookup and HTTPS with certificate
+verification through its exclusively reserved `aros0` TAP. The minimal runtime
+needed `commodities.library` and `rexxsyslib.library` from the matching full
+ADT runtime before AROSTCP could start. Its CMake installation also requires
+the matching `fd.library` and `uv1.library`. These are bootstrap additions;
+no existing shared library or vector was replaced for this integration.
+
+The private configuration uses tap.device unit 0, 10.203.0.2/24, gateway
+10.203.0.1 and the existing LAN DNS resolver. These are this host's settings,
+not portable defaults. Startup assigns AROSTCP:, sets AROSTCP/Config to the
+private configuration directory, starts AROSTCP and waits for its port.
+Existing host forwarding/NAT was sufficient; no host firewall or route was
+changed. Native curl verified HTTPS using the staged CA bundle. IPv6 remains
+unqualified. Evidence is under `native-cmake-bootstrap/network-passed-*`.
+The integrated native CMake, concurrent compiler and libuv process gates
+pass with this network configuration, and the full native build has resumed.
