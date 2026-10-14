@@ -82,8 +82,6 @@ typedef struct InstallerPrefs
        in misc.c */
     int noregistry;
     BPTR registrystream;
-    /* APPBANNER: picture shown above the pages (InstallerLG-compatible) */
-    char * bannerfile;
     int debug, pretend, nopretend, novicelog, noprint;
     int welcome;
     int copyfail, copyflags;
