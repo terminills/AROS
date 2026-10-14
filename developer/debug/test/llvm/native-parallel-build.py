@@ -71,7 +71,7 @@ active = maximum = 0
 for _, delta in points:
     active += delta
     maximum = max(maximum, active)
-assert maximum >= 2, ("No overlapping compiler processes measured", events)
+assert 2 <= maximum <= 4, ("Compiler concurrency outside -j4 bounds", maximum, events)
 for index in range(4):
     result = subprocess.run([str(out / ("app%d" % index))], cwd=out,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

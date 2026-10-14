@@ -511,3 +511,38 @@ This is existing bootstrap support, not a native Git rebuild. Its installation
 lacks git-remote-https, and discovery outside a repository fails at stat(`/`);
 network Git operations are not qualified. Native curl HTTPS downloads pass
 independently. Evidence is in `regression/native-git-bootstrap/`.
+
+
+## Recursive Make job ceiling (2026-10-14)
+
+The full LLVM compile exposed a bootstrap Make configuration problem:
+Contrib Make 4.4.1 disabled its jobserver, so nested `-j4` builds each started
+an independent set of workers. A three-level, twelve-worker reproducer
+measured ten concurrent workers with that binary. Earlier compiler gates
+proved parallel execution but did not cover this recursive ceiling.
+
+Contrib now enables the jobserver and supplies an AROS-only transport using
+a named Exec semaphore and public token pool. It shares the root Make's
+budget across recursive children, including SMP, without depending on POSIX
+pipe readiness or signal interruption. Other platforms retain their existing
+implementation. This protocol is specific to GNU Make; unrelated clients
+expecting a POSIX pipe jobserver are not qualified. An abruptly killed root
+can leave its public pool allocated until restart; normal completion removes
+it. No shared library vectors or runtime libraries changed.
+
+Run `native-jobserver.py /SYS/Developer/bin/make` inside AROS. It checks
+limits 1, 2 and 4 across three Make levels, an expected failed worker, and a
+subsequent successful run. Optional second argument `baseline` measures the
+old binary without asserting the ceiling. Hosted and four-core QEMU runs
+pass; the native CMake C/C++ configure/build/run gate also passes. The
+compiler gate now requires between two and four overlapping compilations.
+QEMU completed eight compilations, four links and four executable checks,
+with maximum compiler overlap four. This uses the existing SMP baseline
+kernel, not a newly self-built OS image.
+
+Evidence is retained under `aros-adt-selfhost-build/regression/native-jobserver/`
+and `qemu-parallel/jobserver/`. The patch replays against the original Make
+archive and matches the tested candidate source. The full native build has
+resumed with that candidate and without `CMAKE_BUILD_PARALLEL_LEVEL=4`, so
+CMake's nested Make inherits the outer job budget. Full LLVM compilation,
+full system image generation and boot remain outstanding.
