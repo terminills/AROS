@@ -698,3 +698,14 @@ inode identities and caused Clang to discard a source include directory.
 The full build guest uses its own real directories. Neither issue prompted a
 shared runtime or ABI change. Logs, object, executable and archive hashes are
 retained in `aros-adt-selfhost-build/regression/native-ir/`.
+
+
+The same native-linked IR executable subsequently passed in a private four-vCPU
+QEMU run using the existing SMP baseline OS. Four concurrent workers performed
+five executions each: 2,000 valid-module checks and 2,000 invalid-module
+rejections, with all 20 processes exiting zero. The launch-to-return intervals
+overlap four ways. This exercises separate LLVM processes on SMP; it does not
+establish thread safety within one shared LLVM context, JIT correctness, or a
+self-built OS boot. The VM shut down cleanly. Commands, the exact executable,
+serial output, per-worker intervals and vCPU samples are retained under
+`aros-adt-selfhost-build/qemu-parallel/native-ir-1/`.
