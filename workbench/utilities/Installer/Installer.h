@@ -74,6 +74,8 @@ typedef struct ScriptArg
 typedef struct InstallerPrefs
 {
     char * transcriptfile;
+    /* APPBANNER: picture shown above the pages (InstallerLG-compatible) */
+    char * bannerfile;
     BPTR transcriptstream;
     /* Installed-files registry: one entry per application, one line per
        thing the script created, so it can be undone -- see registry_log()

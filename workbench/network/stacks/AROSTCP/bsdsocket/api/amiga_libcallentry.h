@@ -105,14 +105,11 @@ static inline LONG getSock(struct SocketBase *p, int fd, struct socket **sop)
  * fdAlloc there. libPtr->nextDToSearch is dumped.
  */
 LONG sdFind(struct SocketBase * libPtr, LONG *fdp);
-
-/*
- * Descriptor table sizing, in amiga_generic2.c: setdtablesize() is the
- * SBTC_DTABLESIZE backend, sdGrow() extends the table so that descriptor
- * number fd fits (0 on success, else an errno).
- */
-LONG setdtablesize(struct SocketBase *libPtr, UWORD size);
-LONG sdGrow(struct SocketBase *libPtr, LONG fd);
+void sdFree(LONG fd);
+LONG closeSocketLocked(LONG fd, struct SocketBase *libPtr); /* amiga_generic.c */
+LONG releaseSocketRef(struct socket *so);                   /* amiga_generic.c */
+void setSocketOwner(struct socket *so, struct SocketBase *owner); /* amiga_generic.c */
+LONG setdtablesize(struct SocketBase *libPtr, UWORD size); /* amiga_generic2.c */
 
 #ifndef AMIGA_RAF_H
 #include <api/amiga_raf.h>

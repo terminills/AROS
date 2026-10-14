@@ -122,6 +122,14 @@ struct PosixCIntBase
     /* set(e)gid.c/get(e)gid.c */
     gid_t gid; /* Real group id of process */
     gid_t egid; /* Effective group id of process */
+
+    /* __upath.c, at the end to keep the offsets above: a program linked
+       against the global PosixCBase shares it with its pthreads; those Tasks
+       convert into their own buffers (upath_others), upathbuf stays with the
+       Task that opened the base. */
+    struct Task *upath_task;
+    struct MinList upath_others;
+    struct SignalSemaphore upath_sem;
 };
 
 /* __taskctx.c: per-Task vfork()/exec*() state.  None of it lives in base
@@ -154,5 +162,8 @@ void __posixc_restoreparentctx(IPTR old);
    exec*() family hand over to the launcher.  NULL for every other Task. */
 struct vfork_data *__posixc_pretending(void);
 void __posixc_setpretending(struct vfork_data *udata);
+
+/* __upath.c: frees the path buffers of other Tasks (upath_others) */
+void __upath_free_others(struct PosixCIntBase *PosixCBase);
 
 #endif //__POSIXC_INTBASE_H

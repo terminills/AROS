@@ -21,115 +21,78 @@
 #include <stdlib.h>
 #include <errno.h>
 
+#include <proto/exec.h>
+#include <exec/lists.h>
+
 #include "__posixc_intbase.h"
 
 static const char *__path_devstuff_u2a(const char *path);
 static void  __path_normalstuff_u2a(const char *path, char *buf);
 
-struct upath_task_buffer
+struct upath_node
 {
-    struct upath_task_buffer *next;
+    struct MinNode node;
     struct Task *task;
-    size_t capacity;
-    char buffer[1];
+    char *buf;
+    size_t size;
 };
 
-static struct SignalSemaphore upath_lock;
-
-static char *__path_task_buffer(struct PosixCIntBase *PosixCBase,
-    size_t required)
+/* Returns a conversion buffer of at least size bytes for the calling Task.
+   The base may be shared by several Tasks (the pthreads of a program linked
+   against the global PosixCBase); each one needs its own buffer, as the
+   result stays in use until that Task's next conversion. */
+static char *__upath_buf(struct PosixCIntBase *PosixCBase, size_t size)
 {
-    struct upath_task_buffer *entry;
-    struct upath_task_buffer *previous = NULL;
-    struct upath_task_buffer *replacement;
-    struct Task *task = FindTask(NULL);
-    size_t allocation_size;
-    char *buffer = NULL;
+    struct Task *me = FindTask(NULL);
+    struct upath_node *n;
+    char *buf;
 
-    if (required > SIZE_MAX - offsetof(struct upath_task_buffer, buffer))
-        return NULL;
-
-    ObtainSemaphore(&upath_lock);
-
-    entry = (struct upath_task_buffer *)PosixCBase->upathbuf;
-    while (entry != NULL && entry->task != task)
+    if (me == PosixCBase->upath_task)
     {
-        previous = entry;
-        entry = entry->next;
+        buf = realloc_nocopy(PosixCBase->upathbuf, size);
+        if (buf)
+            PosixCBase->upathbuf = buf;
+        return buf;
     }
 
-    if (entry != NULL && entry->capacity >= required)
+    ObtainSemaphore(&PosixCBase->upath_sem);
+    ForeachNode(&PosixCBase->upath_others, n)
     {
-        buffer = entry->buffer;
-        goto out;
+        if (n->task == me)
+            break;
+    }
+    if (!n->node.mln_Succ)
+    {
+        n = AllocVec(sizeof(*n), MEMF_ANY | MEMF_CLEAR);
+        if (n)
+        {
+            n->task = me;
+            AddTail((struct List *)&PosixCBase->upath_others, (struct Node *)n);
+        }
+    }
+    ReleaseSemaphore(&PosixCBase->upath_sem);
+
+    /* Only this Task uses its node's buffer */
+    if (n && n->size < size)
+    {
+        FreeVec(n->buf);
+        n->buf = AllocVec(size, MEMF_ANY);
+        n->size = n->buf ? size : 0;
     }
 
-    allocation_size = offsetof(struct upath_task_buffer, buffer) + required;
-    replacement = AllocVec(allocation_size, MEMF_ANY);
-    if (replacement == NULL)
-        goto out;
-
-    replacement->task = task;
-    replacement->capacity = required;
-
-    if (entry != NULL)
-    {
-        replacement->next = entry->next;
-        if (previous != NULL)
-            previous->next = replacement;
-        else
-            PosixCBase->upathbuf = (char *)replacement;
-
-        FreeVec(entry);
-    }
-    else
-    {
-        replacement->next =
-            (struct upath_task_buffer *)PosixCBase->upathbuf;
-        PosixCBase->upathbuf = (char *)replacement;
-    }
-
-    buffer = replacement->buffer;
-
-out:
-    ReleaseSemaphore(&upath_lock);
-    return buffer;
+    return n ? n->buf : NULL;
 }
 
-static int __init_upath_lock(struct PosixCIntBase *PosixCBase)
+void __upath_free_others(struct PosixCIntBase *PosixCBase)
 {
-    (void)PosixCBase;
-    InitSemaphore(&upath_lock);
-    return TRUE;
-}
+    struct upath_node *n;
 
-static int __init_upath(struct PosixCIntBase *PosixCBase)
-{
-    PosixCBase->upathbuf = NULL;
-    return TRUE;
-}
-
-static void __exit_upath(struct PosixCIntBase *PosixCBase)
-{
-    struct upath_task_buffer *entry;
-    struct upath_task_buffer *next;
-
-    ObtainSemaphore(&upath_lock);
-    entry = (struct upath_task_buffer *)PosixCBase->upathbuf;
-    PosixCBase->upathbuf = NULL;
-    ReleaseSemaphore(&upath_lock);
-
-    while (entry != NULL)
+    while ((n = (struct upath_node *)REMHEAD(&PosixCBase->upath_others)))
     {
-        next = entry->next;
-        FreeVec(entry);
-        entry = next;
+        FreeVec(n->buf);
+        FreeVec(n);
     }
 }
-
-ADD2INITLIB(__init_upath_lock, 0);
-ADD2OPENLIB(__init_upath, -40);
-ADD2CLOSELIB(__exit_upath, 0);
 
 int __path_volume_exists(const char *path)
 {
@@ -243,7 +206,7 @@ int __path_volume_exists(const char *path)
         D(bug("__path_u2a: No /dev stuff, doing normal conversion\n"));
 
         /* Else, convert it normally */
-        newpath = __path_task_buffer(PosixCBase, strlen(upath) + 1);
+        newpath = __upath_buf(PosixCBase, strlen(upath) + 1);
 
         if (newpath == NULL)
         {
@@ -330,7 +293,7 @@ int __path_volume_exists(const char *path)
     if (size == 0)
         return "";
 
-    old_upath = __path_task_buffer(PosixCBase, 1 + size + 1);
+    old_upath = __upath_buf(PosixCBase, 1 + size + 1);
     if (old_upath == NULL)
     {
         errno = ENOMEM;

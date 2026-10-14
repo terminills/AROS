@@ -3,23 +3,29 @@ Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 Command line
 ------------
 	SCRIPT,APPNAME,MINUSER,DEFUSER,LOGFILE,NOLOG/S,NOPRETEND/S,
-	NOPRINT/S,LANGUAGE,NOREGISTRY/S,APPBANNER/K,PRETEND/S
+	NOPRINT/S,LANGUAGE,APPBANNER/K,DRYRUN/S,NOREGISTRY/S
 
-	The first nine are the standard Installer arguments. NOLOG/S (also
-	a tooltype) means no log file at all: none is opened, and the "log
-	to file" page is not offered. Without it LOGFILE names the log
-	(default "install_log_file" in the current directory - which is the
-	script's drawer when run from Workbench, so a script on a CD-ROM or
-	other read-only volume needs NOLOG or an absolute LOGFILE); a novice
-	is not asked and gets the log unless the icon says LOG=FALSE.
-	APPBANNER/K
-	(also a tooltype) names a picture, shown through datatypes above the
-	pages - the application's own banner; the same argument InstallerLG
-	takes, so one icon serves both. PRETEND/S runs the script as a dry
-	run without asking: the "Install for real / pretend" page is skipped
-	and nothing is written (what NOPRETEND/S forbids, this forces) - used
-	for previewing a package and for running scripts under test. Scripts
-	cannot tell it from a pretend run chosen on the page.
+	The standard Installer arguments. NOLOG/S (also a tooltype) means no
+	log file at all: none is opened, and the "log to file" page is not
+	offered. Without it LOGFILE names the log (default "install_log_file"
+	in the current directory - which is the script's drawer when run from
+	Workbench, so a script on a CD-ROM or other read-only volume needs
+	NOLOG or an absolute LOGFILE); a novice is not asked and gets the log
+	unless the icon says LOG=FALSE.
+
+	APPBANNER/K (also a tooltype) names a picture, shown through datatypes
+	above the pages - the application's own banner; the same argument
+	InstallerLG takes, so one icon serves both. Without it the window is
+	unchanged.
+
+	DRYRUN/S runs the script as a dry run without asking: the "Install
+	for real / pretend" page is skipped and nothing is written (what
+	NOPRETEND/S forbids, this forces) - for previewing a package and for
+	running scripts under test. Scripts cannot tell it from a pretend run
+	chosen on the page.
+
+	NOREGISTRY/S (also a tooltype) keeps no installed-files registry
+	entry, see below.
 
 Installed-files registry
 ------------------------
@@ -39,8 +45,8 @@ Installed-files registry
 	entry is opened when the first thing is really created, so a pretend
 	run, or one aborted before it changed anything, keeps the previous
 	entry; installing the same APPNAME again replaces it. A package
-	manager that runs the script reads the entry afterwards. NOREGISTRY/S
-	(also a tooltype) keeps no entry. Scripts do not see the registry.
+	manager that runs the script reads the entry afterwards. Scripts do
+	not see the registry.
 
 Parsing the script
 ------------------

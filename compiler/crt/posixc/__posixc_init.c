@@ -25,11 +25,12 @@ static int __posixc_open(struct PosixCIntBase *PosixCBase)
 {
     D(bug("[posixc] %s(0x%p)\n", __func__, PosixCBase));
 
-    /* The pool serves every Task that calls through this base (a Process
-       and all of its pthread workers), so it must serialise itself: an
-       unprotected pool corrupts its TLSF free lists under concurrent
-       AllocPooled()/FreePooled(). */
+    /* Tasks sharing this base (pthreads) allocate descriptors from it */
     PosixCBase->internalpool = CreatePool(MEMF_PUBLIC|MEMF_CLEAR|MEMF_SEM_PROTECTED, 256, 256);
+
+    PosixCBase->upath_task = FindTask(NULL);
+    NEWLIST((struct List *)&PosixCBase->upath_others);
+    InitSemaphore(&PosixCBase->upath_sem);
 
     return PosixCBase->internalpool != NULL;
 }
@@ -37,6 +38,7 @@ static int __posixc_open(struct PosixCIntBase *PosixCBase)
 static void __posixc_close(struct PosixCIntBase *PosixCBase)
 {
     D(bug("[posixc] %s(0x%p)\n", __func__, PosixCBase));
+    __upath_free_others(PosixCBase);
     DeletePool(PosixCBase->internalpool);
 }
 

@@ -217,9 +217,7 @@ BOOL TestAudioID(ULONG id, struct TagItem *tags)
 /****** ahi.device/AHI_GetAudioAttrsA ***************************************
 *
 *   NAME
-*       AHI_GetAudioAttrsA -- examine an audio mode via a tag list
-*       AHI_GetAudioAttrs -- varargs stub for AHI_GetAudioAttrsA()
-*
+    AHI_GetAudioAttrsA()
 *   SYNOPSIS
 *       success = AHI_GetAudioAttrsA( ID, [audioctrl], tags );
 *       D0                            D0  A2           A1
@@ -232,6 +230,9 @@ BOOL TestAudioID(ULONG id, struct TagItem *tags)
 *       BOOL AHI_GetAudioAttrs( IPTR, struct AHIAudioCtrl *, Tag, ... );
 *
 *   FUNCTION
+        examine an audio mode via a tag list
+        AHI_GetAudioAttrs: varargs stub for AHI_GetAudioAttrsA()
+
 *       Retrieve information about an audio mode specified by ID or audioctrl
 *       according to the tags in the tag list. For each entry in the tag
 *       list, ti_Tag identifies the attribute, and ti_Data is mostly a
@@ -297,6 +298,8 @@ BOOL TestAudioID(ULONG id, struct TagItem *tags)
 *
 *       AHIDB_Frequency (ULONG *) - Return the frequency associated with the
 *           index number specified with AHIDB_FrequencyArg (see above).
+*           Without AHIDB_FrequencyArg this is the frequency at index 0,
+*           not the current mixing frequency (see AHIC_MixFreq_Query).
 *
 *       AHIDB_IndexArg (ULONG) - AHIDB_Index will return the index which
 *           gives the closest frequency to AHIDB_IndexArg

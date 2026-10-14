@@ -7,8 +7,9 @@
 #include <errno.h>
 #include <limits.h>
 #include <exec/memory.h>
+#include <resources/processor.h>
 #include <proto/exec.h>
-#include <proto/kernel.h>
+#include <proto/processor.h>
 
 /*****************************************************************************
 
@@ -59,22 +60,23 @@
                must be the same on every query). */
             return (long)(AvailMem(MEMF_ANY | MEMF_TOTAL) / 4096);
 
-        case _SC_NPROCESSORS_CONF:
-        case _SC_NPROCESSORS_ONLN:
-        {
-            /* Every CPU kernel.resource knows about is brought up at boot
-               and stays online, so configured and online are the same.
-               Thread pools size themselves from this (Mesa's llvmpipe runs
-               single-threaded when it reads 1). */
-            APTR KernelBase = OpenResource("kernel.resource");
-
-            return KernelBase ? (long)KrnGetCPUCount() : 1;
-        }
-
         case _SC_CLK_TCK:
             /* What times() and clock() count in; CPython refuses to start
                when this query fails. */
             return CLOCKS_PER_SEC;
+
+        case _SC_NPROCESSORS_CONF:
+        case _SC_NPROCESSORS_ONLN:
+        {
+            /* CPUs are not brought on- or offline at run time, so both are
+               the count processor.resource reports. */
+            APTR ProcessorBase = OpenResource(PROCESSORNAME);
+            ULONG count = 0;
+
+            if (ProcessorBase)
+                GetCPUInfoTags(GCIT_NumberOfProcessors, (IPTR)&count, TAG_DONE);
+            return count ? (long)count : 1;
+        }
 
         default:
             errno = EINVAL;

@@ -166,94 +166,48 @@
 #define DEBUGOUT7 DEBUGOUT3
 #endif
 
-/*
- * MMIO accessors.  On x86 these are explicit mov instructions: a plain
- * volatile dereference lets the compiler satisfy a 32-bit load with an SSE
- * move (e.g. `movd (%r12),%xmm0` for LEDCTL in e1000_id_led_init_generic),
- * which is a valid access on hardware but is not decodable by the KVM MMIO
- * instruction emulator, so a KVM guest takes #UD ("Illegal instruction")
- * on the first register read.
- */
-#if defined(__i386__) || defined(__x86_64__)
-static inline UBYTE MMIO_R8(u8 __iomem *base)
-{
-    UBYTE val;
-    __asm__ __volatile__("movb %1, %0" : "=q"(val) : "m"(*(volatile UBYTE *)base) : "memory");
-    return val;
-}
-static inline UWORD MMIO_R16(u8 __iomem *base)
-{
-    UWORD val;
-    __asm__ __volatile__("movw %1, %0" : "=r"(val) : "m"(*(volatile UWORD *)base) : "memory");
-    return val;
-}
-static inline ULONG MMIO_R32(u8 __iomem *base)
-{
-    ULONG val;
-    __asm__ __volatile__("movl %1, %0" : "=r"(val) : "m"(*(volatile ULONG *)base) : "memory");
-    return val;
-}
-static inline void MMIO_W8(APTR addr, UBYTE val8)
-{
-    __asm__ __volatile__("movb %0, %1" : : "q"(val8), "m"(*(volatile UBYTE *)addr) : "memory");
-    MMIO_R8(addr);
-}
-static inline void MMIO_W16(APTR addr, UWORD val16)
-{
-    __asm__ __volatile__("movw %0, %1" : : "r"(val16), "m"(*(volatile UWORD *)addr) : "memory");
-    MMIO_R16(addr);
-}
-static inline void MMIO_W32(APTR addr, ULONG val32)
-{
-    __asm__ __volatile__("movl %0, %1" : : "r"(val32), "m"(*(volatile ULONG *)addr) : "memory");
-    MMIO_R32(addr);
-}
-#else
-static inline UBYTE MMIO_R8(u8 __iomem *base)
-{
-    return *((UBYTE volatile *)base);
-}
-static inline UWORD MMIO_R16(u8 __iomem *base)
-{
-    return *((UWORD volatile *)base);
-}
-static inline ULONG MMIO_R32(u8 __iomem *base)
-{
-    return *((ULONG volatile *)base);
-}
-
-static inline void MMIO_W8(APTR addr, UBYTE val8)
-{
-    *((volatile UBYTE *)(addr)) = (val8);
-
-    MMIO_R8(addr);
-}
-static inline void MMIO_W16(APTR addr, UWORD val16)
-{
-    *((volatile UWORD *)(addr)) = (val16);
-
-    MMIO_R16(addr);
-    
-}
-static inline void MMIO_W32(APTR addr, ULONG val32)
-{
-    *((volatile ULONG *)(addr)) = (val32);
-
-    MMIO_R32(addr);
-}
-#endif
-
+/* Register access goes through the mmio_* accessors from <asm/io.h>: on x86
+ * they are pinned to scalar moves, which a plain volatile dereference is not
+ * (see the note there). */
 static inline ULONG readl(u8 __iomem *base)
 {
-    return MMIO_R32(base);
+    return mmio_inl(base);
 }
 static inline void writel(ULONG val, u8 __iomem *base)
 {
-#if defined(__i386__) || defined(__x86_64__)
-    __asm__ __volatile__("movl %0, %1" : : "r"(val), "m"(*(volatile ULONG *)base) : "memory");
-#else
-    *((ULONG volatile *)base) = val;
-#endif
+    mmio_outl(val, base);
+}
+
+static inline UBYTE MMIO_R8(u8 __iomem *base)
+{
+    return mmio_inb(base);
+}
+static inline UWORD MMIO_R16(u8 __iomem *base)
+{
+    return mmio_inw(base);
+}
+static inline ULONG MMIO_R32(u8 __iomem *base)
+{
+    return mmio_inl(base);
+}
+
+static inline void MMIO_W8(APTR addr, UBYTE val8)
+{
+    mmio_outb(val8, addr);
+
+    MMIO_R8(addr);
+}
+static inline void MMIO_W16(APTR addr, UWORD val16)
+{
+    mmio_outw(val16, addr);
+
+    MMIO_R16(addr);
+}
+static inline void MMIO_W32(APTR addr, ULONG val32)
+{
+    mmio_outl(val32, addr);
+
+    MMIO_R32(addr);
 }
 
 #define E1000_REGISTER(a, reg) (((a)->mac.type >= e1000_82543) \

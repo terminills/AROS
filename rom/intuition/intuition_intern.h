@@ -44,6 +44,10 @@
 #ifndef GRAPHICS_RASTPORT_H
 #   include <graphics/rastport.h>
 #endif
+#ifdef __mc68000__
+#   include <graphics/view.h>
+#   include <hidd/gfx.h>
+#endif
 #ifndef GRAPHICS_REGIONS_H
 #   include <graphics/regions.h>
 #endif
@@ -1081,6 +1085,15 @@ ULONG TellWBTaskToOpenWindows(struct IntuitionBase *IntuitionBase);
 /* intuition_misc protos */
 extern void SetDisplayDefaults(struct IntuitionBase * IntuitionBase);
 extern void LoadDefaultPreferences(struct IntuitionBase * IntuitionBase);
+
+/* Architecture defaults; overridden by the target build. */
+struct ExtSprite;
+extern void InitDefaultPreferences(struct Preferences *prefs);
+extern void PreparePointerSprite(struct ExtSprite *sprite, struct BitMap *bitmap,
+    BOOL legacy, IPTR width, struct IntuitionBase *IntuitionBase);
+extern BOOL SetDisplayPointerShape(OOP_Object *display,
+    struct SharedPointer *pointer, struct BitMap *bitmap,
+    struct IntuitionBase *IntuitionBase);
 Object* CreateStdSysImage(WORD which, WORD preferred_height, struct Screen *scr,
     	    	    	  struct DrawInfo *dri, struct IntuitionBase *IntuitionBase);
 extern void CheckRectFill(struct RastPort *rp, WORD x1, WORD y1, WORD x2, WORD y2, struct IntuitionBase * IntuitionBase);
@@ -1500,5 +1513,25 @@ struct menudecor_data
 {
 	ULONG	userbuffersize;
 };
+
+/* Classic Intuition tracks the pointer in high-resolution, interlaced
+ * display coordinates. Native planar screens convert those to screen pixels;
+ * HIDD bitmaps already use the display driver's coordinate conversion. */
+#ifdef __mc68000__
+/* Out of line on m68k (misc.c): their bodies are too large to repeat at
+ * every call site in the ROM. Elsewhere the scale is always 1. */
+UWORD int_MouseScaleX(const struct Screen *screen);
+UWORD int_MouseScaleY(const struct Screen *screen);
+#else
+static inline UWORD int_MouseScaleX(const struct Screen *screen)
+{
+    return 1;
+}
+
+static inline UWORD int_MouseScaleY(const struct Screen *screen)
+{
+    return 1;
+}
+#endif
 
 #endif /* INTUITION_INTERN_H */

@@ -92,8 +92,9 @@ res_send(struct SocketBase 	*libPtr,
     fd_set *dsmask;
     int dsmasksize;
     struct timeval timeout;
-    struct in_addr *ns;
-    struct sockaddr_in host;
+    struct sockaddr_storage *ns;   /* current nameserver (AF_INET or AF_INET6) */
+    socklen_t hlen;                /* length of the sockaddr ns points at */
+    int sock_af = AF_UNSPEC;       /* family res_sock was opened for */
     HEADER *hp = (HEADER *) buf;
     HEADER *anhp = (HEADER *) answer;
     u_char terrno = ETIMEDOUT;
@@ -123,22 +124,22 @@ res_send(struct SocketBase 	*libPtr,
 #endif
                     nscount = 0;
                     DRES(Printf("Retry #%ld\n", (long)try);)
-                    for(ns = _res.nsaddr_list; ns->s_addr; ns++) {
+                    for(ns = _res.nsaddr_list; ns->ss_family; ns++) {
                         nscount++;
+                        /* ns is a fully-formed sockaddr (family + port + addr);
+                         * pick the matching length for connect(). */
+                        hlen = (ns->ss_family == AF_INET6)
+                                   ? sizeof(struct sockaddr_in6)
+                                   : sizeof(struct sockaddr_in);
 #if defined(__AROS__)
-                        D(bug("[AROSTCP](res_send.c) res_send: Querying server #%ld address = %s\n", (long)nscount,
-                              __inet_ntoa(ns->s_addr, libPtr)));
+                        D(bug("[AROSTCP](res_send.c) res_send: Querying server #%ld (family %d)\n",
+                              (long)nscount, (int)ns->ss_family));
 #endif
 
 #ifdef RES_DEBUG
-                        Printf("Querying server #%ld address = %s\n", (long)nscount,
-                               __Inet_NtoA(ns->s_addr, libPtr));
+                        Printf("Querying server #%ld (family %d)\n", (long)nscount,
+                               (int)ns->ss_family);
 #endif /* RES_DEBUG */
-                        host.sin_len = sizeof(host);
-                        host.sin_family = AF_INET;
-                        host.sin_port = htons(NAMESERVER_PORT);
-                        host.sin_addr.s_addr = ns->s_addr;
-                        aligned_bzero_const(&host.sin_zero, sizeof(host.sin_zero));
 usevc:
                         if(v_circuit) {
 #if defined(__AROS__)
@@ -151,8 +152,14 @@ usevc:
                              * at most one attempt per server.
                              */
                             try = _res.retry;
+                            /* A socket left open from a server of a different
+                             * family cannot reach this one; drop it first. */
+                            if(res_sock >= 0 && sock_af != (int)ns->ss_family) {
+                                (void) __CloseSocket(res_sock, libPtr);
+                                res_sock = -1;
+                            }
                             if(res_sock < 0) {
-                                res_sock = __socket(AF_INET, SOCK_STREAM, 0, libPtr);
+                                res_sock = __socket(ns->ss_family, SOCK_STREAM, 0, libPtr);
                                 if(res_sock < 0) {
 #if defined(__AROS__)
                                     D(bug("[AROSTCP](res_send.c) res_send: Failed to create socket!!\n"));
@@ -163,12 +170,13 @@ usevc:
 #endif /* RES_DEBUG */
                                     continue;
                                 }
+                                sock_af = ns->ss_family;
 #if defined(__AROS__)
                                 D(bug("[AROSTCP](res_send.c) res_send: created socket %d\n", res_sock));
 #endif
                                 if(__connect(res_sock,
-                                             (struct sockaddr *)&host,
-                                             sizeof(struct sockaddr), libPtr) < 0) {
+                                             (struct sockaddr *)ns,
+                                             hlen, libPtr) < 0) {
 #if defined(__AROS__)
                                     D(bug("[AROSTCP](res_send.c) res_send: Failed to connect\n"));
 #endif
@@ -297,7 +305,7 @@ usevc:
                                 res_sock = -1;
                                 connected = 0;
                             }
-                            res_sock = __socket(AF_INET, SOCK_DGRAM, 0, libPtr);
+                            res_sock = __socket(ns->ss_family, SOCK_DGRAM, 0, libPtr);
                             if(res_sock < 0) {
 #if defined(__AROS__)
                                 D(bug("[AROSTCP](res_send.c) res_send: Failed to create socket\n"));
@@ -308,6 +316,7 @@ usevc:
 #endif /* RES_DEBUG */
                                 continue;
                             }
+                            sock_af = ns->ss_family;
                             /*
                              * I'm tired of answering this question, so:
                              * On a 4.3BSD+ machine (client and server,
@@ -343,8 +352,8 @@ usevc:
                              */
                             if(connected == 0) {
                                 if(__connect(res_sock,
-                                             (struct sockaddr *)&host,
-                                             sizeof(struct sockaddr),
+                                             (struct sockaddr *)ns,
+                                             hlen,
                                              libPtr) < 0) {
 #if defined(__AROS__)
                                     D(bug("[AROSTCP](res_send.c) res_send: Error connecting\n"));
@@ -483,7 +492,7 @@ wait:
                          * close the socket.
                          */
                         if((v_circuit &&
-                                ((_res.options & RES_USEVC) == 0 || ns->s_addr != 0)) ||
+                                ((_res.options & RES_USEVC) == 0 || ns->ss_family != 0)) ||
                                 (_res.options & RES_STAYOPEN) == 0) {
 #if defined(__AROS__)
                             D(bug("[AROSTCP](res_send.c) res_send: Closing socket\n"));

@@ -363,35 +363,6 @@ setdtablesize(struct SocketBase *libPtr, UWORD size)
     return size;
 }
 
-/*
- * Make sure descriptor number fd fits in this base's table.  With
- * fd.library handing out descriptor numbers system-wide, a base whose task
- * has only just opened us can be given a number far beyond the default
- * table size (another process may hold hundreds of files), so the table
- * has to follow the numbers it is given rather than the other way round.
- * Grows in DTABLE_GROW_STEP units; fails only when the number cannot be
- * represented by the WORD-sized table at all.
- */
-#define DTABLE_GROW_STEP 64
-
-LONG
-sdGrow(struct SocketBase *libPtr, LONG fd)
-{
-    LONG want;
-
-    if (fd < 0)
-        return EBADF;
-    if ((ULONG)fd < (ULONG)libPtr->dTableSize)
-        return 0;
-
-    want = (fd / DTABLE_GROW_STEP + 1) * DTABLE_GROW_STEP;
-    if (want > 0x7fff)
-        return EMFILE;
-    if (setdtablesize(libPtr, (UWORD)want) <= fd)
-        return ENOMEM;
-    return 0;
-}
-
 #ifdef __GNUC__
 /* GNU C 4.x and higher really don't like to
  * have the l-value type-punned
@@ -753,6 +724,22 @@ AROS_LH1(ULONG, SocketBaseTagList,
 
                 CASE_LONG(SBTC_SIGEVENTMASK, sigEventMask);
 
+                CASE_LONG(SBTC_SIG_RECONFIG_MASK,       sigReconfigMask);
+
+                CASE_LONG(SBTC_SIG_ADDRESS_CHANGE_MASK, sigAddrChangeMask);
+
+            case(SBTC_RECONFIG_STATE << SBTB_CODE):  /* get */
+                *tagData = (IPTR)api_reconfig_state;
+                break;
+
+            case(SBTC_RECONFIG_GENERATION << SBTB_CODE):  /* get */
+                *tagData = (IPTR)api_reconfig_generation;
+                break;
+
+            case(SBTC_RECONFIG_ACK << SBTB_CODE) | SBTF_SET:  /* set: consumer quiesced */
+                api_reconfig_acked++;
+                break;
+
             case(SBTC_ERRNO << SBTB_CODE):  /* get */
                 *tagData = (IPTR)readErrnoValue(libPtr);
                 break;
@@ -771,8 +758,12 @@ AROS_LH1(ULONG, SocketBaseTagList,
                 *tagData = (IPTR)libPtr->dTableSize;
                 break;
             case(SBTC_DTABLESIZE << SBTB_CODE) | SBTF_SET:  /* set */
-                if((tmp = (WORD) * tagData) > 0)
+                if((tmp = (WORD) * tagData) > 0) {
+                    /* fd hooks of other tasks use the table under it */
+                    ObtainSyscallSemaphore(libPtr);
                     setdtablesize(libPtr, tmp);
+                    ReleaseSyscallSemaphore(libPtr);
+                }
                 break;
 
                 CASE_IPTR(SBTC_FDCALLBACK,   fdCallback);

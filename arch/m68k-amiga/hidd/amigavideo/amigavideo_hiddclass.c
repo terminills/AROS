@@ -902,15 +902,21 @@ VOID AmigaVideoCl__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_
     struct amigavideo_staticdata *csd = CSD(cl);
     struct Library *OOPBase = csd->cs_OOPBase;
     HIDDT_DrawMode mode = GC_DRMD(msg->gc);
-    IPTR src, dst;
+    IPTR src = 0, dst = 0;
+    struct BitMap *srcpbm = NULL;
+    struct BitMap *dstpbm = NULL;
     BOOL ok = FALSE;
  
     OOP_GetAttr(msg->src,  aHidd_BitMap_AmigaVideo_Drawable, &src);
     OOP_GetAttr(msg->dest, aHidd_BitMap_AmigaVideo_Drawable, &dst);
     if (dst) {
         struct amigabm_data *ddata = OOP_INST_DATA(OOP_OCLASS(msg->dest), msg->dest);
-        struct BitMap *srcpbm = NULL;
+        dstpbm = ddata->pbm;
+    } else {
+        OOP_GetAttr(msg->dest, aHidd_PlanarBM_BitMap, (IPTR *)&dstpbm);
+    }
 
+    if (dstpbm) {
         if (src) {
             /* Source is an AmigaVideo bitmap. */
             struct amigabm_data *sdata = OOP_INST_DATA(OOP_OCLASS(msg->src), msg->src);
@@ -926,7 +932,8 @@ VOID AmigaVideoCl__Hidd_Gfx__CopyBox(OOP_Class *cl, OOP_Object *o, struct pHidd_
         }
 
         if (srcpbm)
-            ok = blit_copybox(csd, srcpbm, ddata->pbm, msg->srcX, msg->srcY, msg->width, msg->height, msg->destX, msg->destY, mode, GC_COLMASK(msg->gc));
+            ok = blit_copybox(csd, srcpbm, dstpbm, msg->srcX, msg->srcY, msg->width, msg->height, msg->destX, msg->destY, mode, GC_COLMASK(msg->gc));
+
     }
     if (!ok)
         OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
@@ -970,6 +977,7 @@ BOOL AmigaVideoDisplay__Hidd_Display__SetCursorShape(OOP_Class *cl, OOP_Object *
     if (width > maxw || height > maxh)
         return FALSE;
 
+    csd->classic_cursor_data = NULL;
     OOP_GetAttr(o, aHidd_Display_GfxHidd, (IPTR *)&gfx);
     if (!setsprite(csd->amigagfxclass, gfx, width, height, msg))
         return FALSE;
@@ -996,6 +1004,23 @@ BOOL AmigaVideoCl__Hidd_AmigaGfx__SetSpriteShape(OOP_Class *cl, OOP_Object *o, s
     if (!new_setsprite(cl, o, width, height, msg, spritenum))
         return FALSE;
 
+    return TRUE;
+}
+
+BOOL AmigaVideoCl__Hidd_AmigaGfx__SetClassicCursorData(OOP_Class *cl, OOP_Object *o,
+    struct pHidd_AmigaGfx_SetClassicCursorData *msg)
+{
+    struct amigavideo_staticdata *csd = CSD(cl);
+
+    if (!msg->data || msg->height <= 0 || msg->height > 128 ||
+        !(TypeOfMem(msg->data) & MEMF_CHIP))
+        return FALSE;
+    csd->classic_cursor_data = msg->data;
+    csd->classic_cursor_height = msg->height;
+    csd->classic_cursor_xoffset = msg->xoffset;
+    csd->classic_cursor_yoffset = msg->yoffset;
+    csd->fmode_spr = 0;
+    setspritevisible(csd, csd->cursorvisible);
     return TRUE;
 }
 
@@ -1090,10 +1115,7 @@ static ULONG AmigaVideo_BuildViewPort(struct amigavideo_staticdata *csd,
         bmdata->bytesperrow = vp->RasInfo->BitMap->BytesPerRow;
         bmdata->diwstartx = view->DxOffset +
                             STANDARD_VIEW_X - STANDARD_XOFFSET;
-        bmdata->diwstarty = view->DyOffset + STANDARD_VIEW_Y +
-                            (((bmdata->modeid & MONITOR_ID_MASK) ==
-                              PAL_MONITOR_ID) ? MIN_PAL_ROW :
-                                                MIN_NTSC_ROW) - 1;
+        bmdata->diwstarty = view->DyOffset + STANDARD_VIEW_Y;
 
         /*
          * A classic ViewPort owns its colors in ViewPort->ColorMap.  Seed
@@ -1241,6 +1263,12 @@ ULONG AmigaVideoDisplay__Hidd_Display__MakeViewPort(OOP_Class *cl, OOP_Object *o
         struct GfxBase *GfxBase = (APTR)csd->cs_GfxBase;
         struct amigabm_data *bmdata = OOP_INST_DATA(OOP_OCLASS(vpd->Bitmap), vpd->Bitmap);
         struct CopList *oldcl = vpd->vpe->ViewPort->DspIns;
+        WORD viewportheight = bmdata->height;
+
+        /* The visible ViewPort may be shorter than its backing BitMap. */
+        if (vpd->vpe->ViewPort->DHeight > 0 &&
+            vpd->vpe->ViewPort->DHeight < viewportheight)
+            viewportheight = vpd->vpe->ViewPort->DHeight;
 
         /*
          * A same-layout classic planar ChangeVPBitMap() was already applied
@@ -1248,11 +1276,13 @@ ULONG AmigaVideoDisplay__Hidd_Display__MakeViewPort(OOP_Class *cl, OOP_Object *o
          * Rebuilding and replacing that list would separate a late palette
          * update from its bitmap handoff by one display field.
          */
-        if (bmdata->bitmap_set_in_place && oldcl && bmdata->bmcl == oldcl)
+        if (bmdata->bitmap_set_in_place && oldcl && bmdata->bmcl == oldcl &&
+            bmdata->viewportheight == viewportheight)
         {
             bmdata->bitmap_set_in_place = FALSE;
             return MVP_OK;
         }
+        bmdata->viewportheight = viewportheight;
 
         newcl = AllocMem(sizeof(struct CopList), MEMF_PUBLIC | MEMF_CLEAR);
         if (!newcl)
@@ -1370,6 +1400,7 @@ void AmigaVideo_ParseCopperlist(struct amigavideo_staticdata *csd, struct amigab
     {
         struct CopIns *copIns = usercopl->CopIns;
         UWORD *copl, *cops = NULL;
+        UWORD *copl_start;
         WORD count = 0;
         BOOL ucend=FALSE, passed = FALSE;
 
@@ -1380,24 +1411,28 @@ void AmigaVideo_ParseCopperlist(struct amigavideo_staticdata *csd, struct amigab
             usercopl = usercopl->Next;
         }
         D(bug("[AmigaVideo:Hidd] %s: %d instructions total\n", __func__, count);)
-        bmdata->bmuclsize = (count << 2);
         usercopl = copFirst;
 
 #if !USE_UCOP_DIRECT
         if (!usercopl->CopLStart)
         {
-            /* user copperlist is allocated in any memory, since it is copied into the actual copperlist.. */
-            usercopl->CopLStart = AllocVec(((count + 2) << 2), MEMF_CLEAR | MEMF_PUBLIC);
+            /*
+             * A WAIT beyond line 255 expands to the wrap marker followed by
+             * the actual WAIT.  Reserve the worst case rather than assuming
+             * one emitted instruction for every source CopIns.
+             */
+            usercopl->CopLStart = AllocVec(((count * 2 + 2) << 2), MEMF_CLEAR | MEMF_PUBLIC);
         }
 #endif
         copl = usercopl->CopLStart;
+        copl_start = copl;
         D(bug("[AmigaVideo:Hidd] %s:   CopList->CopLStart = 0x%p\n", __func__, copl);)
         if (bmdata->interlace != 0)
         {
 #if !USE_UCOP_DIRECT
             if (!usercopl->CopSStart)
             {
-                usercopl->CopSStart = AllocVec(((count + 2) << 2), MEMF_CLEAR | MEMF_PUBLIC);
+                usercopl->CopSStart = AllocVec(((count * 2 + 2) << 2), MEMF_CLEAR | MEMF_PUBLIC);
             }
 #endif
             cops = usercopl->CopSStart;
@@ -1427,7 +1462,7 @@ void AmigaVideo_ParseCopperlist(struct amigavideo_staticdata *csd, struct amigab
                                 movex = csd->startx + copIns->u3.u4.u2.HWaitPos;
 
                         /* If its the end of the user copperlist, or the displayheight of the bitmap,  bail out.. */
-                        if (!((copIns->u3.u4.u1.VWaitPos == 1000) && (copIns->u3.u4.u2.HWaitPos == 0xFF)) &&
+                        if (!((copIns->u3.u4.u1.VWaitPos == 10000) && (copIns->u3.u4.u2.HWaitPos == 0xFF)) &&
                             (copIns->u3.u4.u1.VWaitPos < (bmdata->displayheight >> bmdata->interlace)))
                         {
                             if (!passed && (movey > 256))
@@ -1458,9 +1493,8 @@ void AmigaVideo_ParseCopperlist(struct amigavideo_staticdata *csd, struct amigab
         }
         if (count > 0)
         {
-            /* adjust to reflect the actual used size .. */
+            /* Fill any deliberately unused source slots when requested. */
             D(bug("[AmigaVideo:Hidd] %s: adjusting for %d unused instructions\n", __func__, count);)
-            bmdata->bmuclsize -= (count << 2);
 #if defined(USE_COPPER_NOP_FILL)
             while (count-- > 0)
             {
@@ -1472,10 +1506,19 @@ void AmigaVideo_ParseCopperlist(struct amigavideo_staticdata *csd, struct amigab
             }
 #endif
         }
+
+        /*
+         * Record what was actually emitted.  A WAIT whose adjusted vertical
+         * position crosses line 255 needs an extra $ffdf/$fffe instruction,
+         * while the terminating CEND emits nothing.  Using the source CopIns
+         * count here can therefore place the display-list tail on top of the
+         * final user instruction (Gunship 2000 loses its INTREQ this way).
+         */
+        bmdata->bmuclsize = (IPTR)copl - (IPTR)copl_start;
 #if USE_UCOP_DIRECT
-        bmdata->copld.copper2_tail = (APTR)((IPTR)usercopl->CopLStart + bmdata->bmuclsize);
+        bmdata->copld.copper2_tail = copl;
         if (cops)
-            bmdata->copsd.copper2_tail = (APTR)((IPTR)usercopl->CopSStart + bmdata->bmuclsize);
+            bmdata->copsd.copper2_tail = cops;
 #endif
         bmdata->bmucl = usercopl;
     }

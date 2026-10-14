@@ -136,6 +136,7 @@ POSIXC := \
     getpwuid \
     getpwuid_r \
     getrlimit \
+    getrusage \
     gets \
     gettimeofday \
     getuid \
@@ -169,10 +170,11 @@ POSIXC := \
     pclose \
     perror \
     pipe \
+    pread \
+    pread64 \
     popen \
     posix_fadvise \
     posix_memalign \
-    pread \
     printf \
     pselect \
     pwrite \

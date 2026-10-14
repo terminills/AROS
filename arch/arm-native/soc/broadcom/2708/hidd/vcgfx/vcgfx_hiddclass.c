@@ -581,6 +581,10 @@ VOID MNAME_GFX(CopyBox)(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_CopyBox *
     LONG y, y_start, y_end, y_step;
     BOOL same_row_overlap;
 
+    /* Layers restore and move windows with this; see vcgfx_ovl_yield. */
+    vcgfx_ovl_yield(XSD(cl), msg->dest, msg->destX, msg->destY,
+                    msg->destX + msg->width - 1, msg->destY + msg->height - 1);
+
     if (GC_DRMD(msg->gc) != vHidd_GC_DrawMode_Copy)
     {
         OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
@@ -646,7 +650,9 @@ VOID MNAME_GFX(CopyBox)(OOP_Class *cl, OOP_Object *o, struct pHidd_Gfx_CopyBox *
      * horizontal overlap can't be done in 2D stride mode (rows always go
      * forward), so it stays on the NEON reverse copy.
      */
-    if (!same_row_overlap
+    /* No channel (BCM2712) means no attempt: the aliasing bail-out below
+     * is only right after the engine has actually run. */
+    if (!same_row_overlap && (XSD(cl)->vcsd_DMAChannel >= 0)
         && (row_bytes * msg->height) >= VC4_DMA_COPY_THRESHOLD
         && vc4_bm_dma_base(cl, msg->src) == (ULONG)src_buf
         && vc4_bm_dma_base(cl, msg->dest) == (ULONG)dst_buf

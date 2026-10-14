@@ -157,7 +157,7 @@ static BOOL listOwner = FALSE;
 static void formatOwner(UWORD uid, UWORD gid, STRPTR buf, ULONG size)
 {
     /* cache of the last resolved names; ~0 never matches a UWORD id */
-    static ULONG lastuid = ~0UL, lastgid = ~0UL;
+    static ULONG lastuid = ~0U, lastgid = ~0U;
     static char lastuser[secUSERIDSIZE], lastgroup[secGROUPIDSIZE];
     ULONG l;
 
@@ -1017,7 +1017,6 @@ int listFile(CONST_STRPTR filename, BOOL showFiles, BOOL showDirs,
 
         MatchEnd(ap);
 
-        FreeVec(ap);
         
         if (error == ERROR_BREAK)
         {
@@ -1034,6 +1033,7 @@ int listFile(CONST_STRPTR filename, BOOL showFiles, BOOL showDirs,
             BOOL printEmpty = !(ap->ap_Flags & APF_ITSWILD);
             printSummary(filename, files, dirs, nBlocks, noHead, printEmpty);
         }
+        FreeVec(ap);
 
         /* Update global statistics for (possible) ALL option */
         stats->nFiles += files;

@@ -24,7 +24,7 @@ void ReplyPacket(struct DosPacket *pkt, struct ExecBase *sysbase);
 
 /* direntry.c */
 void InitDir(struct FSSuper *sb, ULONG cluster, struct DirEntry *de);
-LONG InitDirHandle(struct FSSuper *sb, ULONG cluster, struct DirHandle *dh,
+void InitDirHandle(struct FSSuper *sb, ULONG cluster, struct DirHandle *dh,
     BOOL reuse, struct Globals *glob);
 LONG ReleaseDirHandle(struct DirHandle *dh, struct Globals *glob);
 LONG GetDirEntry(struct DirHandle *dh, ULONG index, struct DirEntry *de,
@@ -54,6 +54,8 @@ LONG FillFIB(struct ExtFileLock *fl, struct FileInfoBlock *fib,
 LONG GetDirEntryShortName(struct DirEntry *de, STRPTR name, ULONG *len,
     struct Globals *glob);
 LONG GetDirEntryLongName(struct DirEntry *de, STRPTR name, ULONG *len);
+LONG GetDirEntryLongNameFrom(struct DirHandle *dh, struct DirEntry *de,
+    STRPTR name, ULONG *len);
 LONG SetDirEntryName(struct DirEntry *de, STRPTR name, ULONG len);
 ULONG NumLongNameEntries(STRPTR name, ULONG len);
 
@@ -66,8 +68,8 @@ BOOL SetFat16Entry(struct FSSuper *sb, ULONG n, ULONG val);
 BOOL SetFat32Entry(struct FSSuper *sb, ULONG n, ULONG val);
 LONG FindFreeCluster(struct FSSuper *sb, ULONG *rcluster);
 void CountFreeClusters(struct FSSuper *sb);
-void AllocCluster(struct FSSuper *sb, ULONG cluster);
-void FreeCluster(struct FSSuper *sb, ULONG cluster);
+BOOL AllocCluster(struct FSSuper *sb, ULONG cluster);
+BOOL FreeCluster(struct FSSuper *sb, ULONG cluster);
 
 /* volume.c */
 LONG ReadFATSuper(struct FSSuper *s);

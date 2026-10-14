@@ -11,6 +11,16 @@
 /* Only +0x0000-0x07ff and +0x4000-0x8dff read back without an abort */
 #define HVS6_BASE           (ARM_PERIIOBASE + 0x580000)
 
+static inline ULONG hvs6_rd(ULONG offset)
+{
+    return *(volatile ULONG *)(HVS6_BASE + offset);
+}
+
+static inline void hvs6_wr(ULONG offset, ULONG value)
+{
+    *(volatile ULONG *)(HVS6_BASE + offset) = value;
+}
+
 #define HVS6_ID             0x00fc
 #define HVS6_ID_MAGIC       0x64647276
 #define HVS6_VERSION        0x0000      /* bits 7:0: 0x53 = C0, 0x54 = D0 */
@@ -56,7 +66,9 @@
 #define HVS6_CTL0_EMPTY     ((ULONG)HVS6_SLOT_WORDS << 24)
 #define HVS6_CTL0_ALPHAMASK (3UL << 18)     /* 0 = per-pixel, 3 = fixed   */
 #define HVS6_CTL0_UNITY     (1UL << 15)     /* source size == dest size   */
-#define HVS6_CTL0_RGBA      (3UL << 13)     /* clear = ARGB byte order    */
+#define HVS6_CTL0_ORDER     (3UL << 13)     /* channel order, by memory:  */
+#define HVS6_ORDER_RGBA     (3UL << 13)     /* R,G,B,A - the framebuffer  */
+#define HVS6_ORDER_BGRA     (2UL << 13)     /* B,G,R,A - gallium, as HVS5 */
 #define HVS6_CTL0_FMT_MASK  0xf
 #define HVS6_CTL0_FMT_8888  7
 
@@ -85,7 +97,8 @@
 #define HVS6_UPM_LINES      2
 #define HVS6_UPM_FALLBACK   0x40000         /* arena if UBM_SIZE is odd   */
 
-/* Sized for the widest mode, so a mode change never re-carves */
+/* One slice each for the overlay, the cursor and our own framebuffer,
+ * sized for the widest mode, so a mode change never re-carves */
 #define HVS6_UPM_MAX_PITCH  (4096 * 4)
 #define HVS6_UPM_SLICE      ((((HVS6_UPM_MAX_PITCH + 62) / 32) * 32 *     \
                               HVS6_UPM_LINES + HVS6_UPM_GRAN - 1) &       \
@@ -99,15 +112,29 @@ struct VideoCoreGfx_staticdata;
 void vc4_hvs6_report(struct VideoCoreGfx_staticdata *xsd, ULONG fb_phys,
                      ULONG fb_pitch, ULONG fb_width, ULONG fb_height);
 BOOL vc4_hvs6_takeover(struct VideoCoreGfx_staticdata *xsd, ULONG fb_phys,
-                       ULONG fb_pitch, ULONG fb_width, ULONG fb_height);
+                       ULONG fb_pitch, ULONG fb_width, ULONG fb_height,
+                       const struct vcgfx_timing *want);
 BOOL vc4_hvs6_add_backpage(struct VideoCoreGfx_staticdata *xsd,
                            ULONG fb_pitch, ULONG fb_height);
+APTR vc4_hvs6_alloc_fb(struct VideoCoreGfx_staticdata *xsd, ULONG pitch, ULONG height);
 BOOL vc4_hvs6_flip_page(struct VideoCoreGfx_staticdata *xsd, ULONG page_phys);
 void vc4_hvs6_latch_wait(struct VideoCoreGfx_staticdata *xsd);
+void vc4_hvs6_irq_init(struct VideoCoreGfx_staticdata *xsd);
 BOOL vc4_hvs6_overlay(struct VideoCoreGfx_staticdata *xsd,
                       struct vc4gfx_overlay *ovl);
 BOOL vc4_hvs6_init_cursor(struct VideoCoreGfx_staticdata *xsd);
 void vc4_hvs6_cursor(struct VideoCoreGfx_staticdata *xsd);
-void vc4_hvs6_release(struct VideoCoreGfx_staticdata *xsd);
+
+/* vcgfx_hvs6_mode.c */
+void vc4_hvs6_mode_capture(struct VideoCoreGfx_staticdata *xsd);
+const struct vcgfx_timing *vc4_hvs6_mode(struct VideoCoreGfx_staticdata *xsd, ULONG i);
+BOOL vc4_hvs6_mode_usable(struct VideoCoreGfx_staticdata *xsd,
+                          const struct vcgfx_timing *t);
+BOOL vc4_hvs6_mode_ok(struct VideoCoreGfx_staticdata *xsd, ULONG ch, ULONG w, ULONG h,
+                      const struct vcgfx_timing *want);
+BOOL vc4_hvs6_mode_current(struct VideoCoreGfx_staticdata *xsd, const struct vcgfx_timing *want);
+void vc4_hvs6_mode_stop(struct VideoCoreGfx_staticdata *xsd, ULONG ch);
+BOOL vc4_hvs6_mode_start(struct VideoCoreGfx_staticdata *xsd, ULONG ch,
+                         ULONG w, ULONG h, const struct vcgfx_timing *want, ULONG list);
 
 #endif /* _VIDEOCOREGFX_HVS6_H */

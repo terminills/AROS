@@ -24,14 +24,30 @@ static void writesets(FILE *, struct config *);
 
 static inline const char *upname(const char *s)
 {
-    static char name[512];
-    int i = 0;
+    static char *name;
+    static size_t size;
+    /* upname() is called only with NUL-terminated string-list entries. */
+    size_t len = s ? strlen(s) : 0; /* Flawfinder: ignore */
+    size_t i;
+    char *newname;
 
-    while (s && i < (sizeof(name)-1))
-        name[i++] = toupper(*(s++));
-    name[i] = 0;
+    if (len + 1 > size)
+    {
+        newname = realloc(name, len + 1);
+        if (newname == NULL)
+        {
+            fprintf(stderr, "Out of memory\n");
+            exit(20);
+        }
+        name = newname;
+        size = len + 1;
+    }
 
-    return &name[0];
+    for (i = 0; i < len; i++)
+        name[i] = toupper(s[i]);
+    name[len] = 0;
+
+    return name;
 }
 
 
@@ -826,6 +842,100 @@ static void writeresident(FILE *out, struct config *cfg)
     );
 }
 
+/* Register multiple filesystem variants from one readonly table. No handler
+ * state is stored here: allocation and publication still happen per entry. */
+static void writefsentries(FILE *out, struct config *cfg)
+{
+    struct handlerinfo *hl, *first = cfg->handlerlist;
+    int index, count = 0;
+    int stackvar = 0, priorityvar = 0, startupvar = 0;
+
+    for (hl = first; hl; hl = hl->next) {
+        stackvar |= hl->stacksize != first->stacksize;
+        priorityvar |= hl->priority != first->priority;
+        startupvar |= hl->startup != first->startup;
+        count++;
+    }
+    for (hl = first, index = 0; hl; hl = hl->next, index++) {
+        if (hl->name)
+            fprintf(out, "static BSTR GM_UNIQUENAME(HandlerName%d)(void)\n"
+                         "{\n    return AROS_CONST_BSTR(\"%s\");\n}\n\n",
+                    index, hl->name);
+    }
+    fprintf(out, "static const struct GM_UNIQUENAME(HandlerInfo) {\n"
+                 "    ULONG dos_type;\n"
+                 "    BSTR (*name)(void);\n"
+                 "    BYTE autodetect;\n");
+    if (stackvar) fprintf(out, "    ULONG stacksize;\n");
+    if (priorityvar) fprintf(out, "    LONG priority;\n");
+    if (startupvar) fprintf(out, "    LONG startup;\n");
+    fprintf(out, "} GM_UNIQUENAME(HandlerInfo)[%d] = {\n", count);
+    for (hl = first, index = 0; hl; hl = hl->next, index++) {
+        fprintf(out, "    { 0x%08x, ", hl->id);
+        if (hl->name) fprintf(out, "GM_UNIQUENAME(HandlerName%d)", index);
+        else fprintf(out, "NULL");
+        fprintf(out, ", %d", hl->autodetect);
+        if (stackvar) fprintf(out, ", %u", hl->stacksize);
+        if (priorityvar) fprintf(out, ", %d", hl->priority);
+        if (startupvar) fprintf(out, ", %d", hl->startup);
+        fprintf(out, " },\n");
+    }
+    fprintf(out, "};\n\n"
+                 "static inline BOOL GM_UNIQUENAME(InitHandler)(struct ExecBase *SysBase)\n"
+                 "{\n"
+                 "    struct FileSysResource *fsr;\n"
+                 "    BPTR seg;\n"
+                 "    unsigned int i;\n"
+                 "    fsr = (struct FileSysResource *)OpenResource(\"FileSystem.resource\");\n"
+                 "    if (!fsr) return FALSE;\n"
+                 "    seg = CreateSegList(GM_UNIQUENAME(Handler));\n"
+                 "    if (seg != BNULL) {\n"
+                 "        for (i = 0; i < %d; i++) {\n"
+                 "            const struct GM_UNIQUENAME(HandlerInfo) *info = &GM_UNIQUENAME(HandlerInfo)[i];\n"
+                 "            BSTR name = info->name ? info->name() : BNULL;\n"
+                 "            struct FileSysEntry *fse = AllocMem(sizeof(*fse), MEMF_CLEAR);\n"
+                 "            if (fse) {\n"
+                 "                fse->fse_Node.ln_Name = VERSION_STRING;\n"
+                 "                fse->fse_Node.ln_Pri = info->autodetect;\n"
+                 "                fse->fse_DosType = info->dos_type;\n"
+                 "                fse->fse_Version = (MAJOR_VERSION << 16) | MINOR_VERSION;\n"
+                 "                fse->fse_PatchFlags = FSEF_SEGLIST | FSEF_GLOBALVEC | FSEF_PRIORITY;\n", count);
+    if (stackvar)
+        fprintf(out, "                if (info->stacksize) {\n"
+                     "                    fse->fse_PatchFlags |= FSEF_STACKSIZE;\n"
+                     "                    fse->fse_StackSize = info->stacksize;\n"
+                     "                }\n");
+    else if (first->stacksize)
+        fprintf(out, "                fse->fse_PatchFlags |= FSEF_STACKSIZE;\n"
+                     "                fse->fse_StackSize = %u;\n", first->stacksize);
+    fprintf(out, "                if (name != BNULL) {\n"
+                 "                    fse->fse_PatchFlags |= FSEF_HANDLER;\n"
+                 "                    fse->fse_Handler = name;\n"
+                 "                }\n");
+    if (priorityvar) fprintf(out, "                fse->fse_Priority = info->priority;\n");
+    else fprintf(out, "                fse->fse_Priority = %d;\n", first->priority);
+    if (startupvar) fprintf(out, "                fse->fse_Startup = (BPTR)info->startup;\n");
+    else fprintf(out, "                fse->fse_Startup = (BPTR)%d;\n", first->startup);
+    fprintf(out, "                fse->fse_SegList = seg;\n"
+                 "                fse->fse_GlobalVec = (BPTR)(SIPTR)-1;\n"
+                 "                Forbid();\n"
+                 "                Enqueue(&fsr->fsr_FileSysEntries, (struct Node *)fse);\n"
+                 "                Permit();\n"
+                 "            }\n"
+                 "            /* Named segments remain published even if the entry allocation fails. */\n"
+                 "            if (name != BNULL) {\n"
+                 "                struct DosLibrary *DOSBase = (struct DosLibrary *)OpenLibrary(\"dos.library\", 0);\n"
+                 "                if (DOSBase) {\n"
+                 "                    AddSegment(AROS_BSTR_ADDR(name), seg, CMD_SYSTEM);\n"
+                 "                    CloseLibrary((struct Library *)DOSBase);\n"
+                 "                }\n"
+                 "            }\n"
+                 "        }\n"
+                 "    }\n"
+                 "    return TRUE;\n"
+                 "}\n\n");
+}
+
 static void writehandler(FILE *out, struct config *cfg)
 {
     int i, handlers=0;
@@ -876,6 +986,11 @@ static void writehandler(FILE *out, struct config *cfg)
            , cfg->handlerfunc
            , cfg->handlerfunc
     );
+
+    if (need_fse && !need_dos) {
+        writefsentries(out, cfg);
+        return;
+    }
 
     fprintf(out,
             "\n"

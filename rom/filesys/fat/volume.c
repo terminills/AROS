@@ -76,7 +76,7 @@ LONG ReadFATSuper(struct FSSuper *sb)
     struct Globals *glob = sb->glob;
     struct DosEnvec *de = BADDR(glob->fssm->fssm_Environ);
     LONG err = 0, td_err;
-    ULONG bsize = de->de_SizeBlock * 4, id;
+    ULONG bsize = de->de_SizeBlock * 4, id, ranges;
     struct FATBootSector *boot;
     struct FATBPBInfo bpb;
     struct FATEBPB *ebpb;
@@ -126,6 +126,13 @@ LONG ReadFATSuper(struct FSSuper *sb)
         (UQUAD)sb->total_sectors * bsize, &bpb))
     {
         D(bug("\tInvalid FAT Boot Sector\n"));
+        FreeMem(boot, bsize);
+        return ERROR_NOT_A_DOS_DISK;
+    }
+
+    /* Device and FAT sector numbers must use the same unit here. */
+    if (bpb.sector_size != bsize)
+    {
         FreeMem(boot, bsize);
         return ERROR_NOT_A_DOS_DISK;
     }
@@ -186,8 +193,13 @@ LONG ReadFATSuper(struct FSSuper *sb)
         return ERROR_UNKNOWN;
     }
 
-    sb->cache = Cache_CreateCache(glob, 64, 64, sb->sectorsize, SysBase,
-        DOSBase);
+    /* Scaled with the volume: a big directory written file by file spreads
+     * over many ranges, and a lookup misses on every one of them once they
+     * do not all fit (LRU against a sequential scan) */
+    ranges = Cache_RangeCount((UQUAD)sb->total_sectors * bsize,
+        sb->sectorsize);
+    sb->cache = Cache_CreateCache(glob, ranges, ranges, sb->sectorsize,
+        SysBase, DOSBase);
     if (sb->cache == NULL)
     {
         err = IoErr();
@@ -657,7 +669,7 @@ LONG FormatFATVolume(const UBYTE *name, UWORD len, struct Globals *glob)
     /* Generate a pseudo-random serial number. Not the original algorithm,
      * but it shouldn't matter */
     ReadEClock(&eclock);
-    ebpb->bs_volid = FastRand(eclock.ev_lo ^ eclock.ev_hi);
+    ebpb->bs_volid = AROS_LONG2LE(FastRand(eclock.ev_lo ^ eclock.ev_hi));
 
     /* Copy volume name in */
     for (i = 0; i < FAT_MAX_SHORT_NAME; i++)
@@ -785,7 +797,7 @@ LONG SetVolumeName(struct FSSuper *sb, UBYTE *name, UWORD len)
     }
 
     /* Create a new volume ID entry if there wasn't one */
-    if (err != 0)
+    if (err == ERROR_OBJECT_NOT_FOUND)
     {
         err = AllocDirEntry(&dh, 0, &de, glob);
         if (err == 0)
@@ -804,9 +816,12 @@ LONG SetVolumeName(struct FSSuper *sb, UBYTE *name, UWORD len)
         if ((err = UpdateDirEntry(&de, glob)) != 0)
         {
             D(bug("[fat] couldn't change volume name\n"));
-            return err;
+            goto rename_cleanup;
         }
     }
+
+    if (err != 0)
+        goto rename_cleanup;
 
     /* Copy name to boot block as well, and save */
     if (sb->type == 32)
@@ -816,20 +831,25 @@ LONG SetVolumeName(struct FSSuper *sb, UBYTE *name, UWORD len)
         CopyMem(de.e.entry.name, boot->ebpbs.ebpb.bs_vollab,
             FAT_MAX_SHORT_NAME);
 
-    if ((td_err = AccessDisk(TRUE, sb->first_device_sector, 1, bsize,
-        (UBYTE *) boot, glob)) != 0)
-        D(bug("[fat] couldn't write boot block (%ld)\n", td_err));
-    FreeMem(boot, bsize);
-
-    /* Update name in SB */
+    /* The root entry has already changed, even if the boot write fails. */
     sb->volume.name[0] = len;
-    sb->volume.name[1] = toupper(name[0]);
+    if (len != 0)
+        sb->volume.name[1] = toupper(name[0]);
     for (i = 1; i < len; i++)
         sb->volume.name[i + 1] = tolower(name[i]);
     sb->volume.name[len + 1] = '\0';
 
+    if ((td_err = AccessDisk(TRUE, sb->first_device_sector, 1, bsize,
+        (UBYTE *) boot, glob)) != 0)
+    {
+        err = ERROR_UNKNOWN;
+        goto rename_cleanup;
+    }
+
     D(bug("[fat] new volume name is '%s'\n", &(sb->volume.name[1])));
 
+rename_cleanup:
+    FreeMem(boot, bsize);
     ReleaseDirHandle(&dh, glob);
     return err;
 }
@@ -1064,11 +1084,24 @@ void DoDiskInsert(struct Globals *glob)
                             sb->doslist = newvol;
                         }
                     }
-                    if (vol_info == NULL || newvol == NULL)
+                    if (vol_info == NULL || newvol == NULL || sb->doslist == NULL)
+                    {
                         DeletePool(pool);
+                        vol_info = NULL;
+                        newvol = NULL;
+                        sb->doslist = NULL;
+                    }
                 }
             }
 
+            if (vol_info == NULL || sb->doslist == NULL)
+            {
+                glob->sb = NULL;
+                FreeFATSuper(sb);
+                FreeVecPooled(glob->mempool, sb);
+                SendEvent(IECLASS_DISKINSERTED, glob);
+                return;
+            }
             sb->info = vol_info;
             glob->last_num = -1;
 
@@ -1082,6 +1115,8 @@ void DoDiskInsert(struct Globals *glob)
             return;
         }
 
+        if (glob->sb == sb)
+            glob->sb = NULL;
         FreeVecPooled(glob->mempool, sb);
     }
 

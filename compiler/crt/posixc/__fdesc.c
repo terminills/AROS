@@ -344,12 +344,22 @@ int __getfdslot(int wanted_fd)
     struct PosixCIntBase *PosixCBase =
         (struct PosixCIntBase *)__aros_getbase_PosixCBase();
     LONG error;
+    BOOL picked = FALSE;
 
     /* Hold the table guard across the grow/close below: the realloc+free
        must not run while another Task is indexing the array. close() and
        the FreePooled path re-enter under the same Task, which the
        recursive SignalSemaphore permits. */
     FD_LOCK(PosixCBase);
+
+    if (wanted_fd == __FD_FIRSTFREE) {
+        wanted_fd = __getfirstfd(0);
+        if (wanted_fd < 0) {
+            FD_UNLOCK(PosixCBase);
+            return -1;
+        }
+        picked = TRUE;
+    }
 
     if (wanted_fd>=FD_SLOTS(PosixCBase))
     {
@@ -362,7 +372,12 @@ int __getfdslot(int wanted_fd)
            before stdc.library's relbase is available. */
         tmp = AllocPooled(FD_POOL(PosixCBase), (wanted_fd+1)*sizeof(fdesc *));
 
-        if (!tmp) { FD_UNLOCK(PosixCBase); return -1; }
+        if (!tmp) {
+            if (picked)
+                __freefdslot(wanted_fd);
+            FD_UNLOCK(PosixCBase);
+            return -1;
+        }
 
         if (FD_ARRAY(PosixCBase))
         {
@@ -393,7 +408,8 @@ int __getfdslot(int wanted_fd)
         close(wanted_fd);
     }
 
-    FD_UNLOCK(PosixCBase);
+    /* Still under the lock: until the number is reserved, __getfirstfd() in
+       another Task would pick it too. */
 
     /* Standard streams (0..2) stay process-local; do not reserve their
        numbers in the system-wide fd.library table (see __setfdesc()). */
@@ -420,11 +436,13 @@ int __getfdslot(int wanted_fd)
             error = FD_Reserve(wanted_fd, FD_OWNER_POSIXC, NULL);
         }
         if (error) {
+            FD_UNLOCK(PosixCBase);
             __set_errno(PosixCBase, error);
             return -1;
         }
     }
 
+    FD_UNLOCK(PosixCBase);
     return wanted_fd;
 }
 
@@ -480,9 +498,10 @@ int __open(int wanted_fd, const char *pathname, int flags, int mode)
     struct FileInfoBlock *fib = NULL;
     LONG  openmode = __oflags2amode(flags);
 
-    /* wanted_fd comes reserved from __getfirstfd(), which set errno if it
-       failed; from here on every failure must give it back, see err: */
-    if (wanted_fd < 0)
+    /* A wanted_fd from __getfirstfd() comes reserved, and that call set
+       errno if it failed; from here on every failure must give it back,
+       see err: */
+    if (wanted_fd < 0 && wanted_fd != __FD_FIRSTFREE)
         return -1;
 
     if (PosixCBase->doupath && pathname[0] == '\0')
@@ -523,7 +542,8 @@ int __open(int wanted_fd, const char *pathname, int flags, int mode)
     currdesc->fdflags = 0;
     currdesc->fcb = cblock;
 
-    if (__getfdslot(wanted_fd) == -1) { D(bug("__open: no free fd\n")); goto err; }
+    wanted_fd = __getfdslot(wanted_fd);
+    if (wanted_fd == -1) { D(bug("__open: no free fd\n")); goto err; }
     reserved_fd = 1;
 
     /*

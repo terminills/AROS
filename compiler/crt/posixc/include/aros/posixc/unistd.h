@@ -343,7 +343,15 @@ enum {
 /*
     Make the sysconf() name constants visible to the preprocessor
     (glibc-compatible): software commonly tests them with #ifdef.
+
+    Guarded exactly like the sysconf() prototype below. Advertising the
+    names where the function is not declared makes callers select a
+    sysconf() path that then fails to compile: ffmpeg's av_cpu_count()
+    tests "defined(_SC_NPROCESSORS_ONLN)" and builds with -std=c17.
 */
+#if defined(__cplusplus) || !defined(__STRICT_ANSI__) \
+    || defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
+    || defined(_XOPEN_SOURCE) || defined(_BSD_SOURCE) || defined(_GNU_SOURCE)
 #define _SC_2_C_BIND _SC_2_C_BIND
 #define _SC_2_C_DEV _SC_2_C_DEV
 #define _SC_2_CHAR_TERM _SC_2_CHAR_TERM
@@ -472,6 +480,7 @@ enum {
 #define _SC_PHYS_PAGES _SC_PHYS_PAGES
 #define _SC_NPROCESSORS_CONF _SC_NPROCESSORS_CONF
 #define _SC_NPROCESSORS_ONLN _SC_NPROCESSORS_ONLN
+#endif
 
 #define STDIN_FILENO    0
 #define STDOUT_FILENO   1
@@ -516,6 +525,9 @@ __off64_t lseek64(int filedes, __off64_t offset, int whence);
 # endif
 int pipe(int filedes[2]);
 ssize_t pread(int d, void *buf, size_t nbytes, off_t offset);
+# if defined(__off64_t_defined)
+ssize_t pread64(int d, void *buf, size_t nbytes, __off64_t offset);
+# endif
 ssize_t pwrite(int d, const void *buf, size_t nbytes, off_t offset);
 POSIXCFUNC(ssize_t, read, (int d, void *buf, size_t nbytes));
 int rmdir(const char *path);
@@ -526,7 +538,9 @@ int unlink(const char *path);
 POSIXCFUNC(ssize_t, write, (int fd, const void *buf, size_t nbytes));
 
 /* POSIX.1-2001 and later */
-#if defined(__cplusplus) || !defined(__STRICT_ANSI__)
+#if defined(__cplusplus) || !defined(__STRICT_ANSI__) \
+    || defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
+    || defined(_XOPEN_SOURCE) || defined(_BSD_SOURCE) || defined(_GNU_SOURCE)
 int execvp(const char *path, char *const argv[]);
 int execlp(const char *path, const char *arg, ...);
 char *getcwd(char *buf, size_t size);
@@ -539,8 +553,10 @@ extern int optind, opterr, optopt;
 #endif
 
 /* POSIX.1-2008 and XSI (or available as extensions) */
-#if defined(__cplusplus) || (!defined(__STRICT_ANSI__) && \
-    (!defined(_POSIX_SOURCE) || defined(_XOPEN_SOURCE)))
+#if defined(__cplusplus) || ((!defined(__STRICT_ANSI__) \
+    || defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
+    || defined(_XOPEN_SOURCE) || defined(_BSD_SOURCE) || defined(_GNU_SOURCE)) \
+    && (!defined(_POSIX_SOURCE) || defined(_XOPEN_SOURCE)))
 int ftruncate(int fd, off_t length);
 # if defined(__off64_t_defined)
 int ftruncate64(int fd, __off64_t length);
@@ -560,8 +576,8 @@ pid_t tcgetpgrp(int fd);
 #endif
 
 /* GNU or BSD extensions */
-#if defined(__cplusplus) || (!defined(__STRICT_ANSI__) && \
-    (defined(_BSD_SOURCE) || defined(_GNU_SOURCE) || defined(_XOPEN_SOURCE)))
+#if defined(__cplusplus) \
+    || defined(_BSD_SOURCE) || defined(_GNU_SOURCE) || defined(_XOPEN_SOURCE)
 #include <aros/types/useconds_t.h>
 char *getpass(const char *prompt);
 pid_t getpgid(pid_t);
@@ -577,7 +593,9 @@ int unlinkat(int dirfd, const char *pathname, int flags);
 #endif
 
 /* POSIX.1-2024 / BSD entropy interface (also declared in <sys/random.h>). */
-#if defined(__cplusplus) || !defined(__STRICT_ANSI__)
+#if defined(__cplusplus) || !defined(__STRICT_ANSI__) \
+    || defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
+    || defined(_XOPEN_SOURCE) || defined(_BSD_SOURCE) || defined(_GNU_SOURCE)
 int getentropy(void *buffer, size_t length);
 #endif
 

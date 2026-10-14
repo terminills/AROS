@@ -89,7 +89,7 @@
                 close(newfd);
             else
                 __freefdslot(newfd);
-            if (hooks->fdh_dup(data, newfd, &err) < 0)
+            if (hooks->fdh_dup(data, oldfd, newfd, &err) < 0)
             {
                 errno = err;
                 return -1;

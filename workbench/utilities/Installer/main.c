@@ -141,9 +141,9 @@ int main(int argc, char *argv[])
         }
         preferences.noregistry = (int)args[ARG_NOREGISTRY];
         preferences.nopretend = (int)args[ARG_NOPRETEND];
-        /* PRETEND/S: dry run without asking - the pretend page is skipped
+        /* DRYRUN/S: dry run without asking - the pretend page is skipped
          * and nothing is written (a package manager's preview, test harnesses) */
-        if (args[ARG_PRETEND])
+        if (args[ARG_DRYRUN])
         {
             preferences.pretend = TRUE;
             preferences.nopretend = TRUE;
