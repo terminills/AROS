@@ -4,7 +4,7 @@
  *
  * ----------------------------------------------------------------------
  * This code is (C) Copyright 1993,1994 by Frank Munkert.
- *              (C) Copyright 2002-2012 The AROS Development Team
+ *              (C) Copyright 2002-2026 The AROS Development Team
  * All rights reserved.
  * This software may be freely distributed and redistributed for
  * non-commercial purposes, provided this notice is included.
@@ -96,9 +96,12 @@ AROS_INTH1(CDChangeHandler, struct CDVDBase *, global)
     AROS_INTFUNC_EXIT
 }
 
-static AROS_INTH1(CDCacheLowMemHandler, CDROM *, cd)
+static AROS_UFH3(LONG, CDCacheLowMemHandler,
+    AROS_UFHA(struct MemHandlerData *, mhd, A0),
+    AROS_UFHA(CDROM *, cd, A1),
+    AROS_UFHA(struct ExecBase *, SysBase, A6))
 {
-    AROS_INTFUNC_INIT
+    AROS_USERFUNC_INIT
 
     if (!cd->cache_io_busy &&
         cd->global->DosProc->pr_Task.tc_State == TS_WAIT)
@@ -146,7 +149,7 @@ static AROS_INTH1(CDCacheLowMemHandler, CDROM *, cd)
 
     return MEM_DID_NOTHING;
 
-    AROS_INTFUNC_EXIT
+    AROS_USERFUNC_EXIT
 }
 
 /*
