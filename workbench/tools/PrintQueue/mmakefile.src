@@ -1,0 +1,16 @@
+# Makefile to make the PrintQueue tool.
+
+include $(SRCDIR)/config/aros.cfg
+
+FILES := main
+
+EXEDIR := $(AROS_TOOLS)
+
+#MM- workbench-tools : workbench-tools-printqueue
+#MM  workbench-tools-printqueue : includes linklibs
+
+%build_prog mmake=workbench-tools-printqueue \
+    progname=PrintQueue targetdir=$(EXEDIR) \
+    files=$(FILES)
+
+%common
