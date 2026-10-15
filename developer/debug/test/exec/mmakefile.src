@@ -25,6 +25,7 @@ EXECPUBLICFILES :=		\
     portsend		\
     portreceive		\
     makelib		\
+    memhandler		\
     pool		\
     rawdofmt		\
     semaphoretest	\
