@@ -28,6 +28,7 @@ const char version[] = "$VER: PrintQueue 1.0 (15.10.2026)";
 struct Job
 {
     TEXT name[64];      /* without the suffix */
+    TEXT title[200];    /* "Application: Document" from <job>.info, else the name */
     TEXT unit[8];
     TEXT size[16];
     TEXT state[128];
@@ -70,7 +71,7 @@ AROS_UFH3(void, display_func, AROS_UFHA(struct Hook *, hook, A0),
     }
     else
     {
-        columns[0] = job->name;
+        columns[0] = job->title;
         columns[1] = job->unit;
         columns[2] = job->size;
         columns[3] = job->state;
@@ -100,6 +101,35 @@ static void spooler_state(STRPTR line, LONG size, STRPTR active, LONG asize)
         CopyMem(line, active, colon - line);
         active[colon - line] = '\0';
     }
+}
+
+/* "Application: Document" from the job's .info file, or its name. */
+static void job_title(struct Job *job)
+{
+    TEXT path[300], line[160], app[64] = "", doc[128] = "";
+    BPTR file;
+
+    strcpy(path, spool_dir);
+    AddPart(path, job->name, sizeof(path));
+    strcat(path, ".info");
+    if ((file = Open(path, MODE_OLDFILE)) != BNULL)
+    {
+        while (FGets(file, line, sizeof(line)) != NULL)
+        {
+            line[strcspn(line, "\n")] = '\0';
+            if (strncmp(line, "Application=", 12) == 0)
+                snprintf(app, sizeof(app), "%s", line + 12);
+            else if (strncmp(line, "Document=", 9) == 0)
+                snprintf(doc, sizeof(doc), "%s", line + 9);
+        }
+        Close(file);
+    }
+    if (app[0] != '\0' && doc[0] != '\0')
+        snprintf(job->title, sizeof(job->title), "%s: %s", app, doc);
+    else if (app[0] != '\0' || doc[0] != '\0')
+        snprintf(job->title, sizeof(job->title), "%s", app[0] != '\0' ? app : doc);
+    else
+        snprintf(job->title, sizeof(job->title), "%s", job->name);
 }
 
 static void refresh(void)
@@ -138,6 +168,7 @@ static void refresh(void)
                 continue;
             CopyMem(fib->fib_FileName, job.name, len - 4);
             job.name[len - 4] = '\0';
+            job_title(&job);
             u = strstr(job.name, "-u");
             snprintf(job.unit, sizeof(job.unit), "%s", u != NULL ? (const char *)u + 2 : "?");
             snprintf(job.size, sizeof(job.size), "%ld KB", (long)((fib->fib_Size + 1023) / 1024));
