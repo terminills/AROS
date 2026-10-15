@@ -27,6 +27,16 @@ static void HandleModuleSegments(module_t *mod, struct MinList * list);
 static void RegisterModule_Hunk(const char *name, BPTR segList, ULONG DebugType, APTR DebugInfo, struct Library *DebugBase);
 static int compare_segments(const void *left, const void *right);
 
+/* Normal readers hold db_ModSem while traversing modules, but that cannot protect
+   fields filled after publication. Build segments and symbols privately,
+   then expose the complete module in one locked operation. */
+static void PublishModule(module_t *mod, struct Library *DebugBase)
+{
+    ObtainSemaphore(&DBGBASE(DebugBase)->db_ModSem);
+    AddTail((struct List *)&DBGBASE(DebugBase)->db_Modules, (struct Node *)mod);
+    ReleaseSemaphore(&DBGBASE(DebugBase)->db_ModSem);
+}
+
 /*****************************************************************************
 
     NAME */
@@ -158,11 +168,8 @@ static int compare_segments(const void *left, const void *right);
 
                             AddTail((struct List *)&tmplist, (struct Node *)seg);
 
-                            ObtainSemaphore(&DBGBASE(DebugBase)->db_ModSem);
-                            AddTail((struct List *)&DBGBASE(DebugBase)->db_Modules, (struct Node *)mod);
-                            ReleaseSemaphore(&DBGBASE(DebugBase)->db_ModSem);
-
                             HandleModuleSegments(mod, &tmplist);
+                            PublishModule(mod, DebugBase);
 
                             continue;
                         }
@@ -376,11 +383,8 @@ static void RegisterModule_Hunk(const char *name, BPTR segList, ULONG DebugType,
         i++;
     }
 
-    ObtainSemaphore(&DBGBASE(DebugBase)->db_ModSem);
-    AddTail((struct List *)&DBGBASE(DebugBase)->db_Modules, (struct Node *)mod);
-    ReleaseSemaphore(&DBGBASE(DebugBase)->db_ModSem);
-
     HandleModuleSegments(mod, &tmplist);
+    PublishModule(mod, DebugBase);
 }
 
 void RegisterModule_ELF(const char *name, BPTR segList, struct elfheader *eh, struct sheader *sections,
@@ -471,12 +475,7 @@ void RegisterModule_ELF(const char *name, BPTR segList, struct elfheader *eh, st
             return;
         }
 
-        ObtainSemaphore(&DBGBASE(DebugBase)->db_ModSem);
-        AddTail((struct List *)&DBGBASE(DebugBase)->db_Modules, (struct Node *)mod);
-        ReleaseSemaphore(&DBGBASE(DebugBase)->db_ModSem);
-
         HandleModuleSegments(mod, &tmplist);
-        D(bug("[Debug] Module %s, 0x%x - 0x%x added to list of modules\n", mod->m_name, mod->m_lowest, mod->m_highest));
 
         /* Parse module's symbol table */
         for (i=0; i < int_shnum; i++)
@@ -516,5 +515,8 @@ void RegisterModule_ELF(const char *name, BPTR segList, struct elfheader *eh, st
                 break;
             }
         }
+
+        PublishModule(mod, DebugBase);
+        D(bug("[Debug] Module %s, 0x%x - 0x%x added to list of modules\n", mod->m_name, mod->m_lowest, mod->m_highest));
     }
 }

@@ -729,23 +729,6 @@ hashes, original flags, complete commands, scripts and serial evidence are in
 `aros-adt-selfhost-build/qemu-parallel/native-demangle-build-1/`.
 
 
-## Pending native bitcode round-trip gate
-
-`native-bitcode.cpp` writes and reads 100 LLVM bitcode modules, checking each
-module's constant value, source filename and verifier result. It also damages
-each bitcode signature and requires a recoverable parse error. Its success
-marker is `NATIVE-LLVM-BITCODE-PASS roundtrips=100 rejected_invalid=100`.
-This checks serialization and parsing, not execution of generated code.
-
-The probe compiles successfully with the native compiler and matching LLVM 20
-source/generated headers. Linking and execution remain pending until the full
-native build produces LLVMBitWriter and its dependencies. Use a consistent
-native-built archive set for LLVM BitWriter and BitReader, including their
-transitive libraries, and the same libc++ ABI as the native IR gate. Preparation
-and compile evidence are in `aros-adt-selfhost-build/regression/native-bitcode/`;
-this section does not claim that the runtime gate has passed.
-
-
 The six demangler object files produced by the four-vCPU make -j4 run were
 subsequently compared with the hosted native full build's corresponding
 objects. All six SHA-256 hashes match exactly, covering DLang, Itanium,
@@ -754,6 +737,28 @@ Microsoft, Microsoft nodes, Rust and the common Demangle entry points.
 both hashes for every object. This is byte equality for this source set,
 in addition to the successful archive/link/runtime gate; it is not a claim
 that the full compiler or every parallel workload has been qualified.
+
+## Native bitcode round-trip gate
+
+`native-bitcode.cpp` writes and reads 100 LLVM bitcode modules, checking each
+module's constant value, source filename and verifier result. It also damages
+each bitcode signature and requires a recoverable parse error. Its success
+marker is `NATIVE-LLVM-BITCODE-PASS roundtrips=100 rejected_invalid=100`.
+This checks serialization and parsing, not execution of generated code.
+
+The probe compiles, links and runs successfully with the native compiler,
+matching LLVM 20 headers, and 23 native-built LLVM archives using libc++.
+The archive hashes and successful hosted run are retained in
+`aros-adt-selfhost-build/regression/native-bitcode/`. The executable SHA-256 is
+`a53733263e554acb9a74dc1e8cf4bc41c2e9b958e69d48ae1af119dad3b0b92d`.
+
+The identical executable also passes on four-vCPU QEMU after the debug-module
+publication fix below: four workers perform five executions each, completing
+2,000 round trips and rejecting 2,000 invalid modules. Process intervals overlap
+four deep and all four vCPU threads accumulate CPU time; this is not individual
+process-to-CPU attribution. Evidence is in `qemu-parallel/native-bitcode-3/`.
+The image uses the existing SMP baseline with the candidate debug library;
+it is not a completed self-built operating system.
 
 ## ELF loader temporary-table lifetime
 
@@ -799,3 +804,40 @@ This does not establish full Chromium, RPCS3 or V8 qualification.
 Before/after library binaries, original and rejected images, reproducible
 fixture hashes, measurements, task backtraces, gate logs and the browser
 screenshot are retained in `aros-adt-selfhost-build/regression/native-elf-shndx/`.
+
+## Debug-module publication during concurrent loading
+
+The four-core bitcode gate initially faulted in
+`debug.library:UnregisterModule+0x90`, reading address 0x10 through a null
+segment entry. Registration added the module to `db_Modules` before allocating
+and filling its segment array. An unload on another CPU could therefore see
+an incomplete module despite holding `db_ModSem`. ELF symbol construction also
+continued after publication.
+
+Registration now builds the segment and symbol tables privately, then adds the
+complete module under `db_ModSem`. ELF, Hunk and Parthenope registration use
+the same publication helper. Library vectors and public layouts are unchanged.
+The runtime replay covers ELF; the other input formats have not been exercised
+on their native platforms.
+
+The failed image and fault screenshot remain in `qemu-parallel/native-bitcode-1/`.
+An intermediate attempt replaced only the loose library, while GRUB still
+loaded the old copy from `boot/aros-base.pkg.xz`; that attempt is retained in
+`native-bitcode-2/` and is not a candidate test. The corrected package changes
+only debug.library among its 26 members. Its bytes were extracted from the ISO
+and hash-verified before the successful `native-bitcode-3/` boot.
+Source snapshots, private SMP build provenance and package member hashes are
+in `regression/debug-publication/`.
+
+With the hosted candidate, native C/C++ compile/link/run, CMake configure and
+make -j4, Node worker messaging, libuv work and process lifecycle probes, and
+Chromium JavaScript/canvas smoke checks pass. This is smoke coverage, not full
+Chromium, RPCS3 or V8 qualification.
+
+The extended four-core replay in `qemu-parallel/debug-publication-regression/`
+passes seven concurrent native compilations and the archive/link/runtime gate;
+all seven object hashes match the preceding parallel run. Its 100 bitcode child
+executions return zero and complete 10,000 round trips and 10,000 invalid-input
+rejections. However, their enclosing Python process reports status 1 after its
+success output, stopping the combined harness before the IR stage. This combined
+run is therefore recorded as failed, with exit-status diagnosis kept separately.
