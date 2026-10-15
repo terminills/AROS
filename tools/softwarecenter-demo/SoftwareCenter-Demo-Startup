@@ -1,0 +1,21 @@
+; Execute from S:User-Startup, BEFORE LoadWB and WBStartup commodities.
+; Image payload lives at SYS:SoftwareCenterDemo. All installed files/state use RAM:.
+FailAt 10
+If NOT EXISTS ENV:SoftwareCenter
+  MakeDir ENV:SoftwareCenter
+EndIf
+SetEnv SoftwareCenter/BaseDir RAM:AmiWestPackages
+SetEnv SoftwareCenter/PkgRoot RAM:AmiWestPackages/Installed
+SetEnv SoftwareCenter/Program SYS:System/SoftwareCenter
+If NOT EXISTS RAM:AmiWestPackages/demo-ready
+  C:Pkg TRUST SYS:SoftwareCenterDemo/demo.pub
+  C:Pkg SOURCE ADD baseline file://SYS:SoftwareCenterDemo/baseline/
+  C:Pkg REFRESH
+  C:Pkg INSTALL AmiWestWelcome
+  C:Pkg SOURCE REMOVE baseline
+  C:Pkg SOURCE ADD amiwest "@REPO_URL@"
+  Echo "ready" >RAM:AmiWestPackages/demo-ready
+EndIf
+; WBStartup starts the single notifier after this script. Its normal first
+; check fetches the signed update and announcement once networking is ready.
+Echo "AmiWest Software Center demo prepared" >SER:
