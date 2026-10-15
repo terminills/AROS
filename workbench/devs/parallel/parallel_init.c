@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2017, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: Parallel device
 */
@@ -372,78 +372,47 @@ AROS_LH1(void, beginio,
     case CMD_WRITE:
       /* Write data to the ParallelUnit */
       ioreq->IOPar.io_Actual = 0;
-  
-      Disable();
 
-      /* Check whether I can write some data immediately */
+      Disable();
       if (0 == (PU->pu_Status & STATUS_WRITES_PENDING))
       {
-        ULONG writtenbytes;
-        BOOL complete = FALSE;
-        /*
-           Writing the first few bytes to the UART has to have the
-           effect that whenever the UART can receive new data
-           a HW interrupt must happen. So this writing to the
-           UART should get the sequence of HW-interrupts going
-           until there is no more data to write
-        */
-        if (-1 == ioreq->IOPar.io_Length)
-        {
-          int stringlen = strlen(ioreq->IOPar.io_Data);
-          D(bug("Transmitting NULL termninated string.\n"));
-          /*
-          ** Supposed to write the buffer to the port until a '\0'
-          ** is encountered.
-          */
-          
-          writtenbytes = HIDD_ParallelUnit_Write(PU->pu_Unit,
-                                                 ioreq->IOPar.io_Data,
-                                                 stringlen);
-          if (writtenbytes == stringlen)
-            complete = TRUE;
-          else
-            PU->pu_WriteLength = stringlen-writtenbytes;
-        }
-        else
-        {
-          writtenbytes = HIDD_ParallelUnit_Write(PU->pu_Unit,
-                                                 ioreq->IOPar.io_Data,
-                                                 ioreq->IOPar.io_Length);
-          if (writtenbytes == ioreq->IOPar.io_Length)
-            complete = TRUE;
-          else
-            PU->pu_WriteLength = ioreq->IOPar.io_Length-writtenbytes;
-        }
-        /*
-        ** A consistency check between the STATUS_WRITES_PENDING flag
-        ** and the pointer PU->pu_ActiveWrite which both have to be
-        ** set or cleared at the same time.
-        */
-        if (NULL != PU->pu_ActiveWrite)
-        {
-          D(bug("error!!"));
-        }
+        struct IOExtPar *req = ioreq;
 
-        if (complete == TRUE)
+        /*
+        ** Claim the port, then write with interrupts enabled: the unit
+        ** sends byte by byte at the printer's pace, which can take seconds.
+        */
+        PU->pu_Status |= STATUS_WRITES_PENDING;
+        Enable();
+
+        while (NULL != req)
         {
-          D(bug("completely sended the stream!\n"));
-          /*
-          ** The request could be completed immediately.
-          ** Check if I have to reply the message
-          */
-          if (0 == (ioreq->IOPar.io_Flags & IOF_QUICK))
-            ReplyMsg(&ioreq->IOPar.io_Message);
-        }
-        else
-        {
-          /*
-          ** The request could not be completed immediately
-          ** Clear the flag.
-          */
-          ioreq->IOPar.io_Flags &= ~IOF_QUICK;
-          PU->pu_ActiveWrite = (struct Message *)ioreq;
-          PU->pu_Status |= STATUS_WRITES_PENDING;
-          PU->pu_NextToWrite = writtenbytes;
+          ULONG length = (-1 == req->IOPar.io_Length) ?
+                         strlen(req->IOPar.io_Data) : req->IOPar.io_Length;
+          ULONG writtenbytes = HIDD_ParallelUnit_Write(PU->pu_Unit,
+                                                       req->IOPar.io_Data,
+                                                       length);
+
+          Disable();
+          if (writtenbytes < length)
+          {
+            /* The rest is sent from the interrupt handler. */
+            req->IOPar.io_Flags &= ~IOF_QUICK;
+            PU->pu_ActiveWrite = (struct Message *)req;
+            PU->pu_NextToWrite = writtenbytes;
+            PU->pu_WriteLength = length - writtenbytes;
+            Enable();
+            break;
+          }
+          req->IOPar.io_Actual = writtenbytes;
+          if (req != ioreq || 0 == (req->IOPar.io_Flags & IOF_QUICK))
+            ReplyMsg(&req->IOPar.io_Message);
+
+          /* Requests that queued up meanwhile are sent the same way. */
+          req = (struct IOExtPar *)GetMsg(&PU->pu_QWriteCommandPort);
+          if (NULL == req)
+            PU->pu_Status &= ~STATUS_WRITES_PENDING;
+          Enable();
         }
       }
       else
@@ -451,20 +420,18 @@ AROS_LH1(void, beginio,
         /*
            I could not write the data immediately as another request
            is already there. So I will make this
-           the responsibility of the interrupt handler to use this
-           request once it is done with the active request.
+           the responsibility of the writer or of the interrupt handler
+           to use this request once it is done with the active request.
         */
         PutMsg(&PU->pu_QWriteCommandPort,
                (struct Message *)ioreq);
-        PU->pu_Status |= STATUS_WRITES_PENDING;
         /*
         ** As I am returning immediately I will tell that this
         ** could not be done QUICK
         */
         ioreq->IOPar.io_Flags &= ~IOF_QUICK;
+        Enable();
       }
-      
-      Enable();
     break;
 
     case CMD_CLEAR:

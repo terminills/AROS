@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2001, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <aros/asmcall.h>
@@ -134,6 +134,7 @@ ULONG WBE_InterruptHandler( ULONG unitnum, APTR userdata)
                                 total += writtenbytes;
                                 if (writtenbytes >= PU->pu_WriteLength) {
                                         /* This one is done */
+                                        ioparreq->IOPar.io_Actual = PU->pu_NextToWrite + writtenbytes;
                                         ReplyMsg(&ioparreq->IOPar.io_Message);
                                 } else {
                                         /*
