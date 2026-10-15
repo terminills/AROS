@@ -2,7 +2,7 @@
 #define DEVICES_PRINTER_H
 
 /*
-    Copyright © 1995-2001, The AROS Development Team. All rights reserved.
+    Copyright © 1995-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: printer device commands and structures
@@ -39,6 +39,7 @@
 #define PRD_EDITPREFS	    	(CMD_NONSTD + 10)
 #define PRD_SETERRHOOK	    	(CMD_NONSTD + 11)
 #define PRD_DUMPRPORTTAGS   	(CMD_NONSTD + 12)
+#define PRD_SETJOBINFO		(CMD_NONSTD + 13)	/* AROS: io_Data = PJIA_ tags */
 
 /* printer command definitions */
 
@@ -254,6 +255,12 @@ struct DRPSourceMsg
     LONG     height;
     ULONG   *buf;
 };
+
+/* Tags for PRD_SETJOBINFO (AROS): what is being printed, for print queues */
+
+#define PJIA_Dummy		(TAG_USER + 0x80000)
+#define PJIA_Application	(PJIA_Dummy + 1)	/* STRPTR */
+#define PJIA_Document		(PJIA_Dummy + 2)	/* STRPTR */
 
 /* Tags for PRD_EDITPREFS */
 
