@@ -943,7 +943,9 @@ make -j4 native compilations, archive/link and 1,000 demangler iterations,
 100 bitcode and 20 IR executions. All seven object hashes match the prior
 runtime. Compilation, bitcode and IR stages each reach four overlapping
 process intervals, with CPU time on all four vCPUs. The ISO's posixc library
-was extracted and hash-checked against the tested candidate. The main hosted
-build's disk library is updated; its already-resident baseline remains loaded
-until the next controlled restart. This is validation on the existing SMP
-baseline, not a completed self-built OS image.
+was extracted and hash-checked against the tested candidate. Regenerating the
+posixc dispatch tables against revision `2d6c77fa37` confirms all 288 existing
+entries retain their slots, with none added or removed. The main hosted build
+was restarted at the GVNSink compilation boundary and resumed with the
+candidate resident. This is validation on the existing SMP baseline, not a
+completed self-built OS image.
