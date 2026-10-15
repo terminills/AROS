@@ -281,10 +281,15 @@ D(bug("launcher: executing command\n"));
     }
     else
     {
+        struct ETask *etask = GetETask(FindTask(NULL));
+
         /* child exited */
         D(bug("launcher: catched _exit(), errno=%d\n", exec_error));
-        /* Return the exec'd program's status to the parent. */
+        /* Return the exec'd program's status to the parent: waitpid()
+           reads it from our ETask. */
         ret = exec_error;
+        if (etask)
+            etask->et_Result1 = exec_error;
     }
 
     D(bug("launcher: freeing child_signal\n"));
