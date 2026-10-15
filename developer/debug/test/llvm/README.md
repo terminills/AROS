@@ -841,3 +841,46 @@ executions return zero and complete 10,000 round trips and 10,000 invalid-input
 rejections. However, their enclosing Python process reports status 1 after its
 success output, stopping the combined harness before the IR stage. This combined
 run is therefore recorded as failed, with exit-status diagnosis kept separately.
+
+
+## Python threaded subprocess return-code preservation
+
+The extended debug-library replay exposed a separate bootstrap Python issue:
+all LLVM probes succeeded and `Py_BytesMain()` returned zero, but the waiting
+parent sometimes received status 1. Tracing `__stdc_get_errorptr()` before and
+after the interpreter showed that concurrent `vfork()` calls had changed the
+shared CRT base's saved return-code pointer. The interpreter uses absolute CRT
+link libraries; its workers therefore share this state.
+
+The AROS Python patch now retains the GIL across the vfork launch window instead
+of releasing it as upstream does on Linux. The existing AROS restriction against
+pre-exec Python callbacks remains. Launches are serialized until exec restores
+the parent's CRT state; the launched programs still execute concurrently. No
+shared CRT library, vector table or public structure is changed.
+
+A private per-task-relative-link alternative was rejected because subprocess
+creation failed with EBADF. It was not deployed. The retained-GIL candidate
+passes 240 LLVM probe executions on four-core QEMU, with four overlapping
+process intervals in every stage and stable return-code pointers in both traced
+stages. All wrapper return codes are zero. The uninstrumented candidate also
+passes three hosted runs of 100 bitcode executions using file-backed output.
+Concurrent hosted pipe capture still stalls in a DOS read; a fresh original
+interpreter reproduces the same worker-stack pattern, so that existing problem
+is not claimed fixed here.
+
+Evidence and rejected experiments are retained under
+`regression/debug-publication/python-exit-trace/` and
+`qemu-parallel/python-serialized-runtime/`. The focused
+`native-python-thread-exit.py WORKDIR` regression checks nested threaded child
+launches with both zero and nonzero exits. Its full installed-candidate replay,
+including make -j4 of LLVM demangler sources, is tracked separately in
+`qemu-parallel/python-serialized-regression/`.
+
+That installed-candidate replay passes: 96 nested child exit-code checks, seven
+native make -j4 compilations, archive/link and 1,000 demangler iterations,
+100 bitcode executions and 20 IR executions. All seven compiled object hashes
+match the previous parallel build. Compilation and both LLVM runtime stages
+reach four overlapping process intervals, and all four vCPU threads accumulate
+CPU time. Native C/C++ and CMake configure/make -j4 gates also pass with the
+candidate interpreter on hosted AROS. The complete patch applies to the
+original Python archive and reproduces the tested subprocess source exactly.

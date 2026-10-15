@@ -56,22 +56,36 @@
 +#else
 @@ -431,0 +439 @@
 +#endif
-@@ -828,0 +837 @@
-+#ifdef HAVE_FORK
-@@ -834,0 +844 @@
+@@ -804,0 +813 @@
++#ifndef __AROS__
+@@ -805,0 +815 @@
 +#endif
-@@ -837,0 +848 @@
+@@ -822,0 +833 @@
++#ifndef __AROS__
+@@ -823,0 +835,4 @@
++#endif
++        /* AROS bootstrap uses a shared CRT base. Concurrent vfork calls
++         * replace its exit state; retain the GIL until exec restores it.
++         * The launched program then runs independently of this lock. */
+@@ -824,0 +840 @@
++#ifndef __AROS__
+@@ -828,0 +845,2 @@
++#endif
 +#ifdef HAVE_FORK
-@@ -838,0 +850,4 @@
+@@ -834,0 +853 @@
++#endif
+@@ -837,0 +857 @@
++#ifdef HAVE_FORK
+@@ -838,0 +859,4 @@
 +#else
 +        errno = ENOTSUP;
 +        pid = -1;
 +#endif
-@@ -855,0 +871 @@
+@@ -855,0 +880 @@
 +#ifdef HAVE_FORK
-@@ -856,0 +873 @@
+@@ -856,0 +882 @@
 +#endif
-@@ -948,0 +966,9 @@
+@@ -948,0 +975,9 @@
 +#ifndef HAVE_FORK
 +    /* AROS shares the parent's address space: Python callbacks are unsafe. */
 +    if (preexec_fn != Py_None) {
@@ -81,13 +95,13 @@
 +    }
 +#endif
 +
-@@ -1126,0 +1153 @@
+@@ -1126,0 +1162 @@
 +#ifdef HAVE_FORK
-@@ -1127,0 +1155 @@
+@@ -1127,0 +1164 @@
 +#endif
-@@ -1188,0 +1217 @@
+@@ -1188,0 +1226 @@
 +#ifdef HAVE_FORK
-@@ -1190,0 +1220 @@
+@@ -1190,0 +1229 @@
 +#endif
 --- a/Modules/resource.c
 +++ b/Modules/resource.c
