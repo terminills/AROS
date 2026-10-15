@@ -744,3 +744,13 @@ native-built archive set for LLVM BitWriter and BitReader, including their
 transitive libraries, and the same libc++ ABI as the native IR gate. Preparation
 and compile evidence are in `aros-adt-selfhost-build/regression/native-bitcode/`;
 this section does not claim that the runtime gate has passed.
+
+
+The six demangler object files produced by the four-vCPU make -j4 run were
+subsequently compared with the hosted native full build's corresponding
+objects. All six SHA-256 hashes match exactly, covering DLang, Itanium,
+Microsoft, Microsoft nodes, Rust and the common Demangle entry points.
+`qemu-parallel/native-demangle-build-1/hosted-object-comparison.json` records
+both hashes for every object. This is byte equality for this source set,
+in addition to the successful archive/link/runtime gate; it is not a claim
+that the full compiler or every parallel workload has been qualified.
