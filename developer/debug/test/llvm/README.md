@@ -1016,3 +1016,17 @@ six exit cases, native make -j4 compilation of seven objects, archive/link and
 Build/round-trip evidence is in `regression/native-iso-tools/`; boot evidence
 is in `qemu-parallel/native-created-iso/`. The payload is the existing SMP
 baseline plus fixes, not the completed full native self-build.
+
+## Native ScalarOpts execution
+
+`native-scalar.cpp` links the newly native-built LLVMScalarOpts archive with
+the same native LLVM dependencies used by the earlier IR and transform probes.
+Across 100 fresh modules, SROA removes an alloca/store/load sequence and leaves
+a single return of constant 42; the test verifies each module before and after
+optimization. Native compilation, linking and hosted execution pass.
+
+The same executable passes 20 executions on four-core QEMU, totaling 2,000
+verified optimizations with four overlapping processes. Evidence is retained
+in `regression/native-scalar/` and `qemu-parallel/native-scalar/`. The QEMU image
+uses the previous SMP baseline with tested runtime fixes; this is an optimizer
+runtime gate, not completion of the full self-built operating system.
