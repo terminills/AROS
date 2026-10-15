@@ -965,6 +965,24 @@ static void handlePacket(struct emulbase *emulbase, struct filehandle *fhv, stru
         DSAME(bug("[emul] Replying with 0x%p, %ld\n", Res1, Res2));
         break;
 
+#ifdef EMUL_HAS_EXAMINE64
+    case ACTION_EXAMINE_FH64:
+        fh = FH_FROM(dp->dp_Arg1);
+        Res2 = DoExamine64(emulbase, fh,
+                          (struct FileInfoBlock64 *)BADDR(dp->dp_Arg2), FALSE);
+        Res1 = (Res2 == 0) ? DOSTRUE : DOSFALSE;
+        break;
+
+    case ACTION_EXAMINE_OBJECT64:
+    case ACTION_EXAMINE_NEXT64:
+        fh = FH_FROM_LOCK(dp->dp_Arg1);
+        Res2 = DoExamine64(emulbase, fh,
+                          (struct FileInfoBlock64 *)BADDR(dp->dp_Arg2),
+                          dp->dp_Type == ACTION_EXAMINE_NEXT64);
+        Res1 = (Res2 == 0) ? DOSTRUE : DOSFALSE;
+        break;
+#endif
+
     case ACTION_EXAMINE_FH:
         fh = FH_FROM(dp->dp_Arg1);
         DCMD(bug("[emul] %p ACTION_EXAMINE_FH: %p, fib %p\n", fhv, fh, BADDR(dp->dp_Arg2)));

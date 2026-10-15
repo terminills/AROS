@@ -1,6 +1,9 @@
 #ifndef RESOURCES_EMUL_HOST_H
 #define RESOURCES_EMUL_HOST_H
 
+/* Unix metadata can fill the DOS64 examination packets without truncation. */
+#define EMUL_HAS_EXAMINE64 1
+
 #include <exec/libraries.h>
 #include <hidd/unixio.h>
 #include <oop/oop.h>

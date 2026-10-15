@@ -89,6 +89,10 @@ LONG DoStatFS(struct emulbase *emulbase, char *path, struct InfoData *id);
 
 LONG DoExamineEntry(struct emulbase *emulbase, struct filehandle *fh, char *EntryName,
 		   struct ExAllData *ead, ULONG size, ULONG type);
+#ifdef EMUL_HAS_EXAMINE64
+LONG DoExamine64(struct emulbase *emulbase, struct filehandle *fh,
+                 struct FileInfoBlock64 *fib, BOOL next);
+#endif
 LONG DoExamineNext(struct emulbase *emulbase,  struct filehandle *fh, struct FileInfoBlock *FIB);
 LONG DoExamineAll(struct emulbase *emulbase, struct filehandle *fh, struct ExAllData *ead,
                   struct ExAllControl *eac, ULONG size, ULONG type, struct DosLibrary *DOSBase);

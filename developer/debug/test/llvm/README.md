@@ -968,3 +968,51 @@ The same libraries also pass filesystem/locale and exit probes plus seven
 native make -j4 compilations after booting the AROS-written ISO described below.
 Object hashes match the previous runtime. This does not constitute full RPCS3
 or standalone V8 qualification.
+
+
+## Hosted file examination above 4 GB
+
+The Unix-hosted handler now accepts the DOS64 object, handle and next-entry
+examination packets directly. The previous path went through 32-bit ExAllData
+and truncated a 4,801,626,112-byte ISO to 506,658,816 bytes, although fstat,
+seek-to-end and reads beyond 4 GB already worked. The new path fills a separate
+FileInfoBlock64 from host metadata; legacy 32-bit packet handling is unchanged.
+Other hosted backends do not enable these new handlers.
+
+Native tests create/read files of 1,234 and 4,294,975,489 bytes, compare path,
+handle and directory-entry sizes, and check canaries around both FIB layouts.
+The legacy large-file size remains its previous low 32 bits (8,193). Direct
+ExamineFH64 also succeeds after renaming an open file. POSIX fstat after rename
+still fails ENOENT through its pathname-discovery path: a matched small-file
+comparison reproduces that on both old and candidate runtimes, so it is not
+claimed fixed or introduced here. Fixtures, native probe source/binary,
+before/after output and consumer smoke evidence are in
+`regression/native-largefile/`. Native size extension currently writes zeros;
+the large fixture is not claimed to remain sparse on the host filesystem.
+
+## Native ISO creation and boot
+
+Libiconv 1.19 and xorriso 1.5.8 build natively from the existing Contrib recipes
+and patches. Libiconv stays in a private SDK so its headers do not replace the
+default developer headers. Its UTF-8/Latin-1 round trip passes. One configure
+probe exits from a worker and hits the existing foreign-stack exit guard;
+a separate native probe joins its workers and confirms reader preference in
+10/10 runs before supplying `gl_cv_pthread_rwlock_rdlock_prefer_writer=no`.
+That worker-exit limitation is not claimed fixed.
+
+Contrib commit `ec2ecad3` lets xorriso accept its existing virtual `/dev/zero`
+system-area name without requiring a real device. The complete patch applies
+to the original archive and matches the native-tested source. Native mkisofs
+invocation with the AROS recipe's filesystem options creates an ISO and restores
+both payloads byte-for-byte. Native xorriso then repacks the existing SMP test
+image, preserving its boot information and adding the candidate CRT libraries.
+The resulting 4,801,626,112-byte ISO has SHA-256
+`7b0859f70e073ccc3b85a0756f377349806242325d2816e8d690c6d244057601`,
+confirmed independently on AROS and the host.
+
+That exact native-written ISO boots on four-core QEMU and passes locale/path,
+six exit cases, native make -j4 compilation of seven objects, archive/link and
+1,000 demangler iterations. All object hashes match the previous run.
+Build/round-trip evidence is in `regression/native-iso-tools/`; boot evidence
+is in `qemu-parallel/native-created-iso/`. The payload is the existing SMP
+baseline plus fixes, not the completed full native self-build.

@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2018, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include "unix_hints.h"
@@ -1143,6 +1143,81 @@ LONG DoExamineEntry(struct emulbase *emulbase, struct filehandle *fh, char *Entr
 }
 
 /*********************************************************************************************/
+
+/* Keep the legacy ExAllData/FileInfoBlock path separate: both carry
+   32-bit sizes. DOS64 packets must receive the host's full file size. */
+LONG DoExamine64(struct emulbase *emulbase, struct filehandle *fh,
+                 struct FileInfoBlock64 *fib, BOOL next)
+{
+    struct stat st;
+    struct dirent *entry;
+    STRPTR entry_name = NULL;
+    const char *name;
+    IPTR key = 0;
+    ULONG length;
+    LONG err;
+
+    if (next)
+    {
+        if (fh->type != FHD_DIRECTORY)
+            return ERROR_OBJECT_WRONG_TYPE;
+        HostLib_Lock();
+#ifndef HOST_OS_android
+        emulbase->pdata.SysIFace->seekdir(fh->fd, fib->fib_DiskKey);
+        AROS_HOST_BARRIER
+#endif
+        entry = ReadDir(emulbase, fh, &fib->fib_DiskKey);
+        HostLib_Unlock();
+        if (!entry)
+            return ERROR_NO_MORE_ENTRIES;
+        entry_name = entry->d_name;
+        key = fib->fib_DiskKey;
+    }
+
+    if (!next && fh->type == FHD_FILE)
+    {
+        /* Handles remain examinable after the pathname is renamed/unlinked. */
+        HostLib_Lock();
+        err = emulbase->pdata.SysIFace->fstat((int)(IPTR)fh->fd, &st);
+        AROS_HOST_BARRIER
+        if (err)
+            err = err_u2a(emulbase);
+        HostLib_Unlock();
+    }
+    else
+        err = stat_entry(emulbase, fh, entry_name, &st);
+    if (err)
+        return err;
+
+    memset(fib, 0, sizeof(*fib));
+    fib->fib_DiskKey = key;
+    fib->fib_Size = st.st_size;
+    fib->fib_NumBlocks = (fib->fib_Size + 511) / 512;
+    fib->fib_Protection = prot_u2a(st.st_mode);
+    fib->fib_OwnerUID = st.st_uid;
+    fib->fib_OwnerGID = st.st_gid;
+    timestamp2datestamp(emulbase, &st.st_mtime, &fib->fib_Date);
+    fib->fib_DirEntryType = S_ISDIR(st.st_mode)
+        ? ((entry_name || fh->name[0]) ? ST_USERDIR : ST_ROOT)
+        : (S_ISLNK(st.st_mode) ? ST_SOFTLINK : ST_FILE);
+    fib->fib_EntryType = fib->fib_DirEntryType;
+
+    if (entry_name)
+        name = entry_name;
+    else if (fh->name[0])
+    {
+        name = strrchr(fh->name, '/');
+        name = name ? name + 1 : fh->name;
+    }
+    else
+        name = fh->volumename;
+    length = strlen(name);
+    if (length > sizeof(fib->fib_FileName) - 2)
+        length = sizeof(fib->fib_FileName) - 2;
+    fib->fib_FileName[0] = length;
+    CopyMem(name, &fib->fib_FileName[1], length);
+    return 0;
+}
 
 LONG DoExamineNext(struct emulbase *emulbase, struct filehandle *fh,
                   struct FileInfoBlock *FIB)
