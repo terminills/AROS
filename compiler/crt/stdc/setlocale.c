@@ -1,7 +1,7 @@
 /*
-    Copyright (C) 2003-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 2003-2026, The AROS Development Team. All rights reserved.
 
-    C99 function localeconv().
+    C99 function setlocale().
 */
 
 #include <locale.h>
@@ -51,6 +51,7 @@
     if (category < LC_ALL || category > LC_TIME)
         return NULL;
 
-    loc = __get_setlocale_internal(locale);
+    /* A NULL locale queries the current setting; it must not reset it. */
+    loc = locale ? __get_setlocale_internal(locale) : __get_current_locale();
     return loc ? (char *)loc->__lc_name : NULL;
 }

@@ -949,3 +949,22 @@ entries retain their slots, with none added or removed. The main hosted build
 was restarted at the GVNSink compilation boundary and resumed with the
 candidate resident. This is validation on the existing SMP baseline, not a
 completed self-built OS image.
+
+
+## Native image-tool runtime regressions
+
+`native-filesystem-locale.c` checks native and Unix statvfs paths, missing/null
+arguments, and repeated locale queries. statvfs previously sent `/SYS/...` and
+`.` directly to DOS Lock, returning ENOENT for existing paths. It now uses the
+same path translator as stat/statfs. nl_langinfo(CODESET) now identifies the C
+locale as ASCII, and setlocale queries preserve the current locale instead of
+resetting C.UTF-8 to C. The native-built probe passes with the combined fixes.
+Generated dispatch comparisons retain all 288 posixc and 431 stdc entries,
+with none added, removed or moved. Evidence is in `regression/native-statvfs/`.
+
+Native C/C++, CMake make -j4, Node worker messaging, libuv work/process tests,
+and Chromium canvas/JavaScript smoke checks pass with the candidate libraries.
+The same libraries also pass filesystem/locale and exit probes plus seven
+native make -j4 compilations after booting the AROS-written ISO described below.
+Object hashes match the previous runtime. This does not constitute full RPCS3
+or standalone V8 qualification.

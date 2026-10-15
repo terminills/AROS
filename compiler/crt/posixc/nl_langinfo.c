@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 2025-2026, The AROS Development Team. All rights reserved.
 */
 
 #include <langinfo.h>
@@ -49,6 +49,10 @@ static const char* get_date_format() {
 static const char* get_codeset() {
     const char* loc = setlocale(LC_CTYPE, NULL);
     if (!loc) return "unknown";
+
+    /* The C/POSIX locale has no encoding suffix, but uses ASCII. */
+    if (strcmp(loc, "C") == 0 || strcmp(loc, "POSIX") == 0)
+        return "ASCII";
 
     /* Usually locale strings look like: "fr_FR.UTF-8" */
     const char *dot = strchr(loc, '.');
