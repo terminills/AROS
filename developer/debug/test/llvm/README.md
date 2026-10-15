@@ -936,3 +936,14 @@ child exit 255, and empty-input checks. The preexisting missing-command EBADF
 mapping still gives status 126; this patch does not claim to correct it.
 The complete findutils patch applies to the original archive and reproduces
 the tested source. Evidence is in `regression/native-iso-tools/xargs-wait/`.
+
+The four-core QEMU replay in `qemu-parallel/nixmain-exit/` also passes:
+96 six-path exit executions, 96 nested Python child-status controls, seven
+make -j4 native compilations, archive/link and 1,000 demangler iterations,
+100 bitcode and 20 IR executions. All seven object hashes match the prior
+runtime. Compilation, bitcode and IR stages each reach four overlapping
+process intervals, with CPU time on all four vCPUs. The ISO's posixc library
+was extracted and hash-checked against the tested candidate. The main hosted
+build's disk library is updated; its already-resident baseline remains loaded
+until the next controlled restart. This is validation on the existing SMP
+baseline, not a completed self-built OS image.
