@@ -884,3 +884,24 @@ reach four overlapping process intervals, and all four vCPU threads accumulate
 CPU time. Native C/C++ and CMake configure/make -j4 gates also pass with the
 candidate interpreter on hosted AROS. The complete patch applies to the
 original Python archive and reproduces the tested subprocess source exactly.
+
+
+## Native transformation utility gate
+
+`native-transform.cpp` parses a function with two arithmetic instructions,
+clones its module, simplifies the clone to a single return of constant 42,
+and verifies both the clone's validity and the original's unchanged instruction
+count. A second simplification must report no change. It repeats this 100 times.
+This tests native transformation utilities, not JIT execution or code generation.
+
+Native Clang compiles and links the probe against the newly native-built
+LLVMTransformUtils archive and the same 23 native libc++ LLVM archives used by
+the bitcode gate. The hosted run passes. The identical executable also passes
+20 executions across four QEMU workers, completing 2,000 clones and
+simplifications, with peak process overlap four and activity on every vCPU.
+The executable SHA-256 is `5957cd978abe2c6967981755d9a63d0e3d44fe3d4b73cc35479fb3c47fc198e0`.
+
+Source, commands, archive hashes and hosted/QEMU output are retained in
+`regression/native-transform/` and `qemu-parallel/native-transform-1/`.
+The QEMU image uses the existing SMP baseline with the debug publication and
+Python launch fixes; it is not the completed self-built OS.
