@@ -30,6 +30,27 @@ static void restore_vars(struct MinList *old_vars);
 static void free_vars(struct MinList *vars);
 static void update_PATH(void);
 
+/* Restore the startup exit frame before returning. Otherwise an atexit
+   handler calling exit/_Exit jumps into this expired frame and repeats the
+   environment/argv cleanup. Keep previousjmp in the caller's frame so that
+   setjmp's automatic-variable rules do not invalidate its saved value. */
+static __attribute__((noinline)) void call_main(
+    int (*main)(int argc, char *argv[]), int argc, char *argv[],
+    int *errorptr, jmp_buf previousjmp)
+{
+    jmp_buf exitjmp;
+
+    if (setjmp(exitjmp) == 0)
+    {
+        __stdc_set_exitjmp(exitjmp, previousjmp);
+        int ret = (*main)(argc, argv);
+        if (errorptr)
+            *errorptr = ret;
+    }
+
+    __stdc_set_exitjmp(previousjmp, exitjmp);
+}
+
 int __posixc_nixmain(int (*main)(int argc, char *argv[]), int argc, char *argv[])
 {
     struct PosixCIntBase *PosixCBase, *pPosixCBase;
@@ -83,20 +104,10 @@ int __posixc_nixmain(int (*main)(int argc, char *argv[]), int argc, char *argv[]
     if (!getenv("PATH"))
         update_PATH();
 
-    /* Call the real main.  */
-    jmp_buf exitjmp, dummyjmp;
-    if (setjmp(exitjmp) == 0)
-    {
-        int ret;
-
-        __stdc_set_exitjmp(exitjmp, dummyjmp);
-
-        ret = (*main)(argc, argv);
-        if (errorptr)
-            *errorptr = ret;
-    }
-    else
-        D(bug("__posixc_nixmain: setjmp() != 0\n"));
+    /* Keep the saved outer exit frame outside the function doing setjmp:
+       it is written after setjmp and must remain defined after longjmp. */
+    jmp_buf previousjmp;
+    call_main(main, argc, argv, errorptr, previousjmp);
 
     D(bug("__posixc_nixmain: pPosixCBase = %x, Task=%x\n", pPosixCBase, FindTask(NULL)));
     if (!pPosixCBase || !(PosixCBase->parentmode & (VFORK_PARENT | EXEC_PARENT)))

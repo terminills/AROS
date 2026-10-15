@@ -905,3 +905,34 @@ Source, commands, archive hashes and hosted/QEMU output are retained in
 `regression/native-transform/` and `qemu-parallel/native-transform-1/`.
 The QEMU image uses the existing SMP baseline with the debug publication and
 Python launch fixes; it is not the completed self-built OS.
+
+
+## Native exit handlers and xargs
+
+`native-exit-handler.c`, linked with `-nix`, checks six paths: return 0,
+exit(7), _Exit(7), exit(7) from an atexit handler, _Exit(7) from an atexit
+handler, and return 7. Each path prints MAIN; all except direct _Exit also
+print HANDLER exactly once. Expected statuses are 0, 7, 7, 7, 7, 7.
+
+The previous nixmain wrapper left its exit jump buffer installed after returning.
+An atexit handler calling _Exit reproduced a double free in nixmain's cleanup.
+The wrapper now restores the outer startup frame before returning. A noinline
+helper owns setjmp while its caller owns the saved previous buffer, avoiding
+indeterminate automatic storage after longjmp. No library vector or public
+structure changes are involved.
+
+The candidate passes a native-Clang-built six-path test, native C/C++ and CMake
+make -j4 tests, Node worker messaging, libuv work/process tests, and Chromium
+canvas/JavaScript smoke checks. These are focused regressions, not full RPCS3,
+Chromium, or standalone V8 qualification. Before/after crash logs, library
+hashes, commands and outputs are in `regression/native-nixmain-exit/`.
+
+Separately, Contrib commit `9ddacc82` fixes xargs' vfork bookkeeping: the child
+must not increment the parent's process count with a placeholder PID or erase
+its accumulated failure status. The original two-item batch waited forever
+for a nonexistent remaining child. The candidate passes actual shell pipeline,
+failure-then-success, -P4, process-slot variable, missing-command baseline,
+child exit 255, and empty-input checks. The preexisting missing-command EBADF
+mapping still gives status 126; this patch does not claim to correct it.
+The complete findutils patch applies to the original archive and reproduces
+the tested source. Evidence is in `regression/native-iso-tools/xargs-wait/`.
