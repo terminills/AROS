@@ -1,0 +1,6 @@
+FailAt 21
+CD Development:Examples/HelloAROS
+Development:bin/make all
+Set buildresult $RC
+Echo "HelloAROS build exit: $buildresult"
+Quit $buildresult

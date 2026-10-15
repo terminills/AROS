@@ -1,0 +1,11 @@
+; Run with this package as the current directory, on writable SYS:.
+FailAt 10
+If EXISTS SYS:Development
+  Echo "SYS:Development already exists; installation stopped without replacing it."
+  Quit 10
+EndIf
+Copy Development SYS:Development ALL
+Copy Development-Startup S:Development-Startup
+Echo "Execute S:Development-Startup" >>S:User-Startup
+Execute S:Development-Startup
+Echo "Installed. CD Development:Examples/HelloAROS, then make run."

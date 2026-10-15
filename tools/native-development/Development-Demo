@@ -1,0 +1,16 @@
+; Live-CD setup: writable examples first, read-only tools/SDK second.
+FailAt 10
+If NOT EXISTS RAM:Development
+  MakeDir RAM:Development
+EndIf
+If NOT EXISTS RAM:Development/Examples
+  MakeDir RAM:Development/Examples
+EndIf
+If NOT EXISTS RAM:Development/Examples/HelloAROS
+  Copy SYS:Development/Examples/HelloAROS RAM:Development/Examples/HelloAROS ALL QUIET
+EndIf
+Assign Development: RAM:Development
+Assign Development: SYS:Development ADD
+Path Development:bin ADD
+SetEnv PATH "/Development/bin:/C"
+Echo "Native project ready at Development:Examples/HelloAROS"

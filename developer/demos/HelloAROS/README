@@ -1,0 +1,12 @@
+HelloAROS is a two-source native C project.
+
+From an AROS Shell:
+  CD Development:Examples/HelloAROS
+  make all
+  make run
+  make clean
+
+make -j4 also works. The Makefile uses the packaged shell, compiler and SDK
+through Development:, so the build does not depend on the Shell current PATH.
+Errors retain Clang file:line:column locations. Build and run failures propagate
+through make. The program checks that sum(1..100) is 5050 and returns 20 on failure.
