@@ -11,7 +11,9 @@
     are written and .job once the last opener has closed the unit. The spooler
     sends .job files in sequence order, deletes them when done, writes its state
     ("<job>: printing on <device> unit <n>, <sent>/<size> KB", "...: waiting, ...",
-    "idle") to PrintSpool/Status and drops a job when <job>.cancel exists.
+    "idle") to PrintSpool/Status and drops a job when <job>.cancel exists. What
+    printer.device says is being printed (PRD_SETJOBINFO) is kept in <job>.info
+    as Application= and Document= lines.
 */
 
 #include <aros/debug.h>
@@ -22,9 +24,11 @@
 #include <exec/memory.h>
 #include <devices/parallel.h>
 #include <devices/serial.h>
+#include <devices/printer.h>
 
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <clib/alib_protos.h>
 
 #include <string.h>
 
@@ -43,6 +47,8 @@ struct FinishedJob
     struct MinNode fj_Node;
     BPTR fj_File;
     TEXT fj_Name[64];
+    TEXT fj_Application[64];
+    TEXT fj_Document[128];
 };
 
 static struct MinList finished;
@@ -178,6 +184,21 @@ static void publish_finished(struct PrintSpoolBase *PrintSpoolBase)
     {
         ReleaseSemaphore(&PrintSpoolBase->ps_Lock);
         Close(fj->fj_File);
+        if (fj->fj_Application[0] != '\0' || fj->fj_Document[0] != '\0')
+        {
+            BPTR info;
+
+            job_path(PrintSpoolBase, fj->fj_Name, ".info", to, sizeof(to));
+            if ((info = Open(to, MODE_NEWFILE)) != BNULL)
+            {
+                FPuts(info, "Application=");
+                FPuts(info, fj->fj_Application);
+                FPuts(info, "\nDocument=");
+                FPuts(info, fj->fj_Document);
+                FPuts(info, "\n");
+                Close(info);
+            }
+        }
         job_path(PrintSpoolBase, fj->fj_Name, TMP_SUFFIX, from, sizeof(from));
         job_path(PrintSpoolBase, fj->fj_Name, JOB_SUFFIX, to, sizeof(to));
         Rename(from, to);
@@ -297,6 +318,8 @@ static void spooler_main(void)
         DeleteFile(path);
         job_path(PrintSpoolBase, name, ".cancel", path, sizeof(path));
         DeleteFile(path);
+        job_path(PrintSpoolBase, name, ".info", path, sizeof(path));
+        DeleteFile(path);
         D(bug("[printspool] %s done\n", name));
     }
 
@@ -385,6 +408,37 @@ AROS_LH1(void, BeginIO,
     case CMD_WRITE:
         io->io_Error = write_job(PrintSpoolBase, io);
         break;
+    case PRD_SETJOBINFO:
+    {
+        struct PrintSpoolUnit *pu = (struct PrintSpoolUnit *)io->io_Unit;
+        struct TagItem *tags = io->io_Data, *tag;
+
+        ObtainSemaphore(&PrintSpoolBase->ps_Lock);
+        while ((tag = LibNextTagItem(&tags)) != NULL)
+        {
+            STRPTR dest = NULL;
+            LONG size = 0;
+
+            if (tag->ti_Tag == PJIA_Application)
+            {
+                dest = pu->pu_Application;
+                size = sizeof(pu->pu_Application);
+            }
+            else if (tag->ti_Tag == PJIA_Document)
+            {
+                dest = pu->pu_Document;
+                size = sizeof(pu->pu_Document);
+            }
+            if (dest != NULL)
+            {
+                strncpy(dest, tag->ti_Data ? (const char *)tag->ti_Data : "", size - 1);
+                dest[size - 1] = '\0';
+            }
+        }
+        ReleaseSemaphore(&PrintSpoolBase->ps_Lock);
+        io->io_Error = 0;
+        break;
+    }
     case CMD_FLUSH:
     case CMD_UPDATE:
     case CMD_RESET:
@@ -448,6 +502,8 @@ static int GM_UNIQUENAME(Close)(struct PrintSpoolBase *PrintSpoolBase, struct IO
     ObtainSemaphore(&PrintSpoolBase->ps_Lock);
     if (pu->pu_Openers > 0)
         pu->pu_Openers--;
+    if (pu->pu_Openers == 0 && pu->pu_Job == BNULL)
+        pu->pu_Application[0] = pu->pu_Document[0] = '\0';
     if (pu->pu_Openers == 0 && pu->pu_Job != BNULL)
     {
         fj = AllocMem(sizeof(*fj), MEMF_ANY);
@@ -457,8 +513,11 @@ static int GM_UNIQUENAME(Close)(struct PrintSpoolBase *PrintSpoolBase, struct IO
         {
             fj->fj_File = pu->pu_Job;
             strcpy(fj->fj_Name, pu->pu_Name);
+            strcpy(fj->fj_Application, pu->pu_Application);
+            strcpy(fj->fj_Document, pu->pu_Document);
             ADDTAIL((struct List *)&finished, (struct Node *)fj);
             pu->pu_Job = BNULL;
+            pu->pu_Application[0] = pu->pu_Document[0] = '\0';
         }
     }
     ReleaseSemaphore(&PrintSpoolBase->ps_Lock);

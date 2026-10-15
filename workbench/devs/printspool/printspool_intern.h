@@ -20,6 +20,8 @@ struct PrintSpoolBase
         ULONG pu_Openers;
         BPTR pu_Job;                /* the job being written, or BNULL */
         TEXT pu_Name[64];           /* its file name, without the suffix */
+        TEXT pu_Application[64];    /* PRD_SETJOBINFO from printer.device */
+        TEXT pu_Document[128];
     } ps_Unit[PRINTSPOOL_UNITS];
 
     struct SignalSemaphore ps_Lock;
