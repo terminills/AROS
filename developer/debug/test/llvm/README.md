@@ -754,3 +754,48 @@ Microsoft, Microsoft nodes, Rust and the common Demangle entry points.
 both hashes for every object. This is byte equality for this source set,
 in addition to the successful archive/link/runtime gate; it is not a claim
 that the full compiler or every parallel workload has been qualified.
+
+## ELF loader temporary-table lifetime
+
+Repeated Clang invocations exposed two generic ELF loader cleanup omissions.
+`SHT_SYMTAB_SHNDX` tables were loaded for large executables but never freed.
+An unsupported relocation also bypassed release of its temporary relocation
+table. The loader now frees the relocation table before handling failure and
+includes extended symbol-index tables in final cleanup. Library vectors and
+public structures are unchanged.
+
+`native-loadseg-memory.c` measures `LoadSeg`/`UnLoadSeg` without executing the
+loaded program, separating loader allocations from C++ startup and teardown.
+It accepts a native DOS pathname, `valid` or `invalid`, a repetition count and
+a maximum total retained-byte limit. A negative limit records the baseline
+without asserting memory recovery. For example:
+
+```
+native-loadseg-memory SYS:Developer/bin/clang valid 5 65536
+native-loadseg-memory SYS:NativeChecks/loader-memory/rejected-clang invalid 5 65536
+```
+
+`make-loadseg-rejection.py SOURCE DESTINATION` creates the second fixture from
+an ELF64 little-endian compiler image by replacing one loadable section's
+relocation type with an unsupported value. It preserves the input and refuses
+to overwrite an existing destination. Only load the fixture; do not execute it.
+
+On the matched old hosted DOS library, each successful load/unload retained
+966,656 bytes and each rejected load retained 30,326,784 bytes. With both fixes,
+all five repetitions of each case retained zero bytes. Warmed-up Clang version
+invocations decreased from about 1.08 MB to 114 KB retained; independent C++
+runtime retention remains. These are hosted measurements, not SMP results.
+
+The candidate also passed native C/C++ compilation, linking, executable and TLS
+checks, expected compile/link errors, CMake subprocess capture and parallel
+build/run checks, Node worker/message-port checks, separate-process libuv work
+and process-lifecycle tests, and a Chromium JavaScript/Canvas smoke page.
+The outer Python harness used file-backed output after pipe-EOF waits were
+reproduced with both old and candidate DOS libraries. The initial empty libuv
+logs and Chromium launch with an incorrect program directory were retained as
+failed attempts, then rerun in the appropriate native process/shell contexts.
+This does not establish full Chromium, RPCS3 or V8 qualification.
+
+Before/after library binaries, original and rejected images, reproducible
+fixture hashes, measurements, task backtraces, gate logs and the browser
+screenshot are retained in `aros-adt-selfhost-build/regression/native-elf-shndx/`.
