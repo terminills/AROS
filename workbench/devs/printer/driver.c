@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017, The AROS Development Team.  All rights reserved.
+ * Copyright (C) 2012-2026, The AROS Development Team.  All rights reserved.
  * Author: Jason S. McMullan <jason.mcmullan@gmail.com>
  *
  * Licensed under the AROS PUBLIC LICENSE (APL) Version 1.1
@@ -467,7 +467,7 @@ static VOID pd_Close(struct PrinterData *pd, union printerIO *pio)
 {
     struct PrinterBase *PrinterBase = pd->pd_PUnit->pu_PrinterBase;
     struct PrinterExtendedData *ped = &pd->pd_SegmentData->ps_PED;
-    LONG unitnum = pd->pd_PUnit->pu_Prefs.pp_DeviceUnit.pd_UnitNum;
+    LONG unitnum = pd->pd_UnitNumber;
 
     ped->ped_Close(pio);
 
@@ -734,7 +734,7 @@ static void pd_SyncPrefs(struct PrinterData *pd)
 struct PrinterUnit *Printer_Unit(struct PrinterBase *PrinterBase, LONG unitnum)
 {
     struct PrinterUnit *pu;
-    struct PrinterPrefs prefs;
+    struct PrinterPrefs prefs = { 0 };
     BPTR olddir, dir, driverseg;
 
     if (!Printer_LoadPrefs(PrinterBase, unitnum, &prefs) || prefs.pp_Txt.pt_Driver[0] == 0) {
