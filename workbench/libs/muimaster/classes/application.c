@@ -1709,7 +1709,9 @@ static IPTR Application__MUIM_NewInput(struct IClass *cl, Object *obj,
                 {
                     STRPTR commandstr = (STRPTR)rmsg->rm_Args[0];
                     struct MUI_Command *cmd = data->app_Commands;
-                    while (cmd->mc_Name)
+
+                    rmsg->rm_Result1 = RC_ERROR;
+                    while (cmd != NULL && cmd->mc_Name)
                     {
                         LONG len = 0;
                         while ((commandstr[len] != ' ') && (commandstr[len] != '\0')) len++;
