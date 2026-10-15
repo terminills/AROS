@@ -10,7 +10,8 @@
     PrintSpool/Dir (default T:PrintSpool) as <sequence>-u<unit>.tmp while they
     are written and .job once the last opener has closed the unit. The spooler
     sends .job files in sequence order, deletes them when done, writes its state
-    to PrintSpool/Status and drops a job when <job>.cancel exists.
+    ("<job>: printing on <device> unit <n>, <sent>/<size> KB", "...: waiting, ...",
+    "idle") to PrintSpool/Status and drops a job when <job>.cancel exists.
 */
 
 #include <aros/debug.h>
@@ -166,6 +167,26 @@ static void unit_target(struct PrintSpoolBase *PrintSpoolBase, LONG unit, STRPTR
         strcpy(device, value);
 }
 
+/* Writers hand over their closed jobs: close them and rename them to .job. */
+static void publish_finished(struct PrintSpoolBase *PrintSpoolBase)
+{
+    struct FinishedJob *fj;
+    TEXT from[300], to[300];
+
+    ObtainSemaphore(&PrintSpoolBase->ps_Lock);
+    while ((fj = (struct FinishedJob *)REMHEAD((struct List *)&finished)) != NULL)
+    {
+        ReleaseSemaphore(&PrintSpoolBase->ps_Lock);
+        Close(fj->fj_File);
+        job_path(PrintSpoolBase, fj->fj_Name, TMP_SUFFIX, from, sizeof(from));
+        job_path(PrintSpoolBase, fj->fj_Name, JOB_SUFFIX, to, sizeof(to));
+        Rename(from, to);
+        FreeMem(fj, sizeof(*fj));
+        ObtainSemaphore(&PrintSpoolBase->ps_Lock);
+    }
+    ReleaseSemaphore(&PrintSpoolBase->ps_Lock);
+}
+
 /* Takes the jobs closed by their writers, then sends .job files in order. */
 static void spooler_main(void)
 {
@@ -181,27 +202,12 @@ static void spooler_main(void)
     set_status(PrintSpoolBase, "idle");
     for (;;)
     {
-        struct FinishedJob *fj;
         BPTR file;
         TEXT device[64];
-        LONG unit = 0, devunit, actual;
+        LONG unit = 0, devunit, actual, sent = 0, total = 0;
         BOOL done = FALSE;
 
-        /* Writers hand over their closed jobs: close and publish them. */
-        ObtainSemaphore(&PrintSpoolBase->ps_Lock);
-        while ((fj = (struct FinishedJob *)REMHEAD((struct List *)&finished)) != NULL)
-        {
-            TEXT from[300];
-
-            ReleaseSemaphore(&PrintSpoolBase->ps_Lock);
-            Close(fj->fj_File);
-            job_path(PrintSpoolBase, fj->fj_Name, TMP_SUFFIX, from, sizeof(from));
-            job_path(PrintSpoolBase, fj->fj_Name, JOB_SUFFIX, path, sizeof(path));
-            Rename(from, path);
-            FreeMem(fj, sizeof(*fj));
-            ObtainSemaphore(&PrintSpoolBase->ps_Lock);
-        }
-        ReleaseSemaphore(&PrintSpoolBase->ps_Lock);
+        publish_finished(PrintSpoolBase);
 
         if (chunk == NULL || io == NULL || !next_job(PrintSpoolBase, name, sizeof(name)))
         {
@@ -244,9 +250,21 @@ static void spooler_main(void)
             set_status(PrintSpoolBase, status);
         }
 
+        {
+            struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
+
+            total = 0;
+            if (fib != NULL && ExamineFH(file, fib))
+                total = fib->fib_Size;
+            FreeDosObject(DOS_FIB, fib);
+            sent = 0;
+        }
         while (!done && (actual = Read(file, chunk, CHUNK_SIZE)) > 0)
         {
-            __sprintf(status, "%s: printing on %s unit %ld", name, device, (long)devunit);
+            /* Jobs closed meanwhile are published while this one prints. */
+            publish_finished(PrintSpoolBase);
+            __sprintf(status, "%s: printing on %s unit %ld, %ld/%ld KB", name, device,
+                (long)devunit, (long)(sent / 1024), (long)(total / 1024));
             set_status(PrintSpoolBase, status);
             for (;;)
             {
@@ -255,7 +273,10 @@ static void spooler_main(void)
                 io->io_Length = actual;
                 io->io_Flags = 0;
                 if (DoIO((struct IORequest *)io) == 0)
+                {
+                    sent += actual;
                     break;
+                }
                 /* Out of paper, offline, unplugged: wait, then send the chunk again. */
                 __sprintf(status, "%s: waiting, %s error %ld", name, device, (long)io->io_Error);
                 set_status(PrintSpoolBase, status);
