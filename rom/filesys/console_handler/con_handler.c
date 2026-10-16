@@ -814,8 +814,11 @@ static void startread(struct filehandle *fh)
      * whole count has arrived, which for a console would mean no input at all
      * until the user typed a full buffer, so ask for one character.
      */
-    fh->conreadio->io_Length = (fh->flags & FHFLG_DEVICEMODE)
-                             ? 1 : CONSOLEBUFFER_SIZE;
+    /* ConsoleNG also returns the available bytes immediately. Splitting its
+     * native key events into serial-sized reads breaks cooked CSI parsing. */
+    fh->conreadio->io_Length = ((fh->flags & FHFLG_DEVICEMODE) &&
+        strcmp((const char *)fh->devname, "consoleng.device"))
+        ? 1 : CONSOLEBUFFER_SIZE;
     SendIO((struct IORequest*) fh->conreadio);
     fh->flags |= FHFLG_ASYNCCONSOLEREAD;
 }

@@ -587,6 +587,18 @@ WORD scan_input(struct filehandle *fh, UBYTE *buffer)
             result = INP_EOF;
             break;
 
+        case 0x1B: /* ConsoleNG uses the seven-bit xterm CSI spelling. */
+            if (!(fh->flags & FHFLG_DEVICEMODE) ||
+                strcmp((const char *)fh->devname, "consoleng.device") ||
+                fh->conbufferpos >= fh->conbuffersize ||
+                fh->consolebuffer[fh->conbufferpos] != '[')
+            {
+                *buffer = c;
+                result = INP_STRING;
+                break;
+            }
+            fh->conbufferpos++;
+            /* Fall through to the existing key-sequence table. */
         case 0x9B: /* CSI */
             result = INP_UNKNOWN;
 
