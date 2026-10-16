@@ -8,7 +8,12 @@ kit. Runtime validation belongs to the exact generated kit, not merely its donor
 
 On writable SYS:, run `Execute Install-Development` from the package directory.
 The installer refuses an existing SYS:Development, creates Development:, and
-adds its startup script to S:User-Startup. It does not replace system libraries.
+registers SYS:Development in ENVARC:SYS/Packages/Development. The standard
+Startup-Sequence runs Development/S/Package-Startup on subsequent boots; the
+installer also executes it immediately. Existing package registrations are
+preserved, and S:User-Startup is not edited. To disable automatic setup, delete
+ENV:SYS/Packages/Development and ENVARC:SYS/Packages/Development.
+It does not replace system libraries.
 
 For a live CD, put Development at SYS:Development and execute
 `SYS:Development/S/Development-Demo` during startup. It stages only the example

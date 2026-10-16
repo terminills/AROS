@@ -1,6 +1,6 @@
-; Native development kit, installed at SYS:Development.
-If EXISTS SYS:Development/bin/clang
-  Assign Development: SYS:Development
+; Package startup: use the registered install directory.
+If EXISTS "${SYS/Packages/Development}/bin/clang"
+  Assign Development: "${SYS/Packages/Development}"
   Path Development:bin ADD
   SetEnv PATH "/Development/bin:/C"
 EndIf

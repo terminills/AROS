@@ -42,7 +42,7 @@ def main():
     (kit / 'S').mkdir()
     shutil.copy2(here / 'Build-HelloAROS', kit / 'S/Build-HelloAROS')
     shutil.copy2(here / 'Development-Demo', kit / 'S/Development-Demo')
-    shutil.copy2(here / 'Development-Startup', root / 'Development-Startup')
+    shutil.copy2(here / 'Development-Startup', kit / 'S/Package-Startup')
     shutil.copy2(here / 'Install-Development', root / 'Install-Development')
     shutil.copy2(here / 'README.md', root / 'README.md')
     if args.notices:

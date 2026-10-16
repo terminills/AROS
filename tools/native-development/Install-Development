@@ -4,8 +4,22 @@ If EXISTS SYS:Development
   Echo "SYS:Development already exists; installation stopped without replacing it."
   Quit 10
 EndIf
+If EXISTS ENVARC:SYS/Packages/Development
+  Echo "Development package registration already exists; installation stopped."
+  Quit 10
+EndIf
+If EXISTS ENV:SYS/Packages/Development
+  Echo "An active Development package registration already exists; installation stopped."
+  Quit 10
+EndIf
 Copy Development SYS:Development ALL
-Copy Development-Startup S:Development-Startup
-Echo "Execute S:Development-Startup" >>S:User-Startup
-Execute S:Development-Startup
+If NOT EXISTS ENV:SYS/Packages
+  MakeDir ENV:SYS/Packages ALL
+EndIf
+If NOT EXISTS ENVARC:SYS/Packages
+  MakeDir ENVARC:SYS/Packages ALL
+EndIf
+SetEnv SYS/Packages/Development SYS:Development
+Copy ENV:SYS/Packages/Development ENVARC:SYS/Packages/Development
+Execute SYS:Development/S/Package-Startup
 Echo "Installed. CD Development:Examples/HelloAROS, then make run."
