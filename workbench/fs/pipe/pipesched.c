@@ -163,7 +163,12 @@ PIPEDATA  *pipe;
               change= TRUE;
             }
 
-          if (wd->pktinfo.pipewait.len == 0L)     /* then finished with request */
+          /* A read returns the bytes currently available, even when the
+          ** writer remains open. Waiting to fill the entire request deadlocks
+          ** interactive protocols: FGetC() refills a buffer while the writer
+          ** waits for the reader's response. Writes still complete in full.
+          */
+          if (amt || wd->pktinfo.pipewait.len == 0L)
             EndPipeIO (pipe, wd);
         }     /* end of readerlist loop */
 

@@ -112,6 +112,28 @@ int main()
     }
     printf("10000 read-writes passed, line %d.\n", __LINE__);
 
+    /* Keep the writer open: neither read may wait for a full buffer or EOF.
+       The old PIPE handler blocks at the first read below. */
+    printf("Testing short reads with an open writer...\n");
+    fflush(stdout);
+    TEST((write(filedes[1], "foo", 3) == 3));
+    TEST((read(filedes[0], destination, BUFLEN) == 3));
+    TEST((memcmp(destination, "foo", 3) == 0));
+    {
+        FILE *reader = fdopen(dup(filedes[0]), "r");
+        TEST((reader != NULL));
+        TEST((write(filedes[1], "bar\n", 4) == 4));
+        TEST((fgets(destination, BUFLEN, reader) != NULL));
+        TEST((strcmp(destination, "bar\n") == 0));
+        TEST((write(filedes[1], "z", 1) == 1));
+        TEST((fgetc(reader) == 'z'));
+        TEST((close(filedes[1]) == 0));
+        filedes[1] = 0;
+        TEST((fgetc(reader) == EOF));
+        TEST((feof(reader) && !ferror(reader)));
+        TEST((fclose(reader) == 0));
+    }
+
     cleanup();
     return OK;
 }
