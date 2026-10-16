@@ -762,17 +762,17 @@ static void pd_SyncPrefs(struct PrinterData *pd)
             sizeof(dprefs->PrinterFilename));
     dprefs->PrinterFilename[sizeof(dprefs->PrinterFilename)-1] = 0;
 
-    dprefs->PrintPitch = uprefs->pp_Txt.pt_Pitch;
-    dprefs->PrintQuality = uprefs->pp_Txt.pt_Quality;
-    dprefs->PrintSpacing = uprefs->pp_Txt.pt_Spacing;
+    dprefs->PrintPitch = uprefs->pp_Txt.pt_Pitch << 10;
+    dprefs->PrintQuality = uprefs->pp_Txt.pt_Quality << 8;
+    dprefs->PrintSpacing = uprefs->pp_Txt.pt_Spacing << 9;
     dprefs->PrintLeftMargin = uprefs->pp_Txt.pt_LeftMargin;
     dprefs->PrintRightMargin = uprefs->pp_Txt.pt_RightMargin;
     dprefs->PrintImage = uprefs->pp_Gfx.pg_Image;
     dprefs->PrintAspect = uprefs->pp_Gfx.pg_Aspect;
     dprefs->PrintShade = uprefs->pp_Gfx.pg_Shade;
     dprefs->PrintThreshold = uprefs->pp_Gfx.pg_Threshold;
-    dprefs->PaperSize = uprefs->pp_Txt.pt_PaperSize;
-    dprefs->PaperType = uprefs->pp_Txt.pt_PaperType;
+    dprefs->PaperSize = uprefs->pp_Txt.pt_PaperSize << 4;
+    dprefs->PaperType = uprefs->pp_Txt.pt_PaperType << 7;
     dprefs->PaperLength = uprefs->pp_Txt.pt_PaperLength;
 
     if (uprefs->pp_Unit.pu_DeviceName[0] == 0) {
