@@ -1,0 +1,20 @@
+include $(SRCDIR)/config/aros.cfg
+
+# FindPrinters fetches printer pictures over https with mbedTLS: compile
+# against the AROS mbedTLS configuration the libraries were built with, as
+# sshd does.
+USER_INCLUDES := -I$(SRCDIR)/workbench/libs/mbedtls
+USER_CPPFLAGS := -DMBEDTLS_CONFIG_FILE='"mbedtls_aros_config.h"'
+USER_CFLAGS := $(CFLAGS_GNU99)
+
+#MM- workbench-devs-common: workbench-devs-ipp-findprinters
+#MM- workbench-devs-quick: workbench-devs-ipp-findprinters
+
+#MM workbench-devs-ipp-findprinters : network-includes-copy workbench-libs-mbedtls
+
+%build_prog mmake=workbench-devs-ipp-findprinters \
+  progname=FindPrinters targetdir=$(AROS_C) \
+  files="findprinters fp_http fp_ipp" \
+  uselibs="mbedtls mbedx509 mbedcrypto"
+
+%common
