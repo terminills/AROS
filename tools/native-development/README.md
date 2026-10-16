@@ -13,6 +13,11 @@ Startup-Sequence runs Development/S/Package-Startup on subsequent boots; the
 installer also executes it immediately. Existing package registrations are
 preserved, and S:User-Startup is not edited. To disable automatic setup, delete
 ENV:SYS/Packages/Development and ENVARC:SYS/Packages/Development.
+Package startup appends Development:bin to C: so fresh Workbench shells find
+the tools while existing system commands keep precedence. It supplies Developer:
+only when that conventional SDK assign is absent; native collect-aros still
+references that path. Existing Developer: assignments are preserved. Reboot after
+disabling the package to discard its process paths and assigns.
 It does not replace system libraries.
 
 For a live CD, put Development at SYS:Development and execute

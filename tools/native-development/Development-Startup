@@ -1,6 +1,14 @@
 ; Package startup: use the registered install directory.
 If EXISTS "${SYS/Packages/Development}/bin/clang"
   Assign Development: "${SYS/Packages/Development}"
+  ; Workbench-created shells search C: rather than the startup CLI path.
+  ; Append the SDK so existing system commands keep precedence.
+  Assign C: Development:bin ADD
+  ; Native collect-aros also uses the conventional Developer: SDK path.
+  Assign Developer: EXISTS >NIL:
+  If WARN
+    Assign Developer: "${SYS/Packages/Development}"
+  EndIf
   Path Development:bin ADD
   SetEnv PATH "/Development/bin:/C"
 EndIf
