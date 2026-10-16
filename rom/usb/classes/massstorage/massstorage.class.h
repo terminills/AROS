@@ -87,6 +87,7 @@ struct DeviceNode * FindMatchingDevice(struct NepClassMS *ncm, struct DosEnvec *
 BOOL CheckFATPartition(struct NepClassMS *ncm, ULONG startblock);
 void ProcessRDB(struct NepClassMS *ncm);
 BOOL AutoMountCD(struct NepClassMS *ncm);
+BOOL CheckISO9660Image(struct NepClassMS *ncm);
 
 void AutoDetectMaxTransfer(struct NepClassMS *ncm);
 

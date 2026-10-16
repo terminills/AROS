@@ -4060,6 +4060,12 @@ AROS_UFH0(void, GM_UNIQUENAME(nRemovableTask))
                                         mounted = AutoMountCD(ncm);
                                     }
                                 }
+                                else if(ncm->ncm_CUC->cuc_AutoMountCD &&
+                                        CheckISO9660Image(ncm) && AutoMountCD(ncm))
+                                {
+                                    /* hybrid ISO on a disk-type unit, e.g. a written stick */
+                                    mounted = TRUE;
+                                }
                                 // find and mount partitions
                                 else if(CheckPartitions(ncm))
                                 {
@@ -5314,11 +5320,45 @@ BOOL CheckFATPartition(struct NepClassMS *ncm, ULONG startblock)
 }
 /* \\\ */
 
+/* /// "CheckISO9660Image()" */
+BOOL CheckISO9660Image(struct NepClassMS *ncm)
+{
+    struct NepMSBase *nh = ncm->ncm_ClsBase;
+    struct IOStdReq *stdIO = &nh->nh_IOReq;
+    UBYTE *pvd;
+    BOOL iso = FALSE;
+
+    /* The primary volume descriptor is the 2048-byte ISO9660 sector 16. */
+    if((ncm->ncm_BlockSize > 2048) ||
+       ((UQUAD)ncm->ncm_Geometry.dg_TotalSectors * ncm->ncm_BlockSize < 17 * 2048))
+    {
+        return(FALSE);
+    }
+    pvd = (UBYTE *) psdAllocVec(2048);
+    if(!pvd)
+    {
+        return(FALSE);
+    }
+    stdIO->io_Command = TD_READ64;
+    stdIO->io_Offset = 16 * 2048;
+    stdIO->io_Actual = 0;
+    stdIO->io_Length = 2048;
+    stdIO->io_Data = pvd;
+    if(!nIOCmdTunnel(ncm, stdIO))
+    {
+        iso = (pvd[0] == 1) && !memcmp(&pvd[1], "CD001", 5);
+    }
+    psdFreeVec(pvd);
+    return(iso);
+}
+/* \\\ */
+
 /* /// "AutoMountCD()" */
 BOOL AutoMountCD(struct NepClassMS *ncm)
 {
     struct NepMSBase *nh = ncm->ncm_ClsBase;
     struct DosEnvec *envec;
+    UQUAD cdblocks;
 
     nh->nh_RDsk.rdsk_PART.pb_DevFlags = 0;
 
@@ -5330,7 +5370,9 @@ BOOL AutoMountCD(struct NepClassMS *ncm)
     memset(envec, 0x00, sizeof(struct DosEnvec));
 
     envec->de_TableSize = DE_BOOTBLOCKS;
-    envec->de_SizeBlock = ncm->ncm_BlockSize>>2;
+    /* ISO9660 is addressed in 2048-byte blocks whatever the unit's sector
+       size; the CD filesystem reads by byte offset. */
+    envec->de_SizeBlock = 2048>>2;
     envec->de_Surfaces = 1;
     envec->de_SectorPerBlock = 1;
     /* The CD filesystem ignores this, but an AFS/FFS-family probe of the
@@ -5370,8 +5412,8 @@ BOOL AutoMountCD(struct NepClassMS *ncm)
        A fixed 1 described a two-block volume, on which an AFS/FFS-family
        probe looped or raised read error requesters instead of rejecting
        the CD. */
-    envec->de_HighCyl = (ncm->ncm_Geometry.dg_TotalSectors > 1) ?
-                        (ncm->ncm_Geometry.dg_TotalSectors - 1) : 1;
+    cdblocks = (UQUAD)ncm->ncm_Geometry.dg_TotalSectors * ncm->ncm_BlockSize / 2048;
+    envec->de_HighCyl = (cdblocks > 1) ? (ULONG)(cdblocks - 1) : 1;
 
     strncpy((char *) nh->nh_RDsk.rdsk_FSHD.fhb_FileSysName, ncm->ncm_CDC->cdc_CDFSName, 84);
     return(CheckPartition(ncm));
