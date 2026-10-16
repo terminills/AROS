@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2018, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include "unix_hints.h"
@@ -199,7 +199,7 @@ static time_t datestamp2timestamp(struct emulbase *emulbase, struct DateStamp *d
                  datestamp->ds_Tick / TICKS_PER_SECOND;
     
     struct ClockData date;
-    struct tm tm;
+    struct tm tm = {0};
     time_t ret;
 
     Amiga2Date(secs, &date);
@@ -210,6 +210,8 @@ static time_t datestamp2timestamp(struct emulbase *emulbase, struct DateStamp *d
     tm.tm_hour = date.hour;
     tm.tm_min = date.min;
     tm.tm_sec = date.sec;
+    /* Let the host determine daylight saving time for this date. */
+    tm.tm_isdst = -1;
     
     ret = emulbase->pdata.SysIFace->mktime(&tm);
     AROS_HOST_BARRIER
@@ -366,7 +368,8 @@ static inline int nocase_link(struct emulbase *emulbase, char *oldpath, char *ne
 
 static inline int nocase_symlink(struct emulbase *emulbase, char *oldpath, char *newpath)
 {
-    fixcase(emulbase, oldpath);
+    /* A relative target is interpreted from the link's directory, not the
+       handler's host working directory. It may not exist yet. */
     fixcase(emulbase, newpath);
 
     return emulbase->pdata.SysIFace->symlink(oldpath, newpath);
@@ -785,14 +788,55 @@ LONG DoHardLink(struct emulbase *emulbase, char *fn, char *oldfile)
 LONG DoSymLink(struct emulbase *emulbase, char *dest, char *src)
 {
     LONG error;
+    char *target = dest;
+
+    /* DOS represents each parent component with an empty path component:
+       /file means ../file, and dir//file means dir/../file. Passing these
+       strings to Unix symlink() verbatim makes leading parents absolute.
+       Keep relative targets relative so forward references also work. */
+    if (!strchr(dest, ':'))
+    {
+        const char *p;
+        char *out;
+        BOOL component_start = TRUE;
+
+        target = AllocVecPooled(emulbase->mempool, strlen(dest) * 3 + 2);
+        if (!target)
+            return ERROR_NO_FREE_STORE;
+        out = target;
+        for (p = dest; *p; p++)
+        {
+            if (*p == '/')
+            {
+                if (component_start)
+                {
+                    *out++ = '.';
+                    *out++ = '.';
+                }
+                *out++ = '/';
+                component_start = TRUE;
+            }
+            else
+            {
+                *out++ = *p;
+                component_start = FALSE;
+            }
+        }
+        if (out == target)
+            *out++ = '.';
+        *out = '\0';
+    }
 
     HostLib_Lock();
 
-    error = nocase_symlink(emulbase, dest, src);
+    error = nocase_symlink(emulbase, target, src);
     if (error)
         error = err_u2a(emulbase);
 
     HostLib_Unlock();
+
+    if (target != dest)
+        FreeVecPooled(emulbase->mempool, target);
 
     return error;
 }
@@ -809,6 +853,34 @@ int DoReadLink(struct emulbase *emulbase, char *filename, char *buffer, ULONG si
     else if (res == size)
         /* Buffer was too small */
         res = -2;
+    else if (res > 0 && buffer[0] != '/')
+    {
+        char *in = buffer, *out = buffer;
+
+        /* Return DOS path syntax to ACTION_READ_LINK. Unix parent
+           components must not reach the DOS path validator as "..". */
+        buffer[res] = '\0';
+        while (*in)
+        {
+            char *end = strchr(in, '/');
+            size_t length = end ? (size_t)(end - in) : strlen(in);
+
+            if (length == 2 && in[0] == '.' && in[1] == '.')
+                *out++ = '/';
+            else if (!(length == 1 && in[0] == '.'))
+            {
+                memmove(out, in, length);
+                out += length;
+                if (end)
+                    *out++ = '/';
+            }
+            if (!end)
+                break;
+            in = end + 1;
+        }
+        *out = '\0';
+        res = out - buffer;
+    }
 
     HostLib_Unlock();
 
@@ -1071,6 +1143,81 @@ LONG DoExamineEntry(struct emulbase *emulbase, struct filehandle *fh, char *Entr
 }
 
 /*********************************************************************************************/
+
+/* Keep the legacy ExAllData/FileInfoBlock path separate: both carry
+   32-bit sizes. DOS64 packets must receive the host's full file size. */
+LONG DoExamine64(struct emulbase *emulbase, struct filehandle *fh,
+                 struct FileInfoBlock64 *fib, BOOL next)
+{
+    struct stat st;
+    struct dirent *entry;
+    STRPTR entry_name = NULL;
+    const char *name;
+    IPTR key = 0;
+    ULONG length;
+    LONG err;
+
+    if (next)
+    {
+        if (fh->type != FHD_DIRECTORY)
+            return ERROR_OBJECT_WRONG_TYPE;
+        HostLib_Lock();
+#ifndef HOST_OS_android
+        emulbase->pdata.SysIFace->seekdir(fh->fd, fib->fib_DiskKey);
+        AROS_HOST_BARRIER
+#endif
+        entry = ReadDir(emulbase, fh, &fib->fib_DiskKey);
+        HostLib_Unlock();
+        if (!entry)
+            return ERROR_NO_MORE_ENTRIES;
+        entry_name = entry->d_name;
+        key = fib->fib_DiskKey;
+    }
+
+    if (!next && fh->type == FHD_FILE)
+    {
+        /* Handles remain examinable after the pathname is renamed/unlinked. */
+        HostLib_Lock();
+        err = emulbase->pdata.SysIFace->fstat((int)(IPTR)fh->fd, &st);
+        AROS_HOST_BARRIER
+        if (err)
+            err = err_u2a(emulbase);
+        HostLib_Unlock();
+    }
+    else
+        err = stat_entry(emulbase, fh, entry_name, &st);
+    if (err)
+        return err;
+
+    memset(fib, 0, sizeof(*fib));
+    fib->fib_DiskKey = key;
+    fib->fib_Size = st.st_size;
+    fib->fib_NumBlocks = (fib->fib_Size + 511) / 512;
+    fib->fib_Protection = prot_u2a(st.st_mode);
+    fib->fib_OwnerUID = st.st_uid;
+    fib->fib_OwnerGID = st.st_gid;
+    timestamp2datestamp(emulbase, &st.st_mtime, &fib->fib_Date);
+    fib->fib_DirEntryType = S_ISDIR(st.st_mode)
+        ? ((entry_name || fh->name[0]) ? ST_USERDIR : ST_ROOT)
+        : (S_ISLNK(st.st_mode) ? ST_SOFTLINK : ST_FILE);
+    fib->fib_EntryType = fib->fib_DirEntryType;
+
+    if (entry_name)
+        name = entry_name;
+    else if (fh->name[0])
+    {
+        name = strrchr(fh->name, '/');
+        name = name ? name + 1 : fh->name;
+    }
+    else
+        name = fh->volumename;
+    length = strlen(name);
+    if (length > sizeof(fib->fib_FileName) - 2)
+        length = sizeof(fib->fib_FileName) - 2;
+    fib->fib_FileName[0] = length;
+    CopyMem(name, &fib->fib_FileName[1], length);
+    return 0;
+}
 
 LONG DoExamineNext(struct emulbase *emulbase, struct filehandle *fh,
                   struct FileInfoBlock *FIB)

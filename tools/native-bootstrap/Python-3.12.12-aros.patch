@@ -1,0 +1,118 @@
+--- a/configure
++++ b/configure
+@@ -4267,0 +4268,3 @@
++	*-*-aros*)
++		ac_sys_system=AROS
++		;;
+@@ -4329,0 +4333,3 @@
++	*-*-aros*)
++		_host_cpu=$host_cpu
++		;;
+--- a/configure.ac
++++ b/configure.ac
+@@ -543,0 +544,3 @@
++	*-*-aros*)
++		ac_sys_system=AROS
++		;;
+@@ -603,0 +607,3 @@
++	*-*-aros*)
++		_host_cpu=$host_cpu
++		;;
+--- a/Python/pytime.c
++++ b/Python/pytime.c
+@@ -38,0 +39,3 @@
++#elif SIZEOF_TIME_T == SIZEOF_INT
++#  define PY_TIME_T_MAX INT_MAX
++#  define PY_TIME_T_MIN INT_MIN
+--- a/Python/fileutils.c
++++ b/Python/fileutils.c
+@@ -2593 +2593 @@
+-#elif defined(HAVE_FCNTL_H) && defined(F_DUPFD_CLOEXEC)
++#elif defined(HAVE_FCNTL_H) && defined(F_DUPFD_CLOEXEC) && !defined(__AROS__)
+--- a/Modules/_pickle.c
++++ b/Modules/_pickle.c
+@@ -51,0 +52,8 @@
++#endif
++
++#ifdef __AROS__
++/* Keep the pickle opcode names local despite AROS system typedefs/macros. */
++#define FLOAT PICKLE_FLOAT
++#define LONG PICKLE_LONG
++#undef GLOBAL
++#define GLOBAL PICKLE_GLOBAL
+--- a/Modules/_posixsubprocess.c
++++ b/Modules/_posixsubprocess.c
+@@ -44 +44 @@
+-#if defined(__linux__) && defined(HAVE_VFORK) && defined(HAVE_SIGNAL_H) && \
++#if (defined(__linux__) || defined(__AROS__)) && defined(HAVE_VFORK) && defined(HAVE_SIGNAL_H) && \
+@@ -49,0 +50,3 @@
++# if defined(__AROS__) && !defined(_NSIG)
++#  define _NSIG NSIG
++# endif
+@@ -430,0 +434,4 @@
++#ifdef __AROS__
++        /* AROS has no procfs; probing it can display a volume requester. */
++        proc_fd_dir = NULL;
++#else
+@@ -431,0 +439 @@
++#endif
+@@ -804,0 +813 @@
++#ifndef __AROS__
+@@ -805,0 +815 @@
++#endif
+@@ -822,0 +833 @@
++#ifndef __AROS__
+@@ -823,0 +835,4 @@
++#endif
++        /* AROS bootstrap uses a shared CRT base. Concurrent vfork calls
++         * replace its exit state; retain the GIL until exec restores it.
++         * The launched program then runs independently of this lock. */
+@@ -824,0 +840 @@
++#ifndef __AROS__
+@@ -828,0 +845,2 @@
++#endif
++#ifdef HAVE_FORK
+@@ -834,0 +853 @@
++#endif
+@@ -837,0 +857 @@
++#ifdef HAVE_FORK
+@@ -838,0 +859,4 @@
++#else
++        errno = ENOTSUP;
++        pid = -1;
++#endif
+@@ -855,0 +880 @@
++#ifdef HAVE_FORK
+@@ -856,0 +882 @@
++#endif
+@@ -948,0 +975,9 @@
++#ifndef HAVE_FORK
++    /* AROS shares the parent's address space: Python callbacks are unsafe. */
++    if (preexec_fn != Py_None) {
++        PyErr_SetString(PyExc_ValueError,
++                        "preexec_fn requires fork and is unsupported on AROS");
++        return NULL;
++    }
++#endif
++
+@@ -1126,0 +1162 @@
++#ifdef HAVE_FORK
+@@ -1127,0 +1164 @@
++#endif
+@@ -1188,0 +1226 @@
++#ifdef HAVE_FORK
+@@ -1190,0 +1229 @@
++#endif
+--- a/Modules/resource.c
++++ b/Modules/resource.c
+@@ -3,0 +4,3 @@
++#ifdef __AROS__
++#define RLIM_NLIMITS (RLIMIT_AS + 1)
++#endif
+--- a/Lib/email/utils.py
++++ b/Lib/email/utils.py
+@@ -29 +28,0 @@
+-import socket
+@@ -307,0 +307,2 @@
++        # Bootstrap builds may omit networking; import only when needed.
++        import socket

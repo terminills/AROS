@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 # Copyright @ 2004-2026, The AROS Development Team. All rights reserved.
 # $Id$
@@ -125,7 +125,7 @@ curl_ftp()
     local curlextraflags
     local ret=true
 
-    for (( ; ; ))
+    while :
     do
         if !  eval "curl -f --retry 3 --retry-connrefused $curlextraflags --speed-limit 1 --speed-time 15 -C - \"$curlsrc\" -o $curloutput"; then
             if test "$ret" = false; then
@@ -238,10 +238,10 @@ valid_archive()
     local path="$1" name="$2" magic
     magic=$(od -An -tx1 -N6 "$path" 2>/dev/null | tr -d ' \n')
     case "$name" in
-        *.tar.gz | *.tgz | *.crate) [ "${magic:0:4}" = "1f8b" ] ;;
-        *.tar.bz2)                  [ "${magic:0:6}" = "425a68" ] ;;
+        *.tar.gz | *.tgz | *.crate) [ "${magic#1f8b}" != "$magic" ] ;;
+        *.tar.bz2)                  [ "${magic#425a68}" != "$magic" ] ;;
         *.tar.xz)                   [ "$magic" = "fd377a585a00" ] ;;
-        *.zip)                      [ "${magic:0:8}" = "504b0304" ] ;;
+        *.zip)                      [ "${magic#504b0304}" != "$magic" ] ;;
         *)                          true ;;
     esac
 }
@@ -258,7 +258,7 @@ fetch()
 
     local ret=true
     
-    trap 'rm -f "$destination/$file".tmp; exit' SIGINT SIGKILL SIGTERM
+    trap 'rm -f "$destination/$file".tmp; exit 1' INT TERM
 
     case $protocol in
         https| http)
@@ -284,27 +284,27 @@ fetch()
             rm -f "$destination/$file.tmp"
             ;;
         archives)
-            if ! fetch_archives "${origin:${#protocol}+3}" "$file" "$destination"; then
+            if ! fetch_archives "${origin#*://}" "$file" "$destination"; then
                 ret=false
             fi
             ;;
         gnu)
-            if ! fetch_gnu "${origin:${#protocol}+3}" "$file" "$destination"; then
+            if ! fetch_gnu "${origin#*://}" "$file" "$destination"; then
                 ret=false
             fi
             ;;
         sf | sourceforge)
-            if ! fetch_sf "${origin:${#protocol}+3}" "$file" "$destination"; then
+            if ! fetch_sf "${origin#*://}" "$file" "$destination"; then
                 ret=false
             fi
             ;;
         github)
-            if ! fetch_github "${origin:${#protocol}+3}" "$file" "$destination"; then
+            if ! fetch_github "${origin#*://}" "$file" "$destination"; then
                 ret=false
             fi
             ;;
         cache)
-            if ! fetch_ghcache "${origin:${#protocol}+3}" "$file" "$destination"; then
+            if ! fetch_ghcache "${origin#*://}" "$file" "$destination"; then
                 ret=false
             fi
             ;;
@@ -321,7 +321,7 @@ fetch()
 	    ;;
     esac
     
-    trap SIGINT SIGKILL SIGTERM
+    trap - INT TERM
     
     $ret
 }
@@ -396,7 +396,12 @@ unpack()
 	    if ! unzip "$archivepath/$archive"; then ret=false; fi
 	    ;;
         *.tar.xz)
-	    if ! tar xfJ "$archivepath/$archive"; then ret=false; fi
+            if ! command -v xz >/dev/null 2>&1 && command -v xzdec >/dev/null 2>&1; then
+                # The bootstrap SDK may provide the standalone decoder.
+                if ! tar xf "$archivepath/$archive" -I xzdec; then ret=false; fi
+            else
+                if ! tar xfJ "$archivepath/$archive"; then ret=false; fi
+            fi
 	    ;;
 	*)
 	    echo "Unknown archive format for \`$archive'."
@@ -435,9 +440,9 @@ do_patch()
     local old_PWD="$PWD"
     cd "$location"
     
-    local patch=$(echo "$patch_spec": | cut -d: -f1)
-    local subdir=$(echo "$patch_spec": | cut -d: -f2)
-    local patch_opt=$(echo "$patch_spec": | cut -d: -f3 | sed -e "s/,/ /g")
+    local patch="$(echo "$patch_spec": | cut -d: -f1)"
+    local subdir="$(echo "$patch_spec": | cut -d: -f2)"
+    local patch_opt="$(echo "$patch_spec": | cut -d: -f3 | sed -e "s/,/ /g")"
     local patch_cmd="patch -Z -E $patch_opt < $BASE/$patch"
         
     cd "${subdir:-.}"  2> /dev/null;
@@ -457,7 +462,7 @@ patch_cached()
 {
     local location="$1" patch="$2";
     
-    local patchname=$(echo "$patch" | cut -d: -f1)
+    local patchname="$(echo "$patch" | cut -d: -f1)"
     
     if test "x$patchname" != "x"; then
         if ! test -f "$BASE/.${patchname}.applied";  then
@@ -476,7 +481,7 @@ fetchlock()
     local location="$1" archive="$2" localbuild="$3" ;
     local notified=0;
 
-    for (( ; ; ))
+    while :
     do
         if ! test -f "$location"; then
             local lockfile="${location}/${archive}.fetch"
@@ -488,7 +493,7 @@ fetchlock()
                 echo "$(hostname):$$" > "$lockfile"
                 break
             else
-                local owner=$(tr -d '\0' < "$lockfile")
+                local owner="$(tr -d '\0' < "$lockfile")"
                 local host="${owner%%:*}" pid="${owner##*:}"
                 case "$pid" in
                     ""|*[!0-9]*)
@@ -543,10 +548,9 @@ while test "x$1" != "x"; do
                 usage "$0"
             fi
             # If $2 is non-empty and starts with '-', treat as missing
-            if test "x${2}" != "x" && test "x${2:0:1}" = "x-"; then
-                echo "Option $1 requires an argument."
-                usage "$0"
-            fi
+            case "$2" in
+                -*) echo "Option $1 requires an argument."; usage "$0" ;;
+            esac
             case "$1" in
                 -ao) archive_origins="$2";;
                 -a)  archive="$2";;
@@ -576,9 +580,9 @@ BASE=${newbase:-${destination}}
 patches_origins=${patches_origins:-.}
 
 # Ensure LOCATION, destination, and BASE are absolute paths.
-[[ "$LOCATION" != /* ]] && LOCATION="$PWD/$LOCATION"
-[[ "$destination" != /* ]] && destination="$PWD/$destination"
-[[ "$BASE" != /* ]] && BASE="$PWD/$BASE"
+case "$LOCATION" in /*) ;; *) LOCATION="$PWD/$LOCATION" ;; esac
+case "$destination" in /*) ;; *) destination="$PWD/$destination" ;; esac
+case "$BASE" in /*) ;; *) BASE="$PWD/$BASE" ;; esac
 
 fetchlockfile="$archive"
 fetchlock "$LOCATION" "$fetchlockfile"

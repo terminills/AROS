@@ -1841,12 +1841,17 @@ static BPTR load_seg_elf_int
          */
         if ((sh[i].type == SHT_REL || sh[i].type == SHT_RELA) && sh[i].size && sh[sh[i].info].addr)
         {
+            BOOL relocated;
+
             sh[i].addr = load_block(file, sh[i].offset, sh[i].size, funcarray, &srb, DOSBase);
-            if (!sh[i].addr || !relocate(&eh, sh, got_base, i, symtab_shndx, reloc_out_of_range, DOSBase))
+            if (!sh[i].addr)
                 goto error;
 
+            relocated = relocate(&eh, sh, got_base, i, symtab_shndx, reloc_out_of_range, DOSBase);
             ilsFreeMem(sh[i].addr, sh[i].size);
             sh[i].addr = NULL;
+            if (!relocated)
+                goto error;
         }
     }
 
@@ -1903,10 +1908,12 @@ end:
     }
 #endif
 
-    /* deallocate the symbol tables */
+    /* All three temporary table types are loaded above, including the
+       extended section indices used by large ELF executables. */
     for (i = 0; i < int_shnum; i++)
     {
-        if (((sh[i].type == SHT_SYMTAB) || (sh[i].type == SHT_STRTAB)) && (sh[i].addr != NULL))
+        if (((sh[i].type == SHT_SYMTAB) || (sh[i].type == SHT_STRTAB) ||
+             (sh[i].type == SHT_SYMTAB_SHNDX)) && (sh[i].addr != NULL))
             ilsFreeMem(sh[i].addr, sh[i].size);
     }
 

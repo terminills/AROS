@@ -412,11 +412,10 @@ static LONG rename_object(struct emulbase * emulbase, struct filehandle *fh,
   
   char *filename = NULL , *newfilename = NULL;
  
-  /* FIXME: fh2 is unused! */
   ret = makefilename(emulbase, &filename, NULL, fh, file);
   if (!ret)
   {
-        ret = makefilename(emulbase, &newfilename, NULL, fh, newname);
+        ret = makefilename(emulbase, &newfilename, NULL, fh2, newname);
         if (!ret)
         {
             ret = DoRename(emulbase, filename, newfilename);
@@ -481,12 +480,16 @@ static LONG read_softlink(struct emulbase *emulbase, struct filehandle *fh, CONS
                     if (target)
                     {
                         strcpy(target, buffer);
-                        if (shrink(target))
+                        strcpy(buffer, ln);
+                        strcat(buffer, target);
+                        /* Parents are relative to the link's directory.
+                           Normalize the combined path, not the target alone. */
+                        if (shrink(buffer))
                         {
-                            strcpy(buffer, ln);
-                            strcat(buffer, target);
                             *size = strlen(buffer);
                         }
+                        else
+                            ret = ERROR_OBJECT_NOT_FOUND;
 
                         FreeVecPooled(emulbase->mempool, target);
                     }
@@ -961,6 +964,24 @@ static void handlePacket(struct emulbase *emulbase, struct filehandle *fhv, stru
 
         DSAME(bug("[emul] Replying with 0x%p, %ld\n", Res1, Res2));
         break;
+
+#ifdef EMUL_HAS_EXAMINE64
+    case ACTION_EXAMINE_FH64:
+        fh = FH_FROM(dp->dp_Arg1);
+        Res2 = DoExamine64(emulbase, fh,
+                          (struct FileInfoBlock64 *)BADDR(dp->dp_Arg2), FALSE);
+        Res1 = (Res2 == 0) ? DOSTRUE : DOSFALSE;
+        break;
+
+    case ACTION_EXAMINE_OBJECT64:
+    case ACTION_EXAMINE_NEXT64:
+        fh = FH_FROM_LOCK(dp->dp_Arg1);
+        Res2 = DoExamine64(emulbase, fh,
+                          (struct FileInfoBlock64 *)BADDR(dp->dp_Arg2),
+                          dp->dp_Type == ACTION_EXAMINE_NEXT64);
+        Res1 = (Res2 == 0) ? DOSTRUE : DOSFALSE;
+        break;
+#endif
 
     case ACTION_EXAMINE_FH:
         fh = FH_FROM(dp->dp_Arg1);

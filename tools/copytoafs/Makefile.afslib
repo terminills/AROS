@@ -19,7 +19,7 @@ FILES := \
 	validator
 
 ifeq ($(AROS_HOST_ARCH),aros)
-FILES := error $(subst os_unix_support,os_aros_support,$(FILES))
+FILES := error afs_security $(subst os_unix_support,os_aros_support,$(FILES))
 endif
 
 AFSSRCDIR := $(SRCDIR)/rom/filesys/afs
@@ -48,8 +48,8 @@ $(AFSLIB): $(OBJS)
 	@$(HOST_AR) $@ $?
 	@$(HOST_RANLIB) $@
 
-$(OBJDIR)/config.h: $(OBJDIR) myconf.aros
-	@./myconf.aros $(TOP) >> $@
+$(OBJDIR)/config.h: myconf.aros | $(OBJDIR)
+	@./myconf.aros $(OBJDIR) $(HOST_CC) $(HOST_CFLAGS) $(HOST_LDFLAGS) > $@.tmp && mv $@.tmp $@
 
 $(OBJDIR)/%.o: $(AFSSRCDIR)/%.c $(OBJDIR)/config.h
 	@$(ECHO) "Compiling $(notdir $@)..."

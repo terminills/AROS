@@ -78,7 +78,8 @@
                 }
             }
 
-            if (*ptr == FMTPRINTF_STR('h') || *ptr == FMTPRINTF_STR('l') || *ptr == FMTPRINTF_STR('L') || *ptr == FMTPRINTF_STR('z'))
+            if (*ptr == FMTPRINTF_STR('h') || *ptr == FMTPRINTF_STR('l') || *ptr == FMTPRINTF_STR('L') || *ptr == FMTPRINTF_STR('z')
+                || *ptr == FMTPRINTF_STR('j') || *ptr == FMTPRINTF_STR('t'))
                 subtype=*ptr++;
 
             if (*ptr == FMTPRINTF_STR('l') || *ptr == FMTPRINTF_STR('q'))
@@ -90,6 +91,11 @@
                 ptr++;
             }
             
+            /* The separate wide-integer path is needed for intmax_t on ILP32. */
+#ifdef AROS_HAVE_LONG_LONG
+            if (subtype == FMTPRINTF_STR('j'))
+                lltype = 1;
+#endif
             type = *ptr++;
 
             switch(type)
@@ -121,17 +127,19 @@
                     {
                         signed long v2;
 
-                        if (subtype == FMTPRINTF_STR('l'))
+                        if (subtype == FMTPRINTF_STR('l') || subtype == FMTPRINTF_STR('j'))
                         {
 #ifdef AROS_HAVE_LONG_LONG
                             if (lltype)
                             {
                                 signed long long llv2;
                                 
-                                llv2 = va_arg(args, signed long long);
+                                llv2 = subtype == FMTPRINTF_STR('j')
+                                    ? va_arg(args, intmax_t)
+                                    : va_arg(args, signed long long);
                                 if (llv2 < 0)
                                 {
-                                    llv = - llv2;
+                                    llv = 0ULL - (unsigned long long)llv2;
                                     v2 = -1;            /* Assign a dummy value to v2 in order to process sign below */
                                 }
                                 else
@@ -142,8 +150,12 @@
                             }
                             else
 #endif
-                                v2=va_arg(args, signed long);
+                                v2 = subtype == FMTPRINTF_STR('j')
+                                    ? va_arg(args, intmax_t)
+                                    : va_arg(args, signed long);
                         }
+                        else if (subtype == FMTPRINTF_STR('t'))
+                            v2 = va_arg(args, ptrdiff_t);
                         else if (subtype == FMTPRINTF_STR('z'))
                             v2 = va_arg(args, size_t);
                         else
@@ -152,7 +164,7 @@
                         if (v2 < 0)
                         {
                             buffer1[size1++] = FMTPRINTF_STR('-');
-                            v = -v2;
+                            v = 0UL - (unsigned long)v2;
                         }
                         else
                         {
@@ -165,15 +177,22 @@
                     }
                     else                                /* These are unsigned */
                     {
-                        if (subtype == FMTPRINTF_STR('l'))
+                        if (subtype == FMTPRINTF_STR('l') || subtype == FMTPRINTF_STR('j'))
                         {
 #ifdef AROS_HAVE_LONG_LONG
                             if (lltype)
-                                llv = va_arg(args, unsigned long long);
+                                llv = subtype == FMTPRINTF_STR('j')
+                                    ? va_arg(args, uintmax_t)
+                                    : va_arg(args, unsigned long long);
                             else
 #endif
-                                v = va_arg(args, unsigned long);
+                                v = subtype == FMTPRINTF_STR('j')
+                                    ? va_arg(args, uintmax_t)
+                                    : va_arg(args, unsigned long);
                         }
+                        else if (subtype == FMTPRINTF_STR('t'))
+                            /* AROS uintptr_t is the unsigned ptrdiff_t type. */
+                            v = va_arg(args, uintptr_t);
                         else if (subtype == FMTPRINTF_STR('z'))
                             v = va_arg(args, size_t);
                         else
@@ -633,7 +652,12 @@
                     preci = 0;
                     break;
                 case FMTPRINTF_STR('n'):
-                    *va_arg(args, int *) = outcount;
+                    if (subtype == FMTPRINTF_STR('j'))
+                        *va_arg(args, intmax_t *) = outcount;
+                    else if (subtype == FMTPRINTF_STR('t'))
+                        *va_arg(args, ptrdiff_t *) = outcount;
+                    else
+                        *va_arg(args, int *) = outcount;
                     width = preci = 0;
                     break;
                 default:

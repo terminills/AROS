@@ -2,13 +2,14 @@
     Copyright (C) 2025-2026, The AROS Development Team.
     All rights reserved.
 
-    POSIX.1-2008 function fstatvfs
+    POSIX.1-2008 function statvfs
 */
 
 #include <aros/debug.h>
 #include <proto/dos.h>
 
 #include "__dos64.h"
+#include "__upath.h"
 #include <errno.h>
 #include <string.h>
 #include <sys/statvfs.h>
@@ -23,6 +24,11 @@ int statvfs(const char *restrict path, struct statvfs *restrict buf)
     }
 
     memset(buf, 0, sizeof(*buf));
+
+    /* Use the same Unix-to-DOS path handling as stat() and statfs(). */
+    path = __path_u2a(path);
+    if (!path)
+        return -1;
 
     BPTR lock = Lock((STRPTR)path, ACCESS_READ);
     if (lock == 0) {

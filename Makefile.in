@@ -231,11 +231,11 @@ $(CREATEDTDESC): $(wildcard $(SRCDIR)/tools/dtdesc/*.[ch]) $(wildcard $(SRCDIR)/
 	@$(ECHO) Building $(notdir $@)...
 	@$(CALL) $(MAKE) $(MKARGS) -C $(SRCDIR)/tools/dtdesc -f Makefile.aros SRCDIR=$(SRCDIR) TOP=$(TOP)
 
-$(AFSLIB): $(wildcard $(SRCDIR)/rom/filesys/afs/*.[ch])
+$(AFSLIB): $(wildcard $(SRCDIR)/rom/filesys/afs/*.[ch]) $(SRCDIR)/tools/copytoafs/Makefile.afslib $(SRCDIR)/tools/copytoafs/myconf.aros
 	@$(ECHO) Building afslib...
 	@$(CALL) $(MAKE) $(MKARGS) -C $(SRCDIR)/tools/copytoafs -f Makefile.afslib SRCDIR=$(SRCDIR) TOP=$(TOP)
 
-$(COPYTOAFS): $(AFSLIB) $(SRCDIR)/tools/copytoafs/copytoafs.c
+$(COPYTOAFS): $(AFSLIB) $(SRCDIR)/tools/copytoafs/copytoafs.c $(SRCDIR)/tools/copytoafs/Makefile
 	@$(ECHO) Building $(notdir $@)...
 	@$(CALL) $(MAKE) $(MKARGS) -C $(SRCDIR)/tools/copytoafs SRCDIR=$(SRCDIR) TOP=$(TOP)
 
@@ -290,13 +290,13 @@ $(GENDIR)/tools/MetaMake/configure: $(SRCDIR)/tools/MetaMake/configure.in
 	@$(CP) -Rf $(SRCDIR)/tools/MetaMake/* $(GENDIR)/tools/MetaMake
 	@cd $(GENDIR)/tools/MetaMake && @aros_host_aclocal@ && @aros_host_autoconf@
 
-$(TOP)/tools/MetaMake/Makefile: $(GENDIR)/tools/MetaMake/configure $(SRCDIR)/tools/MetaMake/Makefile.in
+$(TOP)/tools/MetaMake/Makefile: $(GENDIR)/tools/MetaMake/configure $(SRCDIR)/tools/MetaMake/Makefile.in $(SRCDIR)/Makefile.in
 	@$(IF) [ ! -d $(TOP)/tools/MetaMake ]; then \
 	    $(MECHO) $(MKDIR) "$(TOP)/tools/MetaMake" ; \
 	    $(MKDIR) "$(TOP)/tools/MetaMake"; \
 	fi;
 	@cd $(TOP)/tools/MetaMake ; \
-	CC="$(HOST_CC)" CFLAGS="$(HOST_CFLAGS) -D_FILE_OFFSET_BITS=64" LDFLAGS="$(HOST_LDFLAGS)" $(GENDIR)/tools/MetaMake/configure --prefix=$(TOOLDIR) --bindir=$(TOOLDIR) --with-objfiledir=$(HOSTGENDIR)/tools/MetaMake  || { echo "configure failed, dumping config.log:" ; cat $(TOP)/tools/MetaMake/config.log ; exit 1 ; }
+	CC="$(HOST_CC)" CFLAGS="$(HOST_CFLAGS) -D_FILE_OFFSET_BITS=64" LDFLAGS="$(HOST_LDFLAGS)" $(GENDIR)/tools/MetaMake/configure --srcdir=$(SRCDIR)/tools/MetaMake --prefix=$(TOOLDIR) --bindir=$(TOOLDIR) --with-objfiledir=$(HOSTGENDIR)/tools/MetaMake  || { echo "configure failed, dumping config.log:" ; cat $(TOP)/tools/MetaMake/config.log ; exit 1 ; }
 
 $(MMAKE): $(TOP)/tools/MetaMake/Makefile $(wildcard $(SRCDIR)/tools/MetaMake/*.[ch]) $(GENMFSCRIPT)
 	@$(MAKE) $(MKARGS) AUTOHEADER=@aros_host_autoheader@ -C $(TOP)/tools/MetaMake all

@@ -41,7 +41,7 @@ POSIXC := \
     chmod \
     chown \
     clearerr \
-    clock_gettime \
+    clock_getres clock_gettime \
     close \
     closedir \
     creat \
@@ -95,6 +95,7 @@ POSIXC := \
     fsetpos64 \
     fstat \
     fstatat \
+    fstatat64 \
     fstatvfs \
     fstat64 \
     fdatasync \

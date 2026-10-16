@@ -19,8 +19,9 @@
   3. This notice may not be removed or altered from any source distribution.
 */
 
-#ifndef PTHREAD_H
-#define PTHREAD_H
+/* AROS: keep the include guard out of the application identifier namespace. */
+#ifndef _AROS_PTHREAD_H
+#define _AROS_PTHREAD_H
 
 #if defined(__AROS__)
 #include <aros/posixc/sys/types.h>

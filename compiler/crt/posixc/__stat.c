@@ -53,6 +53,62 @@ static BOOL __stat_isnil(BPTR fh)
     return handle != NULL && handle->fh_Type == BNULL;
 }
 
+/* Ask the handler to locate the object without DOS Lock() following a
+ * reported soft link. The caller handles ERROR_IS_SOFT_LINK by examining
+ * the parent directory, which also resolves any intermediate links normally. */
+BPTR __posixc_lock_nofollow(const char *path)
+{
+    struct DevProc *dvp = NULL;
+    const char *namepart = strchr(path, ':');
+    BPTR result = BNULL;
+    BSTR name;
+    APTR storage;
+    size_t length;
+    LONG error;
+
+    /* Roots and trailing separators retain normal DOS semantics. */
+    if (!*FilePart(path))
+        return Lock(path, SHARED_LOCK);
+    namepart = namepart ? namepart + 1 : path;
+    length = strlen(namepart);
+#ifndef AROS_FAST_BSTR
+    if (length > 255)
+    {
+        SetIoErr(ERROR_LINE_TOO_LONG);
+        return BNULL;
+    }
+#endif
+    storage = AllocVec(AROS_BSTR_MEMSIZE4LEN(length), MEMF_ANY);
+    if (!storage)
+    {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return BNULL;
+    }
+    name = (BSTR)MKBADDR(storage);
+    memcpy(AROS_BSTR_ADDR(name), namepart, length);
+    AROS_BSTR_setstrlen(name, length);
+    do
+    {
+        dvp = GetDeviceProc(path, dvp);
+        if (!dvp)
+        {
+            error = IoErr();
+            if (error == ERROR_NO_MORE_ENTRIES)
+                error = ERROR_OBJECT_NOT_FOUND;
+            break;
+        }
+        result = (BPTR)DoPkt(dvp->dvp_Port, ACTION_LOCATE_OBJECT,
+                            (SIPTR)dvp->dvp_Lock, (SIPTR)name,
+                            SHARED_LOCK, 0, 0);
+        error = result ? 0 : IoErr();
+    }
+    while (error == ERROR_OBJECT_NOT_FOUND && (dvp->dvp_Flags & DVPF_ASSIGN));
+    FreeDeviceProc(dvp);
+    FreeVec(storage);
+    SetIoErr(error);
+    return result;
+}
+
 int __stat(BPTR lock, struct stat *sb, BOOL filehandle)
 {
     struct FileInfoBlock64 *fib;
@@ -259,6 +315,27 @@ int __stat64(BPTR lock, struct stat64 *sb, BOOL filehandle)
     return 0;
 }
 
+/* Match the canonical-parent naming used by stat(), including when a
+ * parent component was reached through a soft link or an assign. */
+static char *__stat_entry_path(BPTR parent, const char *leaf)
+{
+    size_t size = 256 + strlen(leaf);
+    for (;;)
+    {
+        char *name = AllocVec(size, MEMF_ANY);
+        LONG error;
+        if (!name)
+            return NULL;
+        if (NameFromLock(parent, name, size) && AddPart(name, leaf, size))
+            return name;
+        error = IoErr();
+        FreeVec(name);
+        if (error != ERROR_LINE_TOO_LONG)
+            return NULL;
+        size *= 2;
+    }
+}
+
 int __stat_from_path(const char *path, struct stat *sb)
 {
     int                  len;
@@ -361,7 +438,11 @@ int __stat_from_path(const char *path, struct stat *sb)
     }
 
     if (*filepart == '\0' || fallback_to_defaults)
+    {
+        strcpy(split, filepart);
         __fill_statbuffer(sb, abspath, fib, fallback_to_defaults, lock);
+        res = 0;
+    }
     else
         /* examine entries of parent directory until we find the object to stat */
         do
@@ -372,7 +453,13 @@ int __stat_from_path(const char *path, struct stat *sb)
             {
                 if (stricmp(fib->fib_FileName, filepart) == 0)
                 {
-                    __fill_statbuffer(sb, abspath, fib, 0, lock);
+                    char *entrypath = __stat_entry_path(lock, filepart);
+                    /* Keep the entry name even if canonical naming is
+                       unavailable for this handler. */
+                    strcpy(split, filepart);
+                    __fill_statbuffer(sb, entrypath ? entrypath : abspath,
+                                       fib, 0, lock);
+                    FreeVec(entrypath);
                     res = 0;
                     break;
                 }
@@ -507,7 +594,11 @@ int __stat64_from_path(const char *path, struct stat64 *sb)
     }
 
     if (*filepart == '\0' || fallback_to_defaults)
+    {
+        strcpy(split, filepart);
         __fill_stat64buffer(sb, abspath, fib, fallback_to_defaults, lock);
+        res = 0;
+    }
     else
         /* examine entries of parent directory until we find the object to stat */
         do
@@ -518,7 +609,13 @@ int __stat64_from_path(const char *path, struct stat64 *sb)
             {
                 if (stricmp(fib->fib_FileName, filepart) == 0)
                 {
-                    __fill_stat64buffer(sb, abspath, fib, 0, lock);
+                    char *entrypath = __stat_entry_path(lock, filepart);
+                    /* Keep the entry name even if canonical naming is
+                       unavailable for this handler. */
+                    strcpy(split, filepart);
+                    __fill_stat64buffer(sb, entrypath ? entrypath : abspath,
+                                       fib, 0, lock);
+                    FreeVec(entrypath);
                     res = 0;
                     break;
                 }

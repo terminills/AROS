@@ -4,6 +4,7 @@
 include $(SRCDIR)/config/aros.cfg
 
 POSIXCTESTFILES := \
+        clock_getres \
         chdir \
         chmod \
         chown \

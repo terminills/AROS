@@ -656,7 +656,7 @@ AROS_REQUIRED(bison,$BISON)
 AROS_PROG(FLEX,[flex])
 AROS_REQUIRED(flex,$FLEX)
 AC_MSG_CHECKING([version of $FLEX])
-ax_cv_flex_version="`$FLEX --version | cut -d\" \" -f2`"
+ax_cv_flex_version=$($FLEX --version | cut -d ' ' -f2)
 AC_MSG_RESULT($ax_cv_flex_version)
 AROS_PROG(PNGTOPNM,[pngtopnm])
 AROS_REQUIRED(pngtopnm,$PNGTOPNM)
@@ -1278,9 +1278,9 @@ ios)
     fi
     AC_MSG_RESULT($aros_android_antapk)
 
-    target_extra_cfg+="$export_newline""# Android$export_newline""AROS_ANDROID_ANTAPK           := $aros_android_antapk$export_newline"
-    host_extra_cfg+="$export_newline""# Android-specific$export_newline""ANDROID                       := $android_tool$export_newline""ANT		                      := $ant$export_newline"
-    aros_target_options+="$export_newline""# Enable Android Gfx Driver$export_newline""OPT_HOST_ANDROIDGFX           := yes$export_newline"
+    target_extra_cfg="${target_extra_cfg}$export_newline""# Android$export_newline""AROS_ANDROID_ANTAPK           := $aros_android_antapk$export_newline"
+    host_extra_cfg="${host_extra_cfg}$export_newline""# Android-specific$export_newline""ANDROID                       := $android_tool$export_newline""ANT		                      := $ant$export_newline"
+    aros_target_options="${aros_target_options}$export_newline""# Enable Android Gfx Driver$export_newline""OPT_HOST_ANDROIDGFX           := yes$export_newline"
 
     dnl MSYS bash can't run .bat files directly, then need to be started via cmd.exe
     if test "$host_os" = "mingw32"; then
@@ -1315,10 +1315,10 @@ case "$target_cpu" in
         aarch64_isa_extra="ISA_AARCH64_FLAGS             = "
         case "$aros_toolchain" in
             *llvm*)
-                aarch64_isa_extra+="--target=aarch64-unknown-aros -fno-pic -fno-pie "
+                aarch64_isa_extra="${aarch64_isa_extra}--target=aarch64-unknown-aros -fno-pic -fno-pie "
             ;;
         esac
-        aarch64_isa_extra+="-mcmodel=large"
+        aarch64_isa_extra="${aarch64_isa_extra}-mcmodel=large"
         ;;
     *armhf*)
         if test "$gcc_default_endian" = ""; then
@@ -1337,7 +1337,7 @@ case "$target_cpu" in
         gcc_float_abi=softfp
         ;;
     *m68k*)
-        target_extra_cfg+="$export_newline""AROSROM_MODULE_CFLAGS          = $""(CFLAGS_NO_BUILTIN)$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_newline""AROSROM_MODULE_CFLAGS          = $""(CFLAGS_NO_BUILTIN)$export_newline"
         m68k_isa_extra="ISA_FLOAT_FLAGS               = -msoft-float""$export_newline""ISA_MC68000_FLAGS             = -march=68000 $""(ISA_FLOAT_FLAGS)"
         m68k_020_isa_extra="ISA_MC68020_FLAGS             = -march=68020 $""(ISA_FLOAT_FLAGS)"
         m68k_030_isa_extra="ISA_MC68030_FLAGS             = -march=68030 $""(ISA_FLOAT_FLAGS)"
@@ -1366,20 +1366,20 @@ case "$target_cpu" in
         x86_64_isa_extra="ISA_X8664_FLAGS               = "
         case "$aros_toolchain" in
             *llvm*)
-                x86_isa_extra+="--target=i386-unknown-aros "
-                x86_64_isa_extra+="--target=x86_64-unknown-aros "
+                x86_isa_extra="${x86_isa_extra}--target=i386-unknown-aros "
+                x86_64_isa_extra="${x86_64_isa_extra}--target=x86_64-unknown-aros "
                 if test "$target_cpu" = "x86_64"; then
                     target_needs_collect32=yes
                     aros_target_cpu32=i386
                 fi
             ;;
             *)
-                x86_isa_extra+="-m32 "
-                x86_64_isa_extra+="-m64 "
+                x86_isa_extra="${x86_isa_extra}-m32 "
+                x86_64_isa_extra="${x86_64_isa_extra}-m64 "
             ;;
         esac
-        x86_isa_extra+="-march=i486"
-        x86_64_isa_extra+="-mcmodel=large"
+        x86_isa_extra="${x86_isa_extra}-march=i486"
+        x86_64_isa_extra="${x86_64_isa_extra}-mcmodel=large"
         ;;
     *powerpc*)
         ;;
@@ -1858,7 +1858,7 @@ case "$target_os" in
                 aros_nominal_width=320
                 aros_nominal_height=480
                 aros_ios_sdk="$aros_xcode_path/Platforms/$aros_ios_platform.platform/Developer/SDKs/$aros_ios_platform$aros_sdk_version.sdk"
-                target_extra_cfg+="$export_newline""# Apple iOS specific$export_newline""IOS_PLATFORM            := $aros_ios_platform$export_newline""IOS_OS_VERSION          := $aros_ios_version$export_newline""IOS_SDK_PATH            := $aros_ios_sdk$export_newline"
+                target_extra_cfg="${target_extra_cfg}$export_newline""# Apple iOS specific$export_newline""IOS_PLATFORM            := $aros_ios_platform$export_newline""IOS_OS_VERSION          := $aros_ios_version$export_newline""IOS_SDK_PATH            := $aros_ios_sdk$export_newline"
                 kernel_tool_flags="$target_tool_flags -isysroot $aros_ios_sdk"
                 aros_kernel_includes="-isystem $aros_ios_sdk/usr/include"
                 need_x11=no
@@ -2246,7 +2246,7 @@ case "$target_os" in
 
     amiga*)
         AROS_PROG(GZIP,[gzip])
-        host_extra_cfg+="$export_newline""GZIP                          := $GZIP"
+        host_extra_cfg="${host_extra_cfg}$export_newline""GZIP                          := $GZIP"
         AC_MSG_CHECKING([if we should compress EBF executables])
         AC_ARG_ENABLE(ebf-packed-exes,AS_HELP_STRING([--enable-ebf-packed-exes],[Create self extracting compressed exes on the Emergency Boot Floppy]),aros_pack_exes=$enableval,aros_pack_exes="no")
         AC_MSG_RESULT($aros_pack_exes)
@@ -3102,7 +3102,7 @@ AC_MSG_RESULT($aros_target_guitheme)
 AC_MSG_CHECKING([which version of mesa to build ...])
 AC_ARG_WITH(mesagl,AS_HELP_STRING([--with-mesagl=family],[Which version of MesaGL to build (defaults to 26.0.0)]),aros_mesagl="$withval",aros_mesagl="26.0.0")
 AC_MSG_RESULT($aros_mesagl)
-aros_target_options+="$export_newline""# Enable MesaGL$export_newline""OPT_MESAGL                    := $aros_mesagl$export_newline"
+aros_target_options="${aros_target_options}$export_newline""# Enable MesaGL$export_newline""OPT_MESAGL                    := $aros_mesagl$export_newline"
 
 # Find out if we are cross-compiling (i.e. if we can't use the host compiler
 # for target code)
@@ -3556,7 +3556,7 @@ if test "x$test_kernel_cc" != "xno"; then
                 # to kernel compiler's include path as it may contain some of
                 # the headers we need.
                 if test -d "$aros_kernel_cc_includes"-fixed; then
-                    aros_kernel_cc_includes+=" -isystem $aros_kernel_cc_includes"-fixed
+                    aros_kernel_cc_includes="${aros_kernel_cc_includes} -isystem $aros_kernel_cc_includes"-fixed
                 fi
                 case "$target_os" in
                     linux*)
@@ -3576,10 +3576,10 @@ if test "x$test_kernel_cc" != "xno"; then
                                 ;;
                         esac
                         if test -d "/usr/include/${kernelcpu}-linux-${targetabi}"; then
-                            aros_kernel_cc_includes+=" -isystem /usr/include/${kernelcpu}-linux-${targetabi}"
+                            aros_kernel_cc_includes="${aros_kernel_cc_includes} -isystem /usr/include/${kernelcpu}-linux-${targetabi}"
                         else
                             if test -d "/usr/${kernelcpu}-linux-${targetabi}/include"; then
-                                aros_kernel_cc_includes+=" -isystem /usr/${kernelcpu}-linux-${targetabi}/include"
+                                aros_kernel_cc_includes="${aros_kernel_cc_includes} -isystem /usr/${kernelcpu}-linux-${targetabi}/include"
                             fi
                         fi
                     ;;
@@ -3865,7 +3865,7 @@ if test "x-$aros_flavour" = "x-emulation" -o "x-$aros_flavour" = "x-emulcompat" 
     ])
 
     if test "x-$have_alsa" = "x-yes" ; then
-        aros_target_options+="$export_newline""# Enable ALSA Audio Driver$export_newline""OPT_HOST_ALSA               := yes$export_newline"
+        aros_target_options="${aros_target_options}$export_newline""# Enable ALSA Audio Driver$export_newline""OPT_HOST_ALSA               := yes$export_newline"
     fi
 
     dnl x11 hidd
@@ -3897,9 +3897,9 @@ if test "x-$aros_flavour" = "x-emulation" -o "x-$aros_flavour" = "x-emulcompat" 
 
         else
             dnl found it, setup the metatarget
-            aros_target_options+="$export_newline""# Enable X11 Gfx Driver$export_newline""OPT_HOST_X11GFX               := yes$export_newline"
+            aros_target_options="${aros_target_options}$export_newline""# Enable X11 Gfx Driver$export_newline""OPT_HOST_X11GFX               := yes$export_newline"
             if test "x-$host_feature_glx" != "x-no" ; then
-                aros_target_options+="$export_newline""# Enable X11 HostGL 3D Passthrough$export_newline""OPT_HOST_X11_HOSTGL           := yes$export_newline"
+                aros_target_options="${aros_target_options}$export_newline""# Enable X11 HostGL 3D Passthrough$export_newline""OPT_HOST_X11_HOSTGL           := yes$export_newline"
             else
                 AROS_CONFIG_WARNING([GL/glx.h not found - 3D passthrough (HostGL) will not be available in the hosted X11 driver])
             fi
@@ -4045,7 +4045,7 @@ if test "x-$aros_flavour" = "x-emulation" -o "x-$aros_flavour" = "x-emulcompat" 
 
         else
             dnl found it, enable the build
-            aros_target_options+="$export_newline""# Enable SDL Gfx Driver$export_newline""OPT_HOST_SDLGFX               := yes$export_newline"
+            aros_target_options="${aros_target_options}$export_newline""# Enable SDL Gfx Driver$export_newline""OPT_HOST_SDLGFX               := yes$export_newline"
             aros_host_sdl_cflags=$SDL_CFLAGS
             aros_host_sdl_libs=$SDL_LIBS
         fi
@@ -4060,7 +4060,7 @@ if test "x-$aros_flavour" = "x-emulation" -o "x-$aros_flavour" = "x-emulcompat" 
             DBUS_LIBFLAGS=`pkg-config --libs dbus-1`
             KERNEL_DBUS_KOBJ=kernel-dbus-kobj
             KERNEL_DBUS_INCLUDES=kernel-dbus-includes
-            aros_target_options+="$export_newline""# Enable DBUS Support$export_newline""OPT_HOST_DBUS              := yes$export_newline"
+            aros_target_options="${aros_target_options}$export_newline""# Enable DBUS Support$export_newline""OPT_HOST_DBUS              := yes$export_newline"
         fi
         AC_MSG_RESULT($dbus)
     fi
@@ -4126,85 +4126,85 @@ esac
 if test "$export_target_gcccpu" = "yes" ; then
     export_firstextraline="$export_newline# GCC CPU Config$export_newline"
     if ! test "$aros_gcc_cpu" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_CONFIG_CPU                = $aros_gcc_cpu$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_CONFIG_CPU                = $aros_gcc_cpu$export_newline"
         export_firstextraline=""
     else
-        target_extra_cfg+="$export_firstextraline""GCC_CONFIG_CPU                = $""(GCC_DEFAULT_CPU)$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_CONFIG_CPU                = $""(GCC_DEFAULT_CPU)$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_soft_cpu" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_SOFT_CPU                  := $gcc_soft_cpu$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_SOFT_CPU                  := $gcc_soft_cpu$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_float_cpu" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_FLOAT_CPU                 := $gcc_float_cpu$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_FLOAT_CPU                 := $gcc_float_cpu$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_default_cpu" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_CPU               := $gcc_default_cpu$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_CPU               := $gcc_default_cpu$export_newline"
         export_firstextraline=""
     else
         if test "$gcc_config_float_abi" = "hard" ; then
-            target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_CPU               := $""(GCC_FLOAT_CPU)$export_newline"
+            target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_CPU               := $""(GCC_FLOAT_CPU)$export_newline"
         else
-            target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_CPU               := $""(GCC_SOFT_CPU)$export_newline"
+            target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_CPU               := $""(GCC_SOFT_CPU)$export_newline"
         fi
         export_firstextraline=""
     fi
 
     if ! test "$gcc_config_fpu" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_CONFIG_FPU               = $gcc_config_fpu$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_CONFIG_FPU               = $gcc_config_fpu$export_newline"
         export_firstextraline=""
     else
-        target_extra_cfg+="$export_firstextraline""GCC_CONFIG_FPU                = $""(GCC_DEFAULT_FPU)$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_CONFIG_FPU                = $""(GCC_DEFAULT_FPU)$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_soft_fpu" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_SOFT_FPU                  := $gcc_soft_fpu$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_SOFT_FPU                  := $gcc_soft_fpu$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_float_fpu" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_FLOAT_FPU                 := $gcc_float_fpu$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_FLOAT_FPU                 := $gcc_float_fpu$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_default_fpu" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_FPU               := $gcc_default_fpu$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_FPU               := $gcc_default_fpu$export_newline"
         export_firstextraline=""
     else
         if test "$gcc_config_float_abi" = "hard" ; then
-            target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_FPU               := $""(GCC_FLOAT_FPU)$export_newline"
+            target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_FPU               := $""(GCC_FLOAT_FPU)$export_newline"
         else
-            target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_FPU               := $""(GCC_SOFT_FPU)$export_newline"
+            target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_FPU               := $""(GCC_SOFT_FPU)$export_newline"
         fi
         export_firstextraline=""
     fi
 
     if ! test "$gcc_config_float_abi" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_CONFIG_FLOAT_ABI          = $gcc_config_float_abi$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_CONFIG_FLOAT_ABI          = $gcc_config_float_abi$export_newline"
         export_firstextraline=""
     else
-        target_extra_cfg+="$export_firstextraline""GCC_CONFIG_FLOAT_ABI          = $""(GCC_DEFAULT_FLOAT_ABI)$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_CONFIG_FLOAT_ABI          = $""(GCC_DEFAULT_FLOAT_ABI)$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_soft_abi" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_SOFT_ABI                  := $gcc_soft_abi$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_SOFT_ABI                  := $gcc_soft_abi$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_float_abi" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_FLOAT_ABI                 := $gcc_float_abi$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_FLOAT_ABI                 := $gcc_float_abi$export_newline"
         export_firstextraline=""
     fi
     if ! test "$gcc_default_float_abi" = "" ; then
         if test "$gcc_default_float_abi" = "hard" ; then
-            target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_FLOAT_ABI         := $""(GCC_FLOAT_ABI)$export_newline"
+            target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_FLOAT_ABI         := $""(GCC_FLOAT_ABI)$export_newline"
         else
-            target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_FLOAT_ABI         := $""(GCC_SOFT_ABI)$export_newline"
+            target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_FLOAT_ABI         := $""(GCC_SOFT_ABI)$export_newline"
         fi
         export_firstextraline=""
     fi
 
     if ! test "$gcc_default_mode" = "" ; then
-        target_extra_cfg+="$export_firstextraline""GCC_DEFAULT_MODE              := $gcc_default_mode$export_newline"
+        target_extra_cfg="${target_extra_cfg}$export_firstextraline""GCC_DEFAULT_MODE              := $gcc_default_mode$export_newline"
         export_firstextraline=""
     fi
 fi

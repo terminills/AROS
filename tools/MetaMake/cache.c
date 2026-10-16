@@ -517,9 +517,18 @@ int mktempfile(char **name)
 
 int mktempfile(char **name)
 {
-    static char tmpname[20];
+    const char *temp = getenv("TMPDIR");
+    char *tmpname;
 
-    strcpy(tmpname, "/tmp/genmfXXXXXX");
+    if (!temp || !*temp)
+#ifdef __AROS__
+        temp = "/T";
+#else
+        temp = "/tmp";
+#endif
+    tmpname = xmalloc(strlen(temp) + sizeof("/genmfXXXXXX"));
+    strcpy(tmpname, temp);
+    strcat(tmpname, "/genmfXXXXXX");
     *name = tmpname;
     return mkstemp(tmpname);
 }
@@ -608,6 +617,7 @@ regeneratemf (struct Cache_priv * cache, struct List * regeneratefiles)
     debug(printf("MMAKE:cache.c->regeneratemf: Finished\n"));
 
     unlink (tmpname);
+    xfree (tmpname);
 }
 
 void
