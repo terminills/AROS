@@ -407,6 +407,22 @@ static APTR __exec_prepare_regular(char * filename2, char *const argv[], char *c
         goto error;
     }
 
+    /* PROGDIR: of the new program is the directory it was loaded from */
+    {
+        BPTR file = Lock((CONST_STRPTR)filename2_dos, SHARED_LOCK);
+
+        if (file)
+        {
+            PosixCBase->exec_progdir = ParentDir(file);
+            UnLock(file);
+        }
+        if (!PosixCBase->exec_progdir)
+        {
+            errno = __stdc_ioerr2errno(IoErr());
+            goto error;
+        }
+    }
+
     me = (struct Process *)FindTask(NULL);
 
     /* Even the registered vector may have been edited directly by the caller
@@ -567,6 +583,10 @@ static void __exec_do_regular(struct PosixCIntBase *PosixCBase)
     struct StdCBase *savedstdc = PosixCBase->PosixCBase.StdCBase;
     struct StdCIOBase *savedstdcio = PosixCBase->PosixCBase.StdCIOBase;
 
+    BPTR oldprogdir = BNULL;
+    if (PosixCBase->exec_progdir)
+        oldprogdir = SetProgramDir(PosixCBase->exec_progdir);
+
     D(bug("[__exec_do_regular] Running program, PosixCBase=%x\n", PosixCBase));
     returncode = RunCommand(
         PosixCBase->exec_seglist,
@@ -580,6 +600,9 @@ static void __exec_do_regular(struct PosixCIntBase *PosixCBase)
     );
 
     __posixc_restoreparentctx(oldctx);
+
+    if (PosixCBase->exec_progdir)
+        SetProgramDir(oldprogdir);
 
     /* RunCommand() does not Close() standard output so may not flush either.
        So to be sure flush them here */
@@ -820,6 +843,11 @@ static void __exec_cleanup(struct PosixCIntBase *PosixCBase)
     {
         UnLoadSeg(PosixCBase->exec_seglist);
         PosixCBase->exec_seglist = (BPTR)NULL;
+    }
+    if (PosixCBase->exec_progdir)
+    {
+        UnLock(PosixCBase->exec_progdir);
+        PosixCBase->exec_progdir = BNULL;
     }
 
     if (PosixCBase->exec_oldstdcbase)

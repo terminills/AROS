@@ -65,6 +65,7 @@ struct PosixCIntBase
 
     /* __exec.c */
     BPTR exec_seglist;
+    BPTR exec_progdir;
     char *exec_args;
     char *exec_taskname;
     APTR exec_pool;
