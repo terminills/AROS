@@ -11,6 +11,8 @@ If NOT EXISTS RAM:Development/Examples/HelloAROS
 EndIf
 Assign Development: RAM:Development
 Assign Development: SYS:Development ADD
+; Fresh Workbench shells search C:, not the startup CLI path.
+Assign C: Development:bin ADD
 Path Development:bin ADD
 SetEnv PATH "/Development/bin:/C"
 Echo "Native project ready at Development:Examples/HelloAROS"

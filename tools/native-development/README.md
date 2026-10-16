@@ -23,7 +23,8 @@ It does not replace system libraries.
 For a live CD, put Development at SYS:Development and execute
 `SYS:Development/S/Development-Demo` during startup. It stages only the example
 under RAM:Development, then uses a multi-assign with read-only SYS:Development as
-the tools/SDK fallback. Re-running it preserves the edited RAM example.
+the tools/SDK fallback. It appends the SDK tools to C: for fresh Workbench shells.
+Re-running it preserves the edited RAM example.
 RAM examples disappear on reboot; copy your work to persistent storage to keep it.
 
 VS Code contract: `Development:Examples/HelloAROS`, commands `make all`,
