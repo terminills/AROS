@@ -67,6 +67,7 @@
 #define	ENOEXEC		8		/* Exec format error */
 #define	ENOMEM		12		/* Cannot allocate memory */
 #define	ENOTDIR		20		/* Not a directory */
+#define	ENOTEMPTY	66		/* Directory not empty */
 #define	EXDEV		18		/* Cross-device link */
 
 /* MAX_ERRNO is currently used by ioerr2errno conversion

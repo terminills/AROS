@@ -2,7 +2,7 @@
 #define _POSIXC_ERRNO_H_
 
 /*
-    Copyright © 1995-2016, The AROS Development Team. All rights reserved.
+    Copyright © 1995-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     POSIX.1-2008 header file errno.h
@@ -101,7 +101,6 @@
 #define ENOSTR		91		/* Not a STREAM */
 #define	ENOSYS		78		/* Function not implemented */
 #define	ENOTCONN	57		/* Socket is not connected */
-#define	ENOTEMPTY	66		/* Directory not empty */
 /* NOTIMPL ENORECOVERABLE */
 #define	ENOTSOCK	38		/* Socket operation on non-socket */
 #define ENOTSUP		86		/* Not supported */

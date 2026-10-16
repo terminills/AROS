@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     Desc: errno internals
 */
@@ -44,6 +44,9 @@ int ioerr2errno (int ioerr)
 
         case ERROR_DIR_NOT_FOUND:
             return ENOTDIR;
+
+        case ERROR_DIRECTORY_NOT_EMPTY:
+            return ENOTEMPTY;
 
         case ERROR_RENAME_ACROSS_DEVICES:
             return EXDEV;
