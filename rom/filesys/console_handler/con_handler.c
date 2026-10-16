@@ -28,6 +28,7 @@
 #include <utility/tagitem.h>
 #include <dos/bptr.h>
 #include <dos/exall.h>
+#include <dos/consoleinfo.h>
 #include <dos/dosasl.h>
 #include <intuition/intuition.h>
 #include <intuition/extensions.h>
@@ -1452,6 +1453,55 @@ LONG CONMain(struct ExecBase *SysBase)
                 case ACTION_IS_FILESYSTEM:
                     DACTION(bug("[con:handler] ACTION_IS_FILESYSTEM\n"));
                     replypkt(dp, DOSFALSE);
+                    break;
+                case ACTION_CONSOLE_GETGEOMETRY:
+                    {
+                        struct ConsoleGeometry geometry;
+                        struct MsgPort *port;
+                        struct IOStdReq *query;
+                        LONG error = ERROR_ACTION_NOT_KNOWN;
+
+                        /* Never publish conreadio or interpret InfoData.
+                           This handler owns the open unit until the packet
+                           completes, including device-backed consoles. */
+                        if (!dp->dp_Arg2 ||
+                            dp->dp_Arg3 < (IPTR)sizeof(geometry) ||
+                            dp->dp_Arg4 != CONSOLE_GEOMETRY_VERSION)
+                        {
+                            replypkt2(dp, DOSFALSE, ERROR_BAD_NUMBER);
+                            break;
+                        }
+                        if (!fh->conreadio || !fh->conreadio->io_Unit)
+                        {
+                            replypkt2(dp, DOSFALSE, error);
+                            break;
+                        }
+                        port = CreateMsgPort();
+                        query = port ? (struct IOStdReq *)CreateIORequest(port,
+                            sizeof(*query)) : NULL;
+                        if (!query)
+                            error = ERROR_NO_FREE_STORE;
+                        else
+                        {
+                            query->io_Device = fh->conreadio->io_Device;
+                            query->io_Unit = fh->conreadio->io_Unit;
+                            query->io_Command = CD_GETGEOMETRY;
+                            query->io_Data = &geometry;
+                            query->io_Length = sizeof(geometry);
+                            if (DoIO((struct IORequest *)query) == 0 &&
+                                query->io_Actual == sizeof(geometry) &&
+                                geometry.cg_Size == sizeof(geometry) &&
+                                geometry.cg_Version == CONSOLE_GEOMETRY_VERSION)
+                            {
+                                CopyMem(&geometry, (APTR)dp->dp_Arg2, sizeof(geometry));
+                                error = 0;
+                            }
+                            DeleteIORequest((struct IORequest *)query);
+                        }
+                        if (port)
+                            DeleteMsgPort(port);
+                        replypkt2(dp, error ? DOSFALSE : DOSTRUE, error);
+                    }
                     break;
                 case ACTION_DISK_INFO:
                     {
