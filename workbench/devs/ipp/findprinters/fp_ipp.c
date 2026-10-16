@@ -27,7 +27,8 @@
 #define REPLY_MAX                   65536
 
 static const char *wanted[] = {
-    "printer-make-and-model", "printer-icons", "printer-state", "media-ready",
+    "printer-make-and-model", "printer-icons", "printer-state", "printer-state-reasons",
+    "printer-state-message", "media-ready",
     "marker-names", "marker-levels", "marker-colors", NULL
 };
 
@@ -54,14 +55,15 @@ static void text(char *to, LONG max, const UBYTE *v, LONG len)
     to[len] = 0;
 }
 
-static void addPaper(struct PrinterInfo *pi, const UBYTE *v, LONG len)
+/* Appends one value of a 1setOf attribute, comma separated. */
+static void addValue(char *to, LONG max, const UBYTE *v, LONG len)
 {
-    LONG have = strlen(pi->pi_Paper);
+    LONG have = strlen(to);
 
-    if (have && have + 1 < (LONG)sizeof(pi->pi_Paper))
-        strcat(pi->pi_Paper, ",");
-    have = strlen(pi->pi_Paper);
-    text(pi->pi_Paper + have, sizeof(pi->pi_Paper) - have, v, len);
+    if (have && have + 1 < max)
+        strcat(to, ",");
+    have = strlen(to);
+    text(to + have, max - have, v, len);
 }
 
 BOOL IPP_GetInfo(const char *uri, struct PrinterInfo *pi)
@@ -134,7 +136,11 @@ BOOL IPP_GetInfo(const char *uri, struct PrinterInfo *pi)
             LONG s = (v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3];
             strcpy(pi->pi_State, s == 3 ? "idle" : s == 4 ? "processing" : s == 5 ? "stopped" : "unknown");
         } else if (strcmp(attr, "media-ready") == 0)
-            addPaper(pi, v, vl);
+            addValue(pi->pi_Paper, sizeof(pi->pi_Paper), v, vl);
+        else if (strcmp(attr, "printer-state-reasons") == 0)
+            addValue(pi->pi_Reasons, sizeof(pi->pi_Reasons), v, vl);
+        else if (strcmp(attr, "printer-state-message") == 0)
+            text(pi->pi_Message, sizeof(pi->pi_Message), v, vl);
         else if (strcmp(attr, "marker-names") == 0 && names < FP_SUPPLIES)
             text(pi->pi_Supply[names++], sizeof(pi->pi_Supply[0]), v, vl);
         else if (strcmp(attr, "marker-levels") == 0 && levels < FP_SUPPLIES && vl == 4)

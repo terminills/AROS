@@ -10,7 +10,7 @@
 
     SYNOPSIS
 
-        UNIT/K/N, NAME/K, FORMAT/K, WAIT/K/N, SAVE/S, TO/K
+        UNIT/K/N, NAME/K, FORMAT/K, WAIT/K/N, SAVE/S, TO/K, URI/K
 
     LOCATION
 
@@ -40,6 +40,8 @@
                    the default lets the printer tell.
         WAIT    -- seconds to listen for answers (default 3).
         SAVE    -- keep the unit's settings over a reboot.
+        URI     -- ask this one IPP printer (ipp://host[:port]/path) instead
+                   of looking for printers: for a status display.
         TO      -- also write what was found to this file for programs, one
                    block of Key=value lines per printer, with the printers'
                    pictures beside it as <file>.<n>.png.
@@ -71,8 +73,8 @@
 
 const TEXT version[] = "$VER: FindPrinters 1.0 (16.10.2026)";
 
-#define TEMPLATE "UNIT/K/N,NAME/K,FORMAT/K,WAIT/K/N,SAVE/S,TO/K"
-enum { ARG_UNIT, ARG_NAME, ARG_FORMAT, ARG_WAIT, ARG_SAVE, ARG_TO, ARG_COUNT };
+#define TEMPLATE "UNIT/K/N,NAME/K,FORMAT/K,WAIT/K/N,SAVE/S,TO/K,URI/K"
+enum { ARG_UNIT, ARG_NAME, ARG_FORMAT, ARG_WAIT, ARG_SAVE, ARG_TO, ARG_URI, ARG_COUNT };
 
 #define MDNS_PORT       5353
 #define TYPE_A          1
@@ -457,6 +459,10 @@ static void showInfo(struct Printer *p)
         Printf("   model: %s\n", pi->pi_Model);
     if (pi->pi_State[0])
         Printf("   state: %s\n", pi->pi_State);
+    if (pi->pi_Reasons[0] && strcmp(pi->pi_Reasons, "none") != 0)
+        Printf("   attention: %s\n", pi->pi_Reasons);
+    if (pi->pi_Message[0])
+        Printf("   message: %s\n", pi->pi_Message);
     if (pi->pi_Paper[0])
         Printf("   paper: %s\n", pi->pi_Paper);
     for (i = 0; i < pi->pi_NumSupplies; i++)
@@ -484,6 +490,8 @@ static BOOL writeList(const char *to)
         if (p->p_HaveInfo) {
             if (pi->pi_Model[0]) FPrintf(fh, "Model=%s\n", pi->pi_Model);
             if (pi->pi_State[0]) FPrintf(fh, "State=%s\n", pi->pi_State);
+            if (pi->pi_Reasons[0]) FPrintf(fh, "Reasons=%s\n", pi->pi_Reasons);
+            if (pi->pi_Message[0]) FPrintf(fh, "Message=%s\n", pi->pi_Message);
             if (pi->pi_Paper[0]) FPrintf(fh, "Paper=%s\n", pi->pi_Paper);
             for (j = 0; j < pi->pi_NumSupplies; j++)
                 FPrintf(fh, "Supply=%ld;%s;%s\n", (long)pi->pi_Level[j], pi->pi_Colour[j], pi->pi_Supply[j]);
@@ -567,17 +575,33 @@ int main(void)
         PutStr("FindPrinters: no socket\n");
         rc = RETURN_FAIL;
     } else {
-        sendQuery(fd, services, ptrs, 2);
-        gather(fd, wait * 1000);
-        askMissing(fd);
+        if (args[ARG_URI]) {
+            /* One printer, asked directly. */
+            struct Printer *p = &printers[0];
+            memset(p, 0, sizeof(*p));
+            strncpy(p->p_URI, (const char *)args[ARG_URI], sizeof(p->p_URI) - 1);
+            strncpy(p->p_Name, p->p_URI, sizeof(p->p_Name) - 1);
+            p->p_IPP = TRUE;
+            nprinters = 1;
+        } else {
+            sendQuery(fd, services, ptrs, 2);
+            gather(fd, wait * 1000);
+            askMissing(fd);
+            collect();
+        }
         CloseSocket(fd);
-        collect();
 
         if (nprinters == 0)
             PutStr("No network printers found.\n");
         for (i = 0; i < nprinters; i++) {
             if (printers[i].p_IPP)
                 printers[i].p_HaveInfo = IPP_GetInfo(printers[i].p_URI, &printers[i].p_Info);
+            if (args[ARG_URI] && printers[i].p_HaveInfo && printers[i].p_Info.pi_Model[0])
+                strncpy(printers[i].p_Name, printers[i].p_Info.pi_Model, sizeof(printers[i].p_Name) - 1);
+            if (args[ARG_URI] && !printers[i].p_HaveInfo) {
+                Printf("FindPrinters: %s does not answer\n", printers[i].p_URI);
+                rc = RETURN_WARN;
+            }
             Printf("%ld  %s\n   %s\n", (long)i + 1, printers[i].p_Name, printers[i].p_URI);
             if (printers[i].p_Formats[0])
                 Printf("   formats: %s\n", printers[i].p_Formats);

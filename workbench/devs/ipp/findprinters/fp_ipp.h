@@ -16,6 +16,8 @@ struct PrinterInfo {
     char pi_Icons[FP_ICONS][256];       /* printer-icons: pictures of the printer, small to large */
     LONG pi_NumIcons;
     char pi_State[16];                  /* idle, processing, stopped */
+    char pi_Reasons[160];               /* printer-state-reasons, comma separated ("none" when all is well) */
+    char pi_Message[128];               /* printer-state-message */
     char pi_Paper[96];                  /* media-ready */
     char pi_Supply[FP_SUPPLIES][48];    /* marker-names */
     LONG pi_Level[FP_SUPPLIES];         /* marker-levels, percent; -1 unknown */
