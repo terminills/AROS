@@ -802,6 +802,10 @@ static void startread(struct filehandle *fh)
 {
     if (fh->flags & FHFLG_ASYNCCONSOLEREAD)
         return;
+    /* Keep unread raw input and clipboard data ahead of the next device read. */
+    if ((fh->flags & FHFLG_RAW) &&
+        (fh->conbufferpos < fh->conbuffersize || fh->pastebuffer))
+        return;
     fh->conreadio->io_Command = CMD_READ;
     fh->conreadio->io_Data = fh->consolebuffer;
     /*
@@ -818,26 +822,77 @@ static void startread(struct filehandle *fh)
 
 static void pump_raw_input(struct filehandle *fh)
 {
-    while (fh->conbufferpos < fh->conbuffersize)
+    static const UBYTE paste_request[] = { 0x9b, '0', ' ', 'v' };
+    BOOL native_paste = (fh->flags & FHFLG_DEVICEMODE) &&
+        !strcmp((const char *)fh->devname, "consoleng.device");
+
+    while (fh->pastebuffer || fh->conbufferpos < fh->conbuffersize)
     {
-        LONG available = fh->conbuffersize - fh->conbufferpos;
         LONG space = INPUTBUFFER_SIZE - fh->inputsize;
         LONG copylen;
 
         if (space <= 0)
             break;
 
-        copylen = available < space ? available : space;
-        CopyMem(fh->consolebuffer + fh->conbufferpos,
-            fh->inputbuffer + fh->inputsize, copylen);
-        fh->conbufferpos += copylen;
-        fh->inputsize += copylen;
+        if (fh->pastebuffer)
+        {
+            LONG available = fh->pastebuffersize - fh->pastebufferpos;
+            copylen = available < space ? available : space;
+            /* Clipboard contents are data, never another paste request. */
+            CopyMem(fh->pastebuffer + fh->pastebufferpos,
+                fh->inputbuffer + fh->inputsize, copylen);
+            fh->pastebufferpos += copylen;
+            fh->inputsize += copylen;
+            if (fh->pastebufferpos >= fh->pastebuffersize)
+            {
+                FreeMem(fh->pastebuffer, PASTEBUFSIZE);
+                fh->pastebuffer = NULL;
+            }
+        }
+        else if (native_paste)
+        {
+            UBYTE c = fh->consolebuffer[fh->conbufferpos];
+            /* Device mode reads one byte at a time. Retain only the native
+             * paste prefix across reads; preserve all other key sequences.
+             * Serial and other plain devices never enter this parser. */
+            if (fh->rawpasteprefix && c != paste_request[fh->rawpasteprefix])
+            {
+                if (space < fh->rawpasteprefix)
+                    break;
+                CopyMem(paste_request, fh->inputbuffer + fh->inputsize,
+                    fh->rawpasteprefix);
+                fh->inputsize += fh->rawpasteprefix;
+                fh->rawpasteprefix = 0;
+                /* Retry c after delivering the unmatched prefix. */
+            }
+            else if (c == paste_request[fh->rawpasteprefix])
+            {
+                fh->conbufferpos++;
+                if (++fh->rawpasteprefix == sizeof(paste_request))
+                {
+                    fh->rawpasteprefix = 0;
+                    do_paste(fh);
+                }
+            }
+            else
+            {
+                fh->inputbuffer[fh->inputsize++] = c;
+                fh->conbufferpos++;
+            }
+        }
+        else
+        {
+            LONG available = fh->conbuffersize - fh->conbufferpos;
+            copylen = available < space ? available : space;
+            CopyMem(fh->consolebuffer + fh->conbufferpos,
+                fh->inputbuffer + fh->inputsize, copylen);
+            fh->conbufferpos += copylen;
+            fh->inputsize += copylen;
+        }
         fh->inputpos = fh->inputstart = fh->inputsize;
-
         HandlePendingReads(fh);
 
-        /* Without a pending application read, keep the remaining device
-         * bytes in consolebuffer until space is made by ACTION_READ. */
+        /* Retain device and clipboard bytes until the application reads. */
         if (fh->inputsize != 0)
             break;
     }

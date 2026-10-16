@@ -81,6 +81,7 @@ struct filehandle
 #endif
     WORD                    conbufferpos;
     WORD                    conbuffersize;
+    UBYTE                   rawpasteprefix; /* matched bytes of ConsoleNG paste request */
     WORD                    inputstart; /* usually 0, but needed for multi-lines (CONTROL RETURN) */
     WORD                    inputpos; /* cursor pos. inside line */
     WORD                    inputsize; /* length of input string */
