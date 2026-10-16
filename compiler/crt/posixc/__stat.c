@@ -689,7 +689,7 @@ static uid_t __id_a2u(UWORD id)
             return (UWORD)-1;
 
         case 0:
-            return (UWORD)-2;
+            return (uid_t)-2;
 
         default:
             return id;

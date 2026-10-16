@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2025, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     POSIX.1-2008 function scandir().
 */
@@ -114,11 +114,14 @@
     return cnt;
 
 fail:
+    olderrno = errno;
     while (cnt > 0)
     {
         free(darr[--cnt]);
     }
     free(darr);
-    closedir(dirp);
+    if (dirp != NULL)
+        closedir(dirp);
+    errno = olderrno;
     return -1;
 }
