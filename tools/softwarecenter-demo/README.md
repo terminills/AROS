@@ -25,3 +25,10 @@ script preserves a running demo when executed again.
 
 Validation requires screenshots of the GUI sequence and the server/client
 logs. Generating and signing this fixture alone does not establish a GUI pass.
+
+JOB-0156 passed this sequence on 2026-10-16 in a fresh diskless 8-core QEMU
+guest: automatic signed announcement, popup Open, update, install, and removal.
+The non-critical popup closes after 30 seconds, so click Open promptly.
+The registered `softwarecenter-acceptance` evidence includes screenshots and
+server/client logs. This verifies the private demo fixture, not a production
+repository or bare-metal installation.
