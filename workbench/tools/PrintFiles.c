@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2012, The AROS Development Team. All rights reserved.
+    Copyright (C) 2012-2026, The AROS Development Team. All rights reserved.
 
     Desc: Print multiple files with optional formfeed
 */
@@ -13,13 +13,15 @@
 #include <workbench/startup.h>
 #include <datatypes/datatypesclass.h>
 #include <datatypes/pictureclass.h>
+#include <devices/printer.h>
 
 //#define DEBUG 1
 #include <aros/debug.h>
 
-#define USAGE "Usage: PrintFiles [-f] [-u N] file [file] [file...] (-f=formfeed -u=unit number)\n"
+#define USAGE "Usage: PrintFiles [-f] [-u N] [-a application] [-t title] file [file] [file...]\n" \
+              "(-f=formfeed -u=unit number -a=application and -t=document named in the print queue)\n"
 
-const char *vers = "$VER: PrintFiles 1.1 (12.03.2012)";
+const char *vers = "$VER: PrintFiles 1.2 (16.10.2026)";
 
 static struct MsgPort *mp;
 static union printerIO *io;
@@ -73,8 +75,24 @@ static void cleanupdevice(void)
 }
 
 
-static void printfile(STRPTR filename, BOOL formfeed)
+static void setjobinfo(STRPTR application, STRPTR title)
 {
+    struct TagItem tags[] = {
+        { application ? PJIA_Application : TAG_IGNORE, (IPTR)application },
+        { title ? PJIA_Document : TAG_IGNORE, (IPTR)title },
+        { TAG_END }
+    };
+
+    io->ios.io_Command = PRD_SETJOBINFO;
+    io->ios.io_Data = tags;
+    io->ios.io_Length = 0;
+    DoIO((struct IORequest *)io);
+}
+
+static BOOL printfile(STRPTR filename, BOOL formfeed)
+{
+    BOOL ok = FALSE;
+
     if (filename != NULL)
     {
         Object *o;
@@ -92,6 +110,7 @@ static void printfile(STRPTR filename, BOOL formfeed)
             D(bug("[PrintFiles] Trying to print %s\n", filename));
             if (0 == DoDTMethodA(o, NULL, NULL, (Msg)&msg))
             {
+                ok = TRUE;
                 if (formfeed)
                 {
                     D(bug("[PrintFiles] Sending formfeed\n"));
@@ -107,7 +126,20 @@ static void printfile(STRPTR filename, BOOL formfeed)
             }
             DisposeDTObject(o);
         }
+        else
+        {
+            LONG err = IoErr();
+
+            if (err >= DTERROR_UNKNOWN_DATATYPE)
+                Printf("Can't open %s: %s\n", filename, GetDTString(err));
+            else
+            {
+                Printf("Can't open %s: ", filename);
+                PrintFault(err, NULL);
+            }
+        }
     }
+    return ok;
 }
 
 
@@ -143,6 +175,9 @@ int main(int argc, char **argv)
 {
     ULONG unit = 0;
     BOOL formfeed = FALSE;
+    STRPTR title = NULL;
+    STRPTR application = NULL;
+    int rc = RETURN_OK;
     ULONG i;
 
     if (argc == 0)
@@ -203,6 +238,16 @@ int main(int argc, char **argv)
                 i++;
                 StrToLong(argv[i], &unit);
             }
+            else if (argv[i][1] == 't' && (i + 1 < argc))
+            {
+                i++;
+                title = argv[i];
+            }
+            else if (argv[i][1] == 'a' && (i + 1 < argc))
+            {
+                i++;
+                application = argv[i];
+            }
             else
             {
                 PutStr(USAGE);
@@ -214,15 +259,22 @@ int main(int argc, char **argv)
         // print files
         if (initdevice(unit))
         {
+            if (title || application)
+                setjobinfo(application, title);
             while (i < argc)
             {
-                printfile(argv[i], formfeed);
+                if (!printfile(argv[i], formfeed))
+                    rc = RETURN_WARN;
                 i++;
             }
+        }
+        else
+        {
+            rc = RETURN_FAIL;
         }
     }
 
     cleanupdevice();
 
-    return 0;
+    return rc;
 }
