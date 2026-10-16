@@ -915,3 +915,75 @@ diff -ruN clang-20.1.0.src/lib/Lex/InitHeaderSearch.cpp clang-20.1.0.src.aros/li
 +#endif
 +  // AROS shares one address space; process exit does not reclaim abandoned
 +  // frontend allocations. Native invocations must run their normal cleanup.
+--- clang-20.1.0.src/tools/driver/AROSStack.c
++++ clang-20.1.0.src.aros/tools/driver/AROSStack.c
+@@ -0,0 +1,50 @@
++//===-- AROSStack.c - Run clang on a stack large enough for it ------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include <exec/memory.h>
++#include <exec/tasks.h>
++#include <proto/dos.h>
++#include <proto/exec.h>
++#include <aros/startup.h>
++#include <aros/symbolsets.h>
++
++#ifndef CLANG_AROS_STACK_SIZE
++#define CLANG_AROS_STACK_SIZE (8 << 20)
++#endif
++
++static void __clang_aros_stack(struct ExecBase *SysBase)
++{
++    struct Task *task = FindTask(NULL);
++    struct StackSwapStruct sss;
++    struct StackSwapArgs args;
++    APTR stack;
++
++    if ((IPTR)task->tc_SPUpper - (IPTR)task->tc_SPLower >= CLANG_AROS_STACK_SIZE)
++    {
++        __startup_entries_next();
++        return;
++    }
++
++    stack = AllocMem(CLANG_AROS_STACK_SIZE, MEMF_ANY);
++    if (!stack)
++    {
++        PutStr("clang: not enough memory for an 8 MB stack\n");
++        __startup_error = RETURN_FAIL;
++        return;
++    }
++
++    sss.stk_Lower = stack;
++    sss.stk_Upper = (UBYTE *)stack + CLANG_AROS_STACK_SIZE;
++    sss.stk_Pointer = sss.stk_Upper;
++    args.Args[0] = (IPTR)SysBase;
++    NewStackSwap(&sss, ___startup_entries_next, &args);
++
++    FreeMem(stack, CLANG_AROS_STACK_SIZE);
++}
++
++ADD2SET(__clang_aros_stack, PROGRAM_ENTRIES, -60);
+--- clang-20.1.0.src/tools/driver/CMakeLists.txt
++++ clang-20.1.0.src.aros/tools/driver/CMakeLists.txt
+@@ -35,11 +35,16 @@
+   endif()
+ endif()
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  set(CLANG_AROS_SOURCES AROSStack.c)
++endif()
++
+ add_clang_tool(clang
+   driver.cpp
+   cc1_main.cpp
+   cc1as_main.cpp
+   cc1gen_reproducer_main.cpp
++  ${CLANG_AROS_SOURCES}
+ 
+   DEPENDS
+   intrinsics_gen
