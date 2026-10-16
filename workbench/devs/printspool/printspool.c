@@ -68,8 +68,15 @@ static void job_path(struct PrintSpoolBase *PrintSpoolBase, CONST_STRPTR name,
         strcat(buf, suffix);
 }
 
+/* SetVar() makes the variable's file but not its directory. */
 static void set_status(struct PrintSpoolBase *PrintSpoolBase, CONST_STRPTR text)
 {
+    BPTR lock = Lock("ENV:PrintSpool", SHARED_LOCK);
+
+    if (lock == BNULL)
+        lock = CreateDir("ENV:PrintSpool");
+    if (lock != BNULL)
+        UnLock(lock);
     SetVar("PrintSpool/Status", text, -1, GVF_GLOBAL_ONLY);
 }
 
