@@ -537,8 +537,19 @@ struct Object *GetObject(struct Handler *handler, struct Lock *lock,
 
    /* Get object referenced by lock */
 
-   lock = FIXLOCK(handler, lock);
-   object = (APTR)((struct FileLock *)lock)->fl_Key;
+   if(lock != NULL)
+   {
+      object = LockedObject(handler, lock);
+      if(object == NULL)
+      {
+         if(parent != NULL)
+            *parent = NULL;
+         SetIoErr(ERROR_INVALID_LOCK);
+         return NULL;
+      }
+   }
+   else
+      object = handler->root_dir;
    old_object = object->parent;
 
    /* Traverse textual portion of path */
