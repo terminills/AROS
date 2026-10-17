@@ -1027,6 +1027,8 @@ WORD xhciQueueData(struct PCIController *hc,
 
         if(trblen > segmax)
             trblen = segmax;
+        if(trblen > 0x10000 - ((payload + offset) & 0xFFFF))
+            trblen = 0x10000 - ((payload + offset) & 0xFFFF);
 
         /* Select TRB type for this segment. */
         if(is_ctl_data_stage && offset != 0) {
@@ -1102,6 +1104,8 @@ WORD xhciQueueData_IO(struct PCIController *hc,
 
         if(trblen > segmax)
             trblen = segmax;
+        if(trblen > 0x10000 - ((payload + offset) & 0xFFFF))
+            trblen = 0x10000 - ((payload + offset) & 0xFFFF);
 
         if(is_ctl_data_stage && offset != 0) {
             txflags = (base_flags & ~TRBF_FLAG_DS_DIR) | TRBF_FLAG_TRTYPE_NORMAL;
