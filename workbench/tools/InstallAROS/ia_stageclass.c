@@ -1569,6 +1569,25 @@ IPTR InstallStage__MUIM_IC_Install(Class * CLASS, Object * self, Msg message)
 
     DoMethod(data->installer, MUIM_Application_InputBuffered);
 
+    /* STEP : COPY PACKAGES
+
+       Software that registers itself in ENVARC:SYS/Packages and lives in a
+       drawer of its own on SYS: (not one the steps above copy) is part of the
+       system the user booted, so it is installed with the core. */
+
+    GET(data->instc_options_main->opt_copycore, MUIA_Selected, &option);
+    if (option && (data->inst_success == MUIV_Inst_InProgress))
+    {
+        ULONG dstLen = strlen(data->install_SysTarget) + 2;
+        TEXT destinationPath[dstLen];
+
+        sprintf(destinationPath, "%s:", data->install_SysTarget);
+        PACKAGES_DoInstall(CLASS, self, destinationPath);
+        PACKAGES_InstallBackdrop(destinationPath);
+    }
+
+    DoMethod(data->installer, MUIM_Application_InputBuffered);
+
     /* STEP : COPY EXTRAS */
 
     GET(data->instc_options_main->opt_copyextra, MUIA_Selected, &option);
@@ -1663,6 +1682,7 @@ IPTR InstallStage__MUIM_IC_Install(Class * CLASS, Object * self, Msg message)
     if (option && (data->inst_success == MUIV_Inst_InProgress))
     {
         BOOTLOADER_DoInstall(CLASS, self);
+        BOOTLOADER_InstallEFI(CLASS, self);
     }
 
     SET(data->proceed, MUIA_Disabled, FALSE);
