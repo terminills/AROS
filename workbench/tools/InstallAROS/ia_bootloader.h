@@ -1,7 +1,7 @@
 #ifndef IA_BOOTLOADER_H
 #define IA_BOOTLOADER_H
 /*
-    Copyright © 2018-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 2018-2026, The AROS Development Team. All rights reserved.
     $Id$
 */
 
@@ -47,6 +47,7 @@ extern LONG BootLoaderType;
 extern void BOOTLOADER_InitSupport(void);
 extern BOOL BOOTLOADER_PartFixUp(struct InstallStage_DATA *data, IPTR systype);
 extern void BOOTLOADER_DoInstall(Class * CLASS, Object * self);
+extern void BOOTLOADER_InstallEFI(Class * CLASS, Object * self);
 extern void BOOTLOADER_AddCoreSkipPaths(struct List *SkipList);
 
 #endif /* IA_BOOTLOADER_H */

@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2018-2023, The AROS Development Team. All rights reserved.
+    Copyright (C) 2018-2026, The AROS Development Team. All rights reserved.
 */
 
 #define INTUITION_NO_INLINE_STDARG
@@ -233,6 +233,8 @@ BOOL BOOTLOADER_PartFixUp(struct InstallStage_DATA *data, IPTR systype)
     return TRUE;
 }
 
+static BOOL IsESPType(UBYTE id, struct DosEnvec *de);
+
 static LONG FindWindowsPartition(STRPTR device, LONG unit)
 {
     IPTR active, id;
@@ -255,7 +257,13 @@ static LONG FindWindowsPartition(STRPTR device, LONG unit)
                     PT_TYPE, (IPTR) & type, TAG_DONE);
                 id = type.id[0];
                 if (active && (id == 0x7 || id == 0xb || id == 0xc))
-                    partition_no = i;
+                {
+                    struct DosEnvec de;
+
+                    GetPartitionAttrsTags(partition, PT_DOSENVEC, (IPTR)&de, TAG_DONE);
+                    if (!IsESPType(id, &de))
+                        partition_no = i;
+                }
                 i++;
             }
             ClosePartitionTable(root);
@@ -422,4 +430,214 @@ void BOOTLOADER_DoInstall(Class * CLASS, Object * self)
     D(bug("[InstallAROS] %s: finished\n", __func__));
 
     SET(data->gauge2, MUIA_Gauge_Current, 100);
+}
+
+/* UEFI ****************************************************************/
+
+#define EFI_LOADER      "efi/BOOT/BOOTX64.EFI"
+#if !defined(ID_FAT32_DISK)
+#define ID_FAT32_DISK   AROS_MAKE_ID('F','A','T',2)
+#endif
+
+extern BOOL FormatPartition(CONST_STRPTR device, CONST_STRPTR name, ULONG dostype);
+#define EFI_ESP_MAXMB   512
+
+static BOOL IsESPType(UBYTE id, struct DosEnvec *de)
+{
+    UQUAD blocks = (UQUAD)(de->de_HighCyl - de->de_LowCyl + 1)
+        * de->de_Surfaces * de->de_BlocksPerTrack;
+    UQUAD mb = (blocks * (de->de_SizeBlock << 2)) >> 20;
+
+    return id == 0xef || ((id == 0x0b || id == 0x0c) && mb <= EFI_ESP_MAXMB);
+}
+
+/* The DOS device mounted on the ESP of device/unit: name into devName */
+static BOOL FindESPDevice(STRPTR device, LONG unit, STRPTR devName, ULONG len)
+{
+    struct PartitionHandle *root, *partition;
+    struct PartitionType type;
+    struct DosEnvec esp = { 0 };
+    struct DosList *dl;
+    BOOL found = FALSE;
+
+    if ((root = OpenRootPartition(device, unit)) == NULL)
+        return FALSE;
+    if (OpenPartitionTable(root) == 0)
+    {
+        ForeachNode(&root->table->list, partition)
+        {
+            struct DosEnvec de;
+
+            GetPartitionAttrsTags(partition,
+                PT_TYPE, (IPTR)&type, PT_DOSENVEC, (IPTR)&de, TAG_DONE);
+            if (IsESPType(type.id[0], &de))
+            {
+                esp = de;
+                found = TRUE;
+                break;
+            }
+        }
+        ClosePartitionTable(root);
+    }
+    CloseRootPartition(root);
+    if (!found)
+        return FALSE;
+
+    found = FALSE;
+    dl = LockDosList(LDF_DEVICES | LDF_READ);
+    while ((dl = NextDosEntry(dl, LDF_DEVICES)) != NULL)
+    {
+        struct FileSysStartupMsg *fssm =
+            (struct FileSysStartupMsg *)BADDR(dl->dol_misc.dol_handler.dol_Startup);
+        struct DosEnvec *de;
+
+        if ((IPTR)fssm < 0x400 || fssm->fssm_Unit != unit
+            || strcmp(AROS_BSTR_ADDR(fssm->fssm_Device), device) != 0)
+            continue;
+        de = (struct DosEnvec *)BADDR(fssm->fssm_Environ);
+        if (de->de_LowCyl == esp.de_LowCyl && de->de_HighCyl == esp.de_HighCyl)
+        {
+            snprintf(devName, len, "%s:", AROS_BSTR_ADDR(dl->dol_Name));
+            found = TRUE;
+            break;
+        }
+    }
+    UnLockDosList(LDF_DEVICES | LDF_READ);
+    return found;
+}
+
+/* Empty, or ours from an earlier install: never another system's loader */
+static BOOL ESPIsUsable(CONST_STRPTR espRoot)
+{
+    TEXT path[128];
+    struct InfoData *info;
+    BOOL usable = FALSE;
+    BPTR lock;
+
+    if ((lock = Lock(espRoot, SHARED_LOCK)) == BNULL)
+        return FALSE;
+    if ((info = AllocMem(sizeof(*info), MEMF_ANY)) != NULL)
+    {
+        if (Info(lock, info) && info->id_DiskType != ID_NOT_REALLY_DOS
+            && info->id_DiskType != ID_UNREADABLE_DISK)
+        {
+            BPTR efi, ours;
+
+            snprintf(path, sizeof(path), "%sefi", espRoot);
+            if ((efi = Lock(path, SHARED_LOCK)) == BNULL)
+                usable = TRUE;
+            else
+            {
+                UnLock(efi);
+                snprintf(path, sizeof(path), "%sefi/BOOT/grub", espRoot);
+                if ((ours = Lock(path, SHARED_LOCK)) != BNULL)
+                {
+                    UnLock(ours);
+                    usable = TRUE;
+                }
+            }
+        }
+        FreeMem(info, sizeof(*info));
+    }
+    UnLock(lock);
+    return usable;
+}
+
+static BOOL ESPIsFormatted(CONST_STRPTR espRoot)
+{
+    struct InfoData *info;
+    BOOL formatted = FALSE;
+    BPTR lock;
+
+    if ((lock = Lock(espRoot, SHARED_LOCK)) == BNULL)
+        return FALSE;
+    if ((info = AllocMem(sizeof(*info), MEMF_ANY)) != NULL)
+    {
+        formatted = Info(lock, info) && info->id_DiskType != ID_NOT_REALLY_DOS
+            && info->id_DiskType != ID_UNREADABLE_DISK;
+        FreeMem(info, sizeof(*info));
+    }
+    UnLock(lock);
+    return formatted;
+}
+
+/* UEFI firmware loads efi/BOOT/BOOTX64.EFI from the ESP. GRUB's root there is
+   the ESP itself, so it also needs the kernel and boot packages beside it. */
+void BOOTLOADER_InstallEFI(Class * CLASS, Object * self)
+{
+    struct InstallStage_DATA *data = INST_DATA(CLASS, self);
+    ULONG srcLen = strlen(source_Path) + 32;
+    TEXT src[srcLen], espRoot[64], dst[160];
+    struct FileInfoBlock *fib;
+    BPTR lock;
+
+    strcpy(src, source_Path);
+    AddPart(src, EFI_LOADER, srcLen);
+    if ((lock = Lock(src, SHARED_LOCK)) == BNULL)
+        return;
+    UnLock(lock);
+
+    if (!FindESPDevice(data->bl_TargetDevice, data->bl_TargetUnit,
+        espRoot, sizeof(espRoot)))
+    {
+        D(bug("[InstallAROS] %s: no ESP on %s unit %ld\n", __func__,
+            data->bl_TargetDevice, data->bl_TargetUnit));
+        return;
+    }
+    D(bug("[InstallAROS] %s: ESP is %s\n", __func__, espRoot));
+
+    if (!ESPIsFormatted(espRoot))
+    {
+        TEXT dev[64];
+
+        strcpy(dev, espRoot);
+        if (!FormatPartition(dev, "EFI", ID_FAT32_DISK))
+        {
+            D(bug("[InstallAROS] %s: formatting %s failed\n", __func__, espRoot));
+            return;
+        }
+    }
+    if (!ESPIsUsable(espRoot))
+    {
+        D(bug("[InstallAROS] %s: %s holds another loader - left alone\n",
+            __func__, espRoot));
+        return;
+    }
+
+    {
+        CONST_STRPTR efi_dirs[] = {
+            "efi/BOOT", "efi/BOOT",
+            "boot/pc-smp", "boot/pc-smp",
+            NULL
+        };
+        CopyDirArray(CLASS, self, source_Path, espRoot, efi_dirs, NULL);
+    }
+
+    /* boot/#?.pkg.xz */
+    strcpy(src, source_Path);
+    AddPart(src, "boot", srcLen);
+    if ((lock = Lock(src, SHARED_LOCK)) != BNULL)
+    {
+        if ((fib = AllocDosObject(DOS_FIB, NULL)) != NULL)
+        {
+            if (Examine(lock, fib))
+            {
+                while (ExNext(lock, fib))
+                {
+                    ULONG n = strlen(fib->fib_FileName);
+                    TEXT file[srcLen + n + 2];
+
+                    if (fib->fib_DirEntryType > 0 || n < 7
+                        || strcmp(fib->fib_FileName + n - 7, ".pkg.xz") != 0)
+                        continue;
+                    strcpy(file, src);
+                    AddPart(file, fib->fib_FileName, sizeof(file));
+                    snprintf(dst, sizeof(dst), "%sboot/%s", espRoot, fib->fib_FileName);
+                    DoMethod(self, MUIM_IC_CopyFile, file, dst);
+                }
+            }
+            FreeDosObject(DOS_FIB, fib);
+        }
+        UnLock(lock);
+    }
 }
