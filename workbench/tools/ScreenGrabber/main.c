@@ -25,6 +25,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <errno.h>
 
 #include "locale.h"
 
@@ -45,7 +47,15 @@ static struct Hook select_hook;
 static struct Hook grab_hook;
 static struct Hook save_hook;
 
-static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
+struct CaptureSelection
+{
+    BOOL region, active;
+    const char *window;
+    LONG x, y, width, height;
+};
+
+static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename,
+    const struct CaptureSelection *selection)
 {
     struct Screen *screen;
     Object *image = NULL;
@@ -54,6 +64,7 @@ static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
     BPTR fh = BNULL;
     LONG result = RETURN_FAIL;
     BOOL ppm;
+    LONG left = 0, top = 0, width, height;
 
     ppm = strlen((const char *)filename) > 4 &&
         strcasecmp((const char *)filename + strlen((const char *)filename) - 4,
@@ -66,7 +77,47 @@ static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
         return result;
     }
 
-    row = AllocVec(4 * screen->Width, MEMF_ANY);
+    width = screen->Width;
+    height = screen->Height;
+    if (selection->region)
+    {
+        left = selection->x; top = selection->y;
+        width = selection->width; height = selection->height;
+    }
+    else if (selection->window || selection->active)
+    {
+        struct Window *window;
+        ULONG lock = LockIBase(0);
+        int matches = 0;
+
+        for (window = screen->FirstWindow; window; window = window->NextWindow)
+        {
+            if ((selection->active && (window->Flags & WFLG_WINDOWACTIVE)) ||
+                (selection->window && window->Title &&
+                 strcmp((const char *)window->Title, selection->window) == 0))
+            {
+                left = window->LeftEdge; top = window->TopEdge;
+                width = window->Width; height = window->Height;
+                matches++;
+            }
+        }
+        UnlockIBase(lock);
+        if (matches != 1)
+        {
+            fprintf(stderr, "%s: window selection matched %d windows on this public screen\n",
+                APPNAME, matches);
+            goto out;
+        }
+    }
+    if (left < 0 || top < 0 || width <= 0 || height <= 0 ||
+        left > screen->Width || top > screen->Height ||
+        width > screen->Width - left || height > screen->Height - top)
+    {
+        fprintf(stderr, "%s: capture rectangle is outside the public screen\n", APPNAME);
+        goto out;
+    }
+
+    row = AllocVec(4 * width, MEMF_ANY);
     if (!row)
     {
         fprintf(stderr, "%s: unable to allocate capture row\n", APPNAME);
@@ -77,7 +128,7 @@ static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
     {
         ULONG y;
 
-        rgb = AllocVec(3 * screen->Width, MEMF_ANY);
+        rgb = AllocVec(3 * width, MEMF_ANY);
         if (!rgb)
         {
             fprintf(stderr, "%s: unable to allocate PPM row\n", APPNAME);
@@ -92,31 +143,38 @@ static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
             goto out;
         }
 
-        FPrintf(fh, "P6\n%ld %ld\n255\n",
-            (LONG)screen->Width, (LONG)screen->Height);
-        for (y = 0; y < screen->Height; y++)
+        if (FPrintf(fh, "P6\n%ld %ld\n255\n",
+            (LONG)width, (LONG)height) < 0)
+        {
+            fprintf(stderr, "%s: failed to write PPM header (IoErr=%ld)\n",
+                APPNAME, IoErr());
+            goto out;
+        }
+        for (y = 0; y < height; y++)
         {
             ULONG x;
             UBYTE *argb = row;
 
-            ReadPixelArray(row, 0, 0, 4 * screen->Width,
-                &screen->RastPort, 0, y, screen->Width, 1,
-                RECTFMT_ARGB);
-            for (x = 0; x < screen->Width; x++)
+            if (ReadPixelArray(row, 0, 0, 4 * width,
+                &screen->RastPort, left, top + y, width, 1,
+                RECTFMT_ARGB) != width)
+            {
+                fprintf(stderr, "%s: failed to read screen row %lu\n", APPNAME, (unsigned long)y);
+                goto out;
+            }
+            for (x = 0; x < width; x++)
             {
                 rgb[x * 3] = argb[x * 4 + 1];
                 rgb[x * 3 + 1] = argb[x * 4 + 2];
                 rgb[x * 3 + 2] = argb[x * 4 + 3];
             }
-            if (Write(fh, rgb, 3 * screen->Width) != 3 * screen->Width)
+            if (Write(fh, rgb, 3 * width) != 3 * width)
             {
                 fprintf(stderr, "%s: failed while writing %s (IoErr=%ld)\n",
                     APPNAME, filename, IoErr());
                 goto out;
             }
         }
-        printf("%s: captured %ux%u public screen to %s\n",
-            APPNAME, screen->Width, screen->Height, filename);
         result = RETURN_OK;
         goto out;
     }
@@ -139,24 +197,32 @@ static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
             dtb.MethodID = PDTM_WRITEPIXELARRAY;
             dtb.pbpa_PixelData = row;
             dtb.pbpa_PixelFormat = PBPAFMT_ARGB;
-            dtb.pbpa_PixelArrayMod = screen->Width;
+            dtb.pbpa_PixelArrayMod = 4 * width;
             dtb.pbpa_Left = 0;
-            dtb.pbpa_Width = screen->Width;
+            dtb.pbpa_Width = width;
             dtb.pbpa_Height = 1;
 
-            bmhd->bmh_Width = screen->Width;
-            bmhd->bmh_Height = screen->Height;
+            bmhd->bmh_Width = width;
+            bmhd->bmh_Height = height;
             bmhd->bmh_Depth = 24;
-            bmhd->bmh_PageWidth = screen->Width;
-            bmhd->bmh_PageHeight = screen->Height;
+            bmhd->bmh_PageWidth = width;
+            bmhd->bmh_PageHeight = height;
 
-            for (y = 0; y < screen->Height; y++)
+            for (y = 0; y < height; y++)
             {
-                ReadPixelArray(row, 0, 0, 4 * screen->Width,
-                    &screen->RastPort, 0, y, screen->Width, 1,
-                    RECTFMT_ARGB);
+                if (ReadPixelArray(row, 0, 0, 4 * width,
+                    &screen->RastPort, left, top + y, width, 1,
+                    RECTFMT_ARGB) != width)
+                {
+                    fprintf(stderr, "%s: failed to read screen row %lu\n", APPNAME, (unsigned long)y);
+                    goto out;
+                }
                 dtb.pbpa_Top = y;
-                DoMethodA(image, (Msg)&dtb);
+                if (!DoMethodA(image, (Msg)&dtb))
+                {
+                    fprintf(stderr, "%s: PNG datatype rejected row %lu\n", APPNAME, (unsigned long)y);
+                    goto out;
+                }
             }
 
             fh = Open(filename, MODE_NEWFILE);
@@ -171,11 +237,8 @@ static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
                 dtw.dtw_AttrList = NULL;
 
                 SetIoErr(0);
-                DoMethodA(image, (Msg)&dtw);
-                if (IoErr() == 0)
+                if (DoMethodA(image, (Msg)&dtw))
                 {
-                    printf("%s: captured %ux%u public screen to %s\n",
-                        APPNAME, screen->Width, screen->Height, filename);
                     result = RETURN_OK;
                 }
                 else
@@ -190,6 +253,10 @@ static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
                     APPNAME, filename, IoErr());
             }
         }
+        else
+        {
+            fprintf(stderr, "%s: PNG datatype has no bitmap header\n", APPNAME);
+        }
     }
     else
     {
@@ -197,7 +264,15 @@ static LONG CaptureScreenToFile(CONST_STRPTR screenname, CONST_STRPTR filename)
     }
 
 out:
-    if (fh) Close(fh);
+    if (fh && !Close(fh))
+    {
+        fprintf(stderr, "%s: failed to close %s (IoErr=%ld)\n",
+            APPNAME, filename, IoErr());
+        result = RETURN_FAIL;
+    }
+    if (result == RETURN_OK)
+        printf("%s: captured %ux%u public screen to %s\n",
+            APPNAME, (unsigned)width, (unsigned)height, filename);
     if (image) DisposeDTObject(image);
     if (rgb) FreeVec(rgb);
     if (row) FreeVec(row);
@@ -589,6 +664,51 @@ BOOL GUIInit()
     return retval;
 }
 
+static BOOL CaptureNumber(const char *text, LONG *value)
+{
+    char *end;
+    long parsed;
+    errno = 0;
+    parsed = strtol(text, &end, 10);
+    if (errno || !*text || *end || parsed < 0 || parsed > 32767) return FALSE;
+    *value = parsed;
+    return TRUE;
+}
+
+static int CaptureCLI(int argc, char **argv)
+{
+    struct CaptureSelection selection = {0};
+    CONST_STRPTR screenname = NULL;
+    int i = 2;
+    if (!strcmp(argv[1], "--help"))
+    {
+        puts("ScreenGrabber FILE [PUBLICSCREEN] [--region X Y WIDTH HEIGHT | --window TITLE | --active-window]\n"
+             "FILE ending in .ppm selects PPM; otherwise PNG. Window names must match exactly and uniquely.\n"
+             "Window capture reads visible screen pixels, including any overlapping windows.");
+        return RETURN_OK;
+    }
+    if (i < argc && strncmp(argv[i], "--", 2)) screenname = (CONST_STRPTR)argv[i++];
+    if (i < argc)
+    {
+        if (!strcmp(argv[i], "--region") && argc - i == 5)
+        {
+            selection.region = TRUE;
+            if (!CaptureNumber(argv[i+1], &selection.x) || !CaptureNumber(argv[i+2], &selection.y) ||
+                !CaptureNumber(argv[i+3], &selection.width) || !CaptureNumber(argv[i+4], &selection.height))
+                goto invalid;
+        }
+        else if (!strcmp(argv[i], "--window") && argc - i == 2)
+            selection.window = argv[i+1];
+        else if (!strcmp(argv[i], "--active-window") && argc - i == 1)
+            selection.active = TRUE;
+        else goto invalid;
+    }
+    return CaptureScreenToFile(screenname, (CONST_STRPTR)argv[1], &selection);
+invalid:
+    fprintf(stderr, "%s: invalid capture arguments; use --help\n", APPNAME);
+    return RETURN_FAIL;
+}
+
 int main(int argc, char **argv)
 {
     static struct WBStartup *wbstartup;
@@ -597,9 +717,7 @@ int main(int argc, char **argv)
     int result = RETURN_OK;
     if (argc > 1)
     {
-        CONST_STRPTR screenname = argc > 2 ? argv[2] : NULL;
-
-        return CaptureScreenToFile(screenname, argv[1]);
+        return CaptureCLI(argc, argv);
     }
 
     if (argc)
