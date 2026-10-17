@@ -1,78 +1,88 @@
 /*
- * amdgpu.hidd — library init: probe, identify, run the tier-1 ladder,
- * report. Deliberately observe-only at this tier: nothing is claimed,
- * no display modes are registered, and the radeonsi monolith keeps
- * driving any AMD GPU. This driver earns ownership tier by tier on
- * real hardware.
- */
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
-#define DEBUG 1
+    Desc: AMDGPU Hidd initialisation code
+*/
+
+#ifdef DEBUG
+#undef DEBUG
+#endif
+#define DEBUG 0
 #include <aros/debug.h>
 
-#include <aros/symbolsets.h>
+#define __OOP_NOATTRBASES__
+
+#include <proto/exec.h>
 #include <proto/oop.h>
-#include <hidd/pci.h>
+#include <exec/types.h>
+#include <exec/lists.h>
+#include <hidd/gfx.h>
+#include <oop/oop.h>
+#include <utility/utility.h>
+#include <aros/symbolsets.h>
 
 #include "amdgpu_intern.h"
-#include "amdgpu_gfx_intern.h"
-#include "amdgpu_bo.h"
-#include "amdgpu_gart.h"
-#include "amdgpu_cs.h"
-#include "amdgpu_query_internal.h"
 
-struct AmdgpuBase amdgpuBase;
+#include LC_LIBDEFS_FILE
 
-static int Amdgpu_Init(APTR libbase)
+static OOP_AttrBase HiddPixFmtAttrBase; // = 0;
+
+static struct OOP_ABDescr abd[] =
 {
-    struct AmdgpuHiddBase *AmdgpuHiddBase = (struct AmdgpuHiddBase *)libbase;
-    struct AmdgpuDevice *ad;
+    { IID_Hidd_PixFmt,  &HiddPixFmtAttrBase },
+    { NULL,             NULL                }
+};
 
-    D(bug("[amdgpu] base driver (clean bring-up, tier 1) — "
-          "ACD-amdgpu-driver-stack-split\n"));
+static int Amdgpu_Init(LIBBASETYPEPTR LIBBASE)
+{
+    struct Amdgpu_staticdata *xsd = &LIBBASE->vsd;
 
-    amdgpuBase.pciDeviceAB = OOP_ObtainAttrBase(IID_Hidd_PCIDevice);
-    amdgpuBase.pciDriverAB = OOP_ObtainAttrBase(IID_Hidd_PCIDriver);
-    if (!amdgpuBase.pciDeviceAB) {
-        D(bug("[amdgpu] no PCIDevice attrbase — PCI hidd not present?\n"));
-        return TRUE;    /* library loads; there is just nothing to do */
-    }
+    D(bug("[amdgpu.hidd] %s: code @ 0x%p\n", __func__, Amdgpu_KMS_Init);)
 
-    /* The device ladder maps firmware/rings before the display is published. */
-    amdgpu_gart_service_init();
-    if (amdgpu_pci_probe(&amdgpuBase)) {
-        ForeachNode(&amdgpuBase.devices, ad) {
-            amdgpu_device_init(&amdgpuBase, ad);
-            amdgpu_render_info_init(ad);
-        }
+    xsd->AmdgpuCyberGfxBase = OpenLibrary((STRPTR)"cybergraphics.library",0);
+    if (xsd->AmdgpuCyberGfxBase == NULL)
+        goto failure;
 
-        D(bug("[amdgpu] tier-1 ladder complete for %lu device(s); "
-              "observe-only, claiming nothing\n",
-              (unsigned long)amdgpuBase.device_count));
-    }
+    if (!OOP_ObtainAttrBases(abd))
+        goto failure;
+
+    xsd->basebm = OOP_FindClass(CLID_Hidd_BitMap);
+    xsd->basegallium = OOP_FindClass(CLID_Hidd_Gallium);
+
+    xsd->hiddGalliumAB = OOP_ObtainAttrBase((STRPTR)IID_Hidd_Gallium);
+    if (xsd->hiddGalliumAB == 0)
+        goto failure;
 
     /*
-     * Boot-mode display: adopt the firmware/GOP framebuffer as a real AROS
-     * gfx-HIDD display (bootloader.resource VesaInfo — the surface the DCN is
-     * already scanning out). Registers a DDRV_BootMode driver so the desktop
-     * paints on the AMD GPU, and is auto-superseded when a native-mode driver
-     * arrives. Runs after the wake loop; the gfx class ptr (gsd.gfxclass) was
-     * populated by genmodule's class setup before this init.
+     * The amdgpu driver finds the card, brings it up and owns it from
+     * here on; the hidd talks to it as a DRM client.
      */
-    AmdgpuGfx_InitDisplay(AmdgpuHiddBase);
-    amdgpu_bo_service_init(&AmdgpuHiddBase->gsd.data);
-    amdgpu_cs_service_init(&AmdgpuHiddBase->gsd.data);
+    if (!Amdgpu_KMS_Init(&xsd->kms))
+    {
+        /* with its tasks up the driver cannot be unloaded; the class just declines */
+        if (xsd->kms.started)
+            return TRUE;
+        goto failure;
+    }
 
+    D(bug("[amdgpu.hidd] %s: Suitable adaptor found\n", __func__);)
     return TRUE;
-}
 
-static int Amdgpu_Expunge(APTR libbase)
-{
-    if (amdgpuBase.pciDeviceAB)
-        OOP_ReleaseAttrBase(IID_Hidd_PCIDevice);
-    if (amdgpuBase.pciDriverAB)
-        OOP_ReleaseAttrBase(IID_Hidd_PCIDriver);
-    return TRUE;
+failure:
+    D(bug("[amdgpu.hidd] %s: No suitable adaptors found\n", __func__);)
+
+    if (xsd->AmdgpuCyberGfxBase)
+        CloseLibrary(xsd->AmdgpuCyberGfxBase);
+
+    if (xsd->hiddGalliumAB)
+        OOP_ReleaseAttrBase((STRPTR)IID_Hidd_Gallium);
+
+    OOP_ReleaseAttrBases(abd);
+
+    return FALSE;
 }
 
 ADD2INITLIB(Amdgpu_Init, 0)
-ADD2EXPUNGELIB(Amdgpu_Expunge, 0)
+
+ADD2LIBS((STRPTR)"gallium.hidd", 7, static struct Library *, GalliumHiddBase);
+ADD2LIBS((STRPTR)"pci.hidd", 0, static struct Library *, PciHiddBase);
