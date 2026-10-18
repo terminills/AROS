@@ -1,0 +1,43 @@
+# Copyright (C) 2004-2023, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+BASEICONS := About FixFonts Format FTManager WorkBook Shell
+ADDITIONALICONS := SysMon Snoopy Find VMM
+
+DISKIMAGESRCS := DiskImageGUI-1.png DiskImageGUI-2.png
+DISKIMAGEICON := DiskImageGUI
+
+#MM- iconset-Ion-wbench-icons-aros-clean : iconset-Ion-wbench-icons-aros-system-clean
+#MM- iconset-Ion-additional-icons-aros-clean : iconset-Ion-additional-icons-aros-system-clean
+#MM- iconset-Ion-wbench-icons-aros : iconset-Ion-wbench-icons-aros-system
+#MM- iconset-Ion-additional-icons-aros : iconset-Ion-additional-icons-aros-system
+#MM  iconset-Ion-additional-icons-aros-system : iconset-Ion-additional-icons-aros-system-diskimage
+
+%build_icons mmake=iconset-Ion-wbench-icons-aros-system icons=$(BASEICONS) \
+             dir=$(AROS_SYSTEM)
+
+%build_icons mmake=iconset-Ion-additional-icons-aros-system icons=$(ADDITIONALICONS) \
+             dir=$(AROS_SYSTEM)
+
+%build_icons mmake=iconset-Ion-additional-icons-aros-system-logview icons="LogView" \
+             dir=$(AROS_SYSTEM)
+
+%build_icons mmake=iconset-Ion-additional-icons-aros-system-diskimage icons=$(DISKIMAGEICON) \
+             dir=$(AROS_SYSTEM) image=$(DISKIMAGESRCS)
+
+#MM- icons-wbench-system : ion-icons-wbench-system
+%build_icons mmake=ion-icons-wbench-system icons=$(BASEICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_SYSTEM)
+
+#MM- icons-additional-wbench-system : ion-icons-additional-wbench-system
+%build_icons mmake=ion-icons-additional-wbench-system icons=$(ADDITIONALICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_SYSTEM)
+
+#MM- icons-additional-wbench-system-logview : ion-icons-additional-wbench-system-logview
+%build_icons mmake=ion-icons-additional-wbench-system-logview icons="LogView" \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_SYSTEM)
+
+#MM- icons-additional-wbench-system-diskimage : ion-icons-additional-wbench-system-diskimage
+%build_icons mmake=ion-icons-additional-wbench-system-diskimage icons=$(DISKIMAGEICON) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_SYSTEM) image=$(DISKIMAGESRCS)

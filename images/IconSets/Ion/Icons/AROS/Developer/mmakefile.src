@@ -1,0 +1,25 @@
+# Copyright (C) 2004-2023, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+BASEICONS := Debug
+ADDITIONALICONS := Include Lib
+
+#MM- iconset-Ion-wbench-icons-aros-clean : iconset-Ion-wbench-icons-aros-developer-clean
+#MM- iconset-Ion-additional-icons-aros-clean : iconset-Ion-additional-icons-aros-developer-clean
+#MM- iconset-Ion-wbench-icons-aros : iconset-Ion-wbench-icons-aros-developer
+#MM- iconset-Ion-additional-icons-aros : iconset-Ion-additional-icons-aros-developer
+
+%build_icons mmake=iconset-Ion-wbench-icons-aros-developer icons=$(BASEICONS) \
+             dir=$(AROS_DEVELOPER)
+
+%build_icons mmake=iconset-Ion-additional-icons-aros-developer icons=$(ADDITIONALICONS) \
+             dir=$(AROS_DEVELOPER)
+
+#MM- icons-developer : ion-icons-developer
+%build_icons mmake=ion-icons-developer icons=$(BASEICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_DEVELOPER)
+
+#MM- icons-additional-developer : ion-icons-additional-developer
+%build_icons mmake=ion-icons-additional-developer icons=$(ADDITIONALICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_DEVELOPER)

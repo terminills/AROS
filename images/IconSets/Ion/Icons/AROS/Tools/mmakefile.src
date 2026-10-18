@@ -1,0 +1,26 @@
+# Copyright (C) 2004-2025, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+BASEICONS := Calculator HDToolBox InstallAROS Editor Commodities \
+         ShowConfig KeyShow InitPrinter PrintFiles GraphicDump
+ADDITIONALICONS := AHIRecord WiMP ScreenGrabber SysExplorer BoingIconBar QuickPart
+
+#MM- iconset-Ion-wbench-icons-aros-clean : iconset-Ion-wbench-icons-aros-tools-clean
+#MM- iconset-Ion-additional-icons-aros-clean : iconset-Ion-additional-icons-aros-tools-clean
+#MM- iconset-Ion-wbench-icons-aros : iconset-Ion-wbench-icons-aros-tools
+#MM- iconset-Ion-additional-icons-aros : iconset-Ion-additional-icons-aros-tools
+
+%build_icons mmake=iconset-Ion-wbench-icons-aros-tools icons=$(BASEICONS) \
+             dir=$(AROS_TOOLS)
+
+%build_icons mmake=iconset-Ion-additional-icons-aros-tools icons=$(ADDITIONALICONS) \
+             dir=$(AROS_TOOLS)
+
+#MM- icons-wbench-tools : ion-icons-wbench-tools
+%build_icons mmake=ion-icons-wbench-tools icons=$(BASEICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_TOOLS)
+
+#MM- icons-additional-wbench-tools : ion-icons-additional-wbench-tools
+%build_icons mmake=ion-icons-additional-wbench-tools icons=$(ADDITIONALICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_TOOLS)

@@ -1,0 +1,75 @@
+/* ===================== AROS Ion theme =================================== */
+CloseRight          = No
+BaseColors          = 0x001a86a8 0x002e455c
+
+RightBorderGads     = 18
+BottomBorderGads    = 18
+
+/* offset/size pairs index into the 14px scroller strips */
+ContainerTop        = 0     5
+ContainerVertTile   = 5   186
+ContainerBottom     = 191   5
+
+ContainerLeft       = 0     5
+ContainerHorTile    = 5   186
+ContainerRight      = 191   5
+
+KnobTop             = 0     6
+KnobTileTop         = 6    56
+KnobVertGripper     = 62   16
+KnobTileBottom      = 78   56
+KnobBottom          = 134   6
+
+KnobLeft            = 0     6
+KnobTileLeft        = 6    56
+KnobHorGripper      = 62   16
+KnobTileRight       = 78   56
+KnobRight           = 134   6
+
+/* =================================================================== */
+
+UseGradients        = Yes
+ActivatedGradient   = 0x00162c48 0x000d1e33 0
+DeactivatedGradient = 0x001a2534 0x00121a26 0
+
+NoInactiveSelected  = No
+
+WindowTitleColors   = 0x00e6f6ff 0x00020812
+WindowTitleMode     = Shadow
+
+/* =================================================================== */
+
+SBarHeight          = 22
+LogoOffset          = 0
+TitleOffset         = 8
+ScreenTitleColors   = 0x00d9f6ff 0x00000000
+ScreenTitleMode     = Shadow
+
+/* =================================================================== */
+
+FillTitleBar        = Yes
+BarHeight           = 25
+BarLayout           = Vertical
+BarRounded          = No
+BarMasking          = No
+
+/* uniform bar => any slice of the 300px image tiles */
+BarPre              =   0     4
+BarPreGadget        =   0     4
+BarLGadgetFill      =  10    40
+BarJoinGB           =  60     4
+BarLFill            =  70    40
+BarJoinBT           = 120     4
+BarTitleFill        = 130    40
+BarJoinTB           = 180     4
+BarRFill            = 190    40
+BarJoinBG           = 240     4
+BarRGadgetFill      = 250    40
+BarPostGadget       = 296     4
+BarPost             = 296     4
+
+/* =================================================================== */
+
+LeftBorder          = 4
+RightBorder         = 4
+BottomBorder        = 4

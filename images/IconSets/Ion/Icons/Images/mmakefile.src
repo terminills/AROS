@@ -1,0 +1,13 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+ION_IMAGES := CDROM Computer Drawer File Harddisk Network RAMdisk
+
+#MM- icon-images : ion-icon-images
+
+$(AROS_PRESETS)/Icons/Ion/Default/Images/% : $(SRCDIR)/$(CURDIR)/%.png
+	@$(MKDIR) $(dir $@)
+	@$(CP) $< $@
+
+ion-icon-images : $(ION_IMAGES:%=$(AROS_PRESETS)/Icons/Ion/Default/Images/%)

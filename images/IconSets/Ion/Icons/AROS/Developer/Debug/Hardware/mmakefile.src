@@ -1,0 +1,15 @@
+# Copyright (C) 2017-2023, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+ADDITIONALICONS := PCITool 
+
+#MM- iconset-Ion-additional-icons-aros-clean : iconset-Ion-additional-icons-aros-debug-hardware-clean
+#MM- iconset-Ion-additional-icons-aros-debug : iconset-Ion-additional-icons-aros-debug-hardware
+
+%build_icons mmake=iconset-Ion-additional-icons-aros-debug-hardware icons=$(ADDITIONALICONS) \
+             dir=$(AROS_DEBUG)/Hardware
+
+#MM- icons-developer-debug-hardware : ion-icons-developer-developer-debug-hardware
+%build_icons mmake=ion-icons-developer-developer-debug-hardware icons=$(ADDITIONALICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_DEVELOPER)/Debug/Hardware

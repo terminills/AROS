@@ -1,0 +1,27 @@
+# Copyright (C) 2004-2023, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+BASEICONS := Time Locale Serial Presets Input IControl Font ScreenMode Palette Pointer Printer
+ADDITIONALICONS := AHI Asl Appearance Boot  \
+ ReqTools Wanderer Zune Editor Trackdisk PSI Network Trident \
+ OpenURL BoingIconBar
+
+#MM- iconset-Ion-wbench-icons-aros-clean : iconset-Ion-wbench-icons-aros-prefs-clean
+#MM- iconset-Ion-additional-icons-aros-clean : iconset-Ion-additional-icons-aros-prefs-clean
+#MM- iconset-Ion-wbench-icons-aros : iconset-Ion-wbench-icons-aros-prefs
+#MM- iconset-Ion-additional-icons-aros : iconset-Ion-additional-icons-aros-prefs
+
+%build_icons mmake=iconset-Ion-wbench-icons-aros-prefs icons=$(BASEICONS) \
+             dir=$(AROS_PREFS)
+
+%build_icons mmake=iconset-Ion-additional-icons-aros-prefs icons=$(ADDITIONALICONS) \
+             dir=$(AROS_PREFS)
+
+#MM- icons-wbench-prefs : ion-icons-wbench-prefs
+%build_icons mmake=ion-icons-wbench-prefs icons=$(BASEICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_PREFS)
+
+#MM- icons-additional-wbench-prefs : ion-icons-additional-wbench-prefs
+%build_icons mmake=ion-icons-additional-wbench-prefs icons=$(ADDITIONALICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_PREFS)

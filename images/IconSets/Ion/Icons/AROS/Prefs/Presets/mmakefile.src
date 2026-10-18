@@ -1,0 +1,15 @@
+# Copyright (C) 2004-2023, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+ICONS := Patterns Themes Wallpapers
+
+#MM- iconset-Ion-wbench-icons-aros-clean : iconset-Ion-wbench-icons-aros-prefs-presets-clean
+#MM- iconset-Ion-wbench-icons-aros : iconset-Ion-wbench-icons-aros-prefs-presets
+
+%build_icons mmake=iconset-Ion-wbench-icons-aros-prefs-presets icons=$(ICONS) \
+             dir=$(AROS_PRESETS)
+
+#MM- icons-wbench-prefs-presets : ion-icons-wbench-prefs-presets
+%build_icons mmake=ion-icons-wbench-prefs-presets icons=$(ICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_PREFS)/$(AROS_DIR_PRESETS)

@@ -1,0 +1,44 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+BASEICONS := Developer Devs Fonts \
+         Locale Prefs System \
+         Tools Utilities
+ADDITIONALICONS := Demos \
+         Libs Storage \
+         WBStartup \
+         Rexxc
+# SYS:Applications is created by application packages, not by the base
+# system image, so its drawer icon has its own target.
+APPLICATIONICONS := Applications
+# Drawers added by distribution images; installed only into the preset.
+DISTICONS := Showcase Development
+
+#MM- iconset-Ion-wbench-icons-clean : iconset-Ion-wbench-icons-aros-clean iconset-Ion-additional-icons-aros-clean
+#MM- iconset-Ion-wbench-icons : iconset-Ion-wbench-icons-aros
+#MM- iconset-Ion-wbench-icons : iconset-Ion-additional-icons-aros
+
+%build_icons mmake=iconset-Ion-wbench-icons-aros icons=$(BASEICONS) dir=$(AROSDIR)
+
+%build_icons mmake=iconset-Ion-additional-icons-aros icons=$(ADDITIONALICONS) dir=$(AROSDIR)
+
+#MM- icons-wbench : ion-icons-wbench
+%build_icons mmake=ion-icons-wbench icons=$(BASEICONS) dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)
+
+#MM- icons-additional-wbench : ion-icons-additional-wbench
+%build_icons mmake=ion-icons-additional-wbench icons=$(ADDITIONALICONS) dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)
+
+#MM- iconset-Ion-applications-icons-clean : iconset-Ion-applications-icons-aros-clean
+#MM- iconset-Ion-applications-icons : iconset-Ion-applications-icons-aros
+%build_icons mmake=iconset-Ion-applications-icons-aros icons=$(APPLICATIONICONS) dir=$(AROSDIR)
+
+#MM- icons-wbench-applications : ion-icons-wbench-applications
+%build_icons mmake=ion-icons-wbench-applications icons=$(APPLICATIONICONS) dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)
+
+#MM- icons-wbench : ion-icons-wbench-dist
+%build_icons mmake=ion-icons-wbench-dist icons=$(DISTICONS) dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)
+
+#MM
+iconset-Ion-icons-aros-livecd :
+	@$(ILBMTOICON) $(SRCDIR)/$(CURDIR)/LiveCD.info.src $(SRCDIR)/$(CURDIR)/LiveCD.png $(AROSDIR)/disk.info

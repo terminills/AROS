@@ -1,0 +1,23 @@
+# Copyright (C) 2012-2023, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+STORAGEICONS := ICD0 ICD1 IDF0 IDF1 ISO0 PC0
+DEVSICONS    := AUDIO PAR PIPE PRT SER SER0 SER1
+
+#MM- iconset-Ion-wbench-icons-aros-clean : iconset-Ion-wbench-icons-devs-dosdrivers-clean iconset-Ion-wbench-icons-storage-dosdrivers-clean
+#MM- iconset-Ion-wbench-icons-aros : iconset-Ion-wbench-icons-devs-dosdrivers iconset-Ion-wbench-icons-storage-dosdrivers
+
+%build_icons mmake=iconset-Ion-wbench-icons-devs-dosdrivers icons=$(DEVSICONS) \
+             dir=$(AROS_DEVS)/DOSDrivers
+
+%build_icons mmake=iconset-Ion-wbench-icons-storage-dosdrivers icons=$(STORAGEICONS) \
+             dir=$(AROS_STORAGE)/DOSDrivers
+
+#MM- icons-wbench-devs-dosdrivers : ion-icons-wbench-devs-dosdrivers
+%build_icons mmake=ion-icons-wbench-devs-dosdrivers icons=$(DEVSICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_DEVS)/DOSDrivers
+
+#MM- icons-wbench-storage-dosdrivers : ion-icons-wbench-storage-dosdrivers
+%build_icons mmake=ion-icons-wbench-storage-dosdrivers icons=$(STORAGEICONS) \
+             dir=$(AROS_PRESETS)/Icons/Ion/Default/$(AROS_DIR_AROS)/$(AROS_DIR_STORAGE)/DOSDrivers

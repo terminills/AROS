@@ -1,0 +1,11 @@
+TileTop = 4
+TileRight = 4
+TileBottom = 4
+TileLeft = 4
+
+InnerTop = 4
+InnerRight = 6
+InnerBottom = 4
+InnerLeft = 6
+
+HighlightTint = 0x8c169cc4
