@@ -32,7 +32,13 @@
 
         It also keeps an eye on the network printers that are set up and
         tells the user when one runs out of paper or toner, jams or goes
-        offline.
+        offline. While printspool.device sends a job it says the job has
+        started, with the printer's ink or toner levels; while the printer
+        works on it, it tells about a jam, an empty tray or supply, an open
+        door; and it follows the job at the printer (IPP Get-Job-Attributes)
+        to say when it is printed or why it was not. TellJobStart,
+        TellJobDone and TellProblems set to FALSE in
+        ENVARC:Sys/PrinterWatch.xml leave those out.
 
         A printer that is not set up is offered once each start, on at most
         three starts; the count is kept in ENVARC:Sys/PrinterWatch.xml. Send it APPLIBMT_Quit (or CTRL-C) to
@@ -44,6 +50,8 @@
 #include <exec/memory.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
+#include <dos/notify.h>
+#include <dos/var.h>
 #include <devices/timer.h>
 #include <libraries/application.h>
 #include <prefs/prefhdr.h>
@@ -72,6 +80,9 @@ const TEXT version[] = "$VER: PrinterWatch 1.0 (18.10.2026)";
 #define GUTENPRINTPREFS "GUTENPRINT:GutenprintPrefs"
 #define ANNOUNCED_KEY   "Announced"
 #define MAX_OFFERS      3       /* starts on which a printer not set up is offered */
+#define JOB_POLL        5       /* seconds between looks at the printer during a job */
+#define JOB_FOLLOW      900     /* seconds to follow a sent job to its end */
+#define JOBVAR          "PrintSpool/Job"
 
 struct Library *ApplicationBase;
 struct Library *SocketBase;
@@ -92,6 +103,25 @@ static LONG nseen;
 static ULONG appid;
 static PrefsObject *state;              /* ENVARC:Sys/PrinterWatch.xml */
 static ULONG now;                       /* seconds since start */
+
+/* The print job printspool.device is sending, and after it the job at the printer. */
+static struct {
+    BOOL j_Active;                      /* printing or waiting, or followed at the printer */
+    char j_Job[64];
+    char j_State[16];
+    char j_Reason[32];
+    char j_Device[64];
+    LONG j_DevUnit;
+    char j_Document[128];
+    char j_Application[64];
+    char j_URI[256];                    /* an ipp:// printer, or "" */
+    char j_Printer[128];                /* what to call it */
+    char j_Picture[64];
+    ULONG j_JobID;                      /* the printer's job-id once it has the job */
+    ULONG j_NextPoll, j_Until;
+    char j_Told[200];                   /* the printer-state-reasons told about for this job */
+    BOOL j_Started;                     /* "Printing" told, also after a wait first */
+} job;
 
 /* ------------------------------------------------------------------ small helpers */
 
@@ -642,10 +672,290 @@ static void scan(void)
         }
         s->s_P = found[i];
         if (configuredUnit(s) >= 0) {
-            if (s->s_P.mp_IPP && (!s->s_LastStatus || now - s->s_LastStatus >= STATUS_EVERY))
+            /* during a job, the job's own watch tells about problems */
+            if (s->s_P.mp_IPP && (!s->s_LastStatus || now - s->s_LastStatus >= STATUS_EVERY)
+                && !(job.j_Active && strcasecmp(job.j_URI, s->s_P.mp_URI) == 0))
                 checkStatus(s, j);
         } else if (!announced(s))
             announce(s, j);
+    }
+    CloseLibrary(SocketBase);
+    SocketBase = NULL;
+}
+
+/* ------------------------------------------------------------------ print jobs */
+
+static BOOL tell(const char *what)
+{
+    return DictGetBoolForKey(state, what, TRUE);
+}
+
+/* A Key=value-lines variable: GetVar() stops at the first line unless it is
+   read as binary. */
+static BOOL getLines(const char *var, char *buf, LONG size)
+{
+    LONG n;
+
+    memset(buf, 0, size);
+    n = GetVar(var, buf, size - 1, GVF_GLOBAL_ONLY | GVF_BINARY_VAR);
+    return n > 0;
+}
+
+static void keyValue(const char *text, const char *key, char *out, LONG max)
+{
+    LONG kl = strlen(key);
+    const char *p = text;
+
+    out[0] = 0;
+    while (p && *p) {
+        if (strncmp(p, key, kl) == 0 && p[kl] == '=') {
+            LONG n = 0;
+            p += kl + 1;
+            while (p[n] && p[n] != '\n' && n < max - 1) {
+                out[n] = p[n];
+                n++;
+            }
+            out[n] = 0;
+            return;
+        }
+        p = strchr(p, '\n');
+        if (p)
+            p++;
+    }
+}
+
+/* The printer's supplies as notification gauges: "<level>;#RRGGBB;<name>" lines. */
+static void supplyGauges(struct PrinterInfo *pi, char *out, LONG max)
+{
+    LONG i, n = 0;
+
+    out[0] = 0;
+    for (i = 0; i < pi->pi_NumSupplies && n < APPNOTIFY_GAUGES_MAX; i++) {
+        char item[96];
+        LONG low = pi->pi_Low[i] >= 0 ? pi->pi_Low[i] : 15;
+
+        if (pi->pi_Level[i] < 0 || contains(pi->pi_Supply[i], "waste"))
+            continue;
+        item[0] = 0;
+        appendNumber(item, pi->pi_Level[i]);
+        strcat(item, ";");
+        strcat(item, pi->pi_Colour[i][0] == '#' && strlen(pi->pi_Colour[i]) == 7 ? pi->pi_Colour[i] : "#808080");
+        strcat(item, ";");
+        strncat(item, pi->pi_Supply[i], 40);
+        if (pi->pi_Level[i] <= low)
+            strcat(item, " (low)");
+        if ((LONG)(strlen(out) + strlen(item) + 2) >= max)
+            break;
+        if (out[0])
+            strcat(out, "\n");
+        strcat(out, item);
+        n++;
+    }
+}
+
+static const char *documentName(void)
+{
+    return job.j_Document[0] ? job.j_Document : job.j_Application[0] ? job.j_Application : "Your document";
+}
+
+/* The printer of a job going to ipp.device unit n: its address, name and picture. */
+static void jobPrinter(void)
+{
+    char v[300];
+
+    job.j_URI[0] = job.j_Picture[0] = 0;
+    strcpy(job.j_Printer, "the printer");
+    if (strcasecmp(job.j_Device, "ipp.device") != 0)
+        return;
+    if (unitValue(job.j_DevUnit, "URI", v, sizeof(v)) && strncmp(v, "ipp://", 6) == 0)
+        strcpy(job.j_URI, v);
+    if (unitValue(job.j_DevUnit, "NAME", v, sizeof(v)) && v[0])
+        strncpy(job.j_Printer, v, sizeof(job.j_Printer) - 1);
+    if (unitValue(job.j_DevUnit, "PICTURE", v, sizeof(v)) && exists(v) && strlen(v) < sizeof(job.j_Picture))
+        strcpy(job.j_Picture, v);
+}
+
+/* Paper, jams, supplies and doors, while a job is under way: each problem once a job. */
+static void jobProblems(void)
+{
+    struct PrinterInfo pi;
+    char one[64], text[300];
+    const char *r, *say;
+    LONG n;
+
+    if (!job.j_URI[0] || !IPP_GetInfo(job.j_URI, &pi))
+        return;
+    for (r = pi.pi_Reasons; *r; r += n + (r[n] == ',')) {
+        for (n = 0; r[n] && r[n] != ','; n++)
+            ;
+        if (n >= (LONG)sizeof(one))
+            continue;
+        memcpy(one, r, n);
+        one[n] = 0;
+        if (!(say = reasonText(one)) || contains(job.j_Told, one))
+            continue;
+        if (strlen(job.j_Told) + n + 2 < sizeof(job.j_Told)) {
+            strcat(job.j_Told, one);
+            strcat(job.j_Told, ",");
+        }
+        if (!tell("TellProblems"))
+            continue;
+        strcpy(text, job.j_Printer);
+        strcat(text, " ");
+        strcat(text, say);
+        strcat(text, contains(one, "low") ? "." : ": printing waits until it is seen to.");
+        notify("Printer", text, job.j_Picture, NULL, contains(one, "low") ? 0 : 9);
+    }
+}
+
+/* "Printing", with the printer's ink or toner levels as bars. */
+static void jobStarted(void)
+{
+    struct PrinterInfo pi;
+    char text[300], gauges[512] = "";
+
+    if (!tell("TellJobStart"))
+        return;
+    strcpy(text, "Printing ");
+    strncat(text, documentName(), 60);
+    strcat(text, " on ");
+    strncat(text, job.j_Printer, 60);
+    strcat(text, ".");
+    if (job.j_URI[0] && IPP_GetInfo(job.j_URI, &pi))
+        supplyGauges(&pi, gauges, sizeof(gauges));
+    Notify(appid,
+        APPNOTIFY_Title, (IPTR)"Printing",
+        APPNOTIFY_Text, (IPTR)text,
+        job.j_Picture[0] ? APPNOTIFY_ImageFile : TAG_IGNORE, (IPTR)job.j_Picture,
+        gauges[0] ? APPNOTIFY_Gauges : TAG_IGNORE, (IPTR)gauges,
+        TAG_DONE);
+}
+
+static void jobFinished(LONG how, const char *reasons)
+{
+    char text[300];
+
+    job.j_Active = FALSE;
+    if (!tell("TellJobDone"))
+        return;
+    strncpy(text, documentName(), 80);
+    text[80] = 0;
+    if (how == IPP_JOB_COMPLETED || how == IPP_JOB_GONE)
+        strcat(text, " is printed.");
+    else if (how == -2) {
+        strcat(text, " went to ");
+        strncat(text, job.j_Printer, 60);
+        strcat(text, ".");
+    } else {
+        strcat(text, how == IPP_JOB_CANCELED ? " was cancelled at the printer." : " was not printed");
+        if (how != IPP_JOB_CANCELED) {
+            if (reasons && reasons[0] && strcmp(reasons, "none") != 0) {
+                strcat(text, " (");
+                strncat(text, reasons, 80);
+                strcat(text, ")");
+            }
+            strcat(text, ".");
+        }
+    }
+    notify(how == IPP_JOB_COMPLETED || how == IPP_JOB_GONE || how == -2 ? "Printed" : "Not printed",
+        text, job.j_Picture, NULL, how == IPP_JOB_ABORTED ? 9 : 0);
+}
+
+/* PrintSpool/Job changed: the spooler started, stalled, finished or cancelled a job. */
+static void jobChanged(void)
+{
+    char text[600], name[64], st[16], reason[32];
+    BOOL fresh;
+
+    if (!getLines(JOBVAR, text, sizeof(text)))
+        return;
+    keyValue(text, "Job", name, sizeof(name));
+    keyValue(text, "State", st, sizeof(st));
+    keyValue(text, "Reason", reason, sizeof(reason));
+    if (!name[0])
+        return;
+    fresh = strcmp(name, job.j_Job) != 0;
+    if (!fresh && strcmp(st, job.j_State) == 0 && strcmp(reason, job.j_Reason) == 0)
+        return;
+    if (fresh) {
+        char unit[12];
+        memset(&job, 0, sizeof(job));
+        strcpy(job.j_Job, name);
+        keyValue(text, "Device", job.j_Device, sizeof(job.j_Device));
+        keyValue(text, "DeviceUnit", unit, sizeof(unit));
+        job.j_DevUnit = unit[0] - '0';
+        keyValue(text, "Document", job.j_Document, sizeof(job.j_Document));
+        keyValue(text, "Application", job.j_Application, sizeof(job.j_Application));
+        jobPrinter();
+    }
+    strcpy(job.j_State, st);
+    strcpy(job.j_Reason, reason);
+
+    if (strcmp(st, "printing") == 0) {
+        if (!job.j_Started) {
+            job.j_Started = TRUE;
+            jobStarted();
+        }
+        job.j_Active = TRUE;
+        job.j_NextPoll = now + JOB_POLL;
+    } else if (strcmp(st, "waiting") == 0) {
+        job.j_Active = TRUE;
+        job.j_NextPoll = now;
+        if (strcmp(reason, "unreachable") == 0 && tell("TellProblems")) {
+            strcpy(text, job.j_Printer);
+            strcat(text, " does not answer; ");
+            strncat(text, documentName(), 60);
+            strcat(text, " waits until it does.");
+            notify("Printer", text, job.j_Picture, NULL, 0);
+        }
+    } else if (strcmp(st, "cancelled") == 0) {
+        job.j_Active = FALSE;
+        if (tell("TellJobDone")) {
+            strncpy(text, documentName(), 80);
+            text[80] = 0;
+            strcat(text, " was cancelled.");
+            notify("Printing cancelled", text, job.j_Picture, NULL, 0);
+        }
+    } else if (strcmp(st, "done") == 0) {
+        char var[24] = "IPP/Unit", jt[300], id[16];
+        if (job.j_URI[0]) {
+            appendNumber(var, job.j_DevUnit);
+            strcat(var, ".Job");
+            if (getLines(var, jt, sizeof(jt))) {
+                const char *c;
+                keyValue(jt, "JobID", id, sizeof(id));
+                for (c = id; *c >= '0' && *c <= '9'; c++)
+                    job.j_JobID = job.j_JobID * 10 + (*c - '0');
+            }
+        }
+        if (job.j_JobID) {
+            /* Sent: follow it at the printer until it is printed. */
+            job.j_Active = TRUE;
+            job.j_NextPoll = now + 2;
+            job.j_Until = now + JOB_FOLLOW;
+        } else
+            jobFinished(-2, NULL);
+    }
+}
+
+/* Each second while a job is under way. */
+static void jobTick(void)
+{
+    char reasons[160];
+    LONG st;
+
+    if (!job.j_Active || now < job.j_NextPoll)
+        return;
+    job.j_NextPoll = now + JOB_POLL;
+    if (!(SocketBase = OpenLibrary("bsdsocket.library", 4)))
+        return;
+    jobProblems();
+    if (job.j_JobID) {
+        st = IPP_GetJobState(job.j_URI, job.j_JobID, reasons, sizeof(reasons));
+        if (st >= IPP_JOB_CANCELED)
+            jobFinished(st, reasons);
+        else if (now >= job.j_Until)
+            job.j_Active = FALSE;
     }
     CloseLibrary(SocketBase);
     SocketBase = NULL;
@@ -657,6 +967,9 @@ int main(void)
 {
     struct MsgPort *appport = NULL, *timerport = NULL;
     struct timerequest *tr = NULL;
+    struct NotifyRequest nr;
+    BYTE jobsig = -1;
+    BOOL notifying = FALSE;
     ULONG nextscan = FIRST_SCAN;
     BOOL run = TRUE;
     int rc = RETURN_FAIL;
@@ -684,6 +997,17 @@ int main(void)
         goto out;
     }
 
+    /* printspool.device rewrites ENV:PrintSpool/Job at each change of a job. */
+    makeDir("ENV:PrintSpool");
+    if ((jobsig = AllocSignal(-1)) >= 0) {
+        memset(&nr, 0, sizeof(nr));
+        nr.nr_Name = "ENV:" JOBVAR;
+        nr.nr_Flags = NRF_SEND_SIGNAL;
+        nr.nr_stuff.nr_Signal.nr_Task = FindTask(NULL);
+        nr.nr_stuff.nr_Signal.nr_SignalNum = jobsig;
+        notifying = StartNotify(&nr);
+    }
+
     rc = RETURN_OK;
     tr->tr_node.io_Command = TR_ADDREQUEST;
     tr->tr_time.tv_secs = 1;
@@ -691,11 +1015,21 @@ int main(void)
     SendIO(&tr->tr_node);
 
     while (run) {
-        ULONG sigs = Wait((1UL << timerport->mp_SigBit) | (1UL << appport->mp_SigBit) | SIGBREAKF_CTRL_C);
+        ULONG sigs = Wait((1UL << timerport->mp_SigBit) | (1UL << appport->mp_SigBit) | SIGBREAKF_CTRL_C
+                          | (notifying ? 1UL << jobsig : 0));
         struct ApplicationMsg *am;
 
         if (sigs & SIGBREAKF_CTRL_C)
             run = FALSE;
+        if (notifying && (sigs & (1UL << jobsig))) {
+            /* a job start asks the printer for its supplies */
+            if ((SocketBase = OpenLibrary("bsdsocket.library", 4))) {
+                jobChanged();
+                CloseLibrary(SocketBase);
+                SocketBase = NULL;
+            } else
+                jobChanged();
+        }
         while ((am = (struct ApplicationMsg *)GetMsg(appport))) {
             if (am->type == APPLIBMT_Quit || am->type == APPLIBMT_ForceQuit)
                 run = FALSE;
@@ -722,6 +1056,7 @@ int main(void)
         if (CheckIO(&tr->tr_node)) {
             WaitIO(&tr->tr_node);
             now++;
+            jobTick();
             if (now >= nextscan) {
                 scan();
                 nextscan = now + (now < 600 ? FAST_SCAN : SLOW_SCAN);
@@ -734,6 +1069,10 @@ int main(void)
     }
 
 out:
+    if (notifying)
+        EndNotify(&nr);
+    if (jobsig >= 0)
+        FreeSignal(jobsig);
     if (tr) {
         AbortIO(&tr->tr_node);
         WaitIO(&tr->tr_node);
