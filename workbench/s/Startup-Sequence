@@ -119,6 +119,10 @@ If EXISTS "C:RexxMast"
     Run <NIL: >NIL: QUIET C:RexxMast
 EndIf
 
+If EXISTS "SYS:System/Notifications"
+    Run <NIL: >NIL: QUIET SYS:System/Notifications
+EndIf
+
 If EXISTS "C:Decoration"
     If EXISTS "ENV:SYS/theme.var"
         C:Decoration <NIL: >NIL:
