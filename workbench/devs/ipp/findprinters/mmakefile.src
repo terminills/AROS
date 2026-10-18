@@ -14,7 +14,7 @@ USER_CFLAGS := $(CFLAGS_GNU99)
 
 %build_prog mmake=workbench-devs-ipp-findprinters \
   progname=FindPrinters targetdir=$(AROS_C) \
-  files="findprinters fp_http fp_ipp" \
+  files="findprinters fp_http fp_ipp fp_mdns" \
   uselibs="mbedtls mbedx509 mbedcrypto"
 
 %common

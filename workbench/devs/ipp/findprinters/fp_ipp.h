@@ -28,4 +28,9 @@ struct PrinterInfo {
 /* Get-Printer-Attributes on an ipp:// printer; FALSE when it does not answer. */
 BOOL IPP_GetInfo(const char *uri, struct PrinterInfo *pi);
 
+/* The printer's picture of itself (printer-icons), the one nearest 128 pixels, written to path
+   as a PNG. FALSE when it has none or it could not be read; then *from is the picture's URL
+   (NULL if it has none) and *status the HTTP status, -1 for no answer. */
+BOOL IPP_SavePicture(const struct PrinterInfo *pi, const char *path, const char **from, LONG *status);
+
 #endif

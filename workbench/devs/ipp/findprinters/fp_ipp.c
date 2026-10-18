@@ -7,7 +7,9 @@
 
 #include <exec/types.h>
 #include <exec/memory.h>
+#include <dos/dos.h>
 #include <proto/exec.h>
+#include <proto/dos.h>
 
 #include <string.h>
 
@@ -151,4 +153,33 @@ BOOL IPP_GetInfo(const char *uri, struct PrinterInfo *pi)
     pi->pi_NumSupplies = names;
     FreeVec(buf);
     return TRUE;
+}
+
+BOOL IPP_SavePicture(const struct PrinterInfo *pi, const char *path, const char **from, LONG *status)
+{
+    static const char *png = "\x89PNG";
+    UBYTE *buf, *body;
+    LONG bodylen, i, pick = -1;
+    BPTR fh;
+    BOOL ok = FALSE;
+
+    *from = NULL;
+    *status = 0;
+    if (pi->pi_NumIcons == 0)
+        return FALSE;
+    for (i = 0; i < pi->pi_NumIcons; i++)
+        if (strstr(pi->pi_Icons[i], "128"))
+            pick = i;
+    if (pick < 0)
+        pick = pi->pi_NumIcons > 1 ? 1 : 0;
+    *from = pi->pi_Icons[pick];
+    if (!(buf = AllocVec(512 * 1024, MEMF_ANY)))
+        return FALSE;
+    *status = HTTP_Get(pi->pi_Icons[pick], buf, 512 * 1024, &body, &bodylen);
+    if (*status == 200 && bodylen > 8 && memcmp(body, png, 4) == 0 && (fh = Open(path, MODE_NEWFILE))) {
+        ok = Write(fh, body, bodylen) == bodylen;
+        Close(fh);
+    }
+    FreeVec(buf);
+    return ok;
 }
