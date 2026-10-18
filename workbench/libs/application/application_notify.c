@@ -87,19 +87,29 @@ static BOOL ntf_StartServer(void)
         struct ApplicationBase *, AppBase, 11, Application)
 
 /*  FUNCTION
-        Show a pop-up notification for a registered application. It closes
-        by itself after a few seconds and asks nothing of the user.
+        Show a pop-up notification for a registered application, and add it
+        to the notification log. It closes by itself after a few seconds
+        (a priority 10 one stays until closed) and asks nothing of the user.
 
         Double-clicking it sends APPNOTIFY_BackMsg to the application as an
         APPLIBMT_CustomMsg; a BackMsg starting with "URL:" opens the URL in
         the default browser instead.
 
+        The notification server, SYS:System/Notifications, is started if
+        it is not running. How pop-ups look and which applications may show
+        them is set in the Notifications preferences.
+
     INPUTS
         appID - the application ID from RegisterApplication().
-        tags  - APPNOTIFY_ tags. APPNOTIFY_Text is required.
+        tags  - APPNOTIFY_ tags; at least a title or a text, unless
+                APPNOTIFY_Withdraw takes back earlier pop-ups.
 
     RESULT
-        Non-zero if the pop-up was shown.
+        APPNOTIFY_OK_MSGQUEUED (0), or an APPNOTIFY_ERROR_ code:
+        _APPNOTREGISTERED, _TAGS, _GAMEMODEACTIVE (nothing is shown while
+        an application is in game mode), _APPNOTALLOWED (switched off in
+        the preferences), _TOOMANYMESSAGESQUEUED, _SERVERNOTRUNNING or
+        _OUTOFMEM.
 
     NOTES
         Use notifications sparingly, keep them short, and never use one for
@@ -113,59 +123,84 @@ static BOOL ntf_StartServer(void)
     struct MsgPort *reply, *server;
     struct AppEntry *ae;
     CONST_STRPTR text = (CONST_STRPTR)GetTagData(APPNOTIFY_Text, 0, tags);
-    ULONG result = 0;
+    CONST_STRPTR title = (CONST_STRPTR)GetTagData(APPNOTIFY_Title, 0, tags);
+    BOOL logonly = GetTagData(APPNOTIFY_LogOnly, FALSE, tags) ? TRUE : FALSE;
+    ULONG pri = GetTagData(APPNOTIFY_Pri, 0, tags);
+    BOOL gamemode;
+    ULONG result = APPNOTIFY_ERROR_SERVERNOTRUNNING;
 
-    if (!text)
-        return 0;
+    CONST_STRPTR withdraw = (CONST_STRPTR)GetTagData(APPNOTIFY_Withdraw, 0, tags);
+
+    if (!text && !title && !withdraw)
+        return APPNOTIFY_ERROR_TAGS;
 
     if (!(nsm = AllocVec(sizeof(*nsm), MEMF_PUBLIC | MEMF_CLEAR)))
-        return 0;
+        return APPNOTIFY_ERROR_OUTOFMEM;
 
     ObtainSemaphore(&AppBase->ab_Lock);
     app_Reap(AppBase);
     if ((ae = app_Find(AppBase, appID)))
         ntf_Copy(nsm->nsm_AppName, ae->ae_Name, sizeof(nsm->nsm_AppName));
+    gamemode = app_GameModeActive(AppBase);
     ReleaseSemaphore(&AppBase->ab_Lock);
 
     if (!ae)
     {
         FreeVec(nsm);
-        return 0;
+        return APPNOTIFY_ERROR_APPNOTREGISTERED;
+    }
+    if (gamemode && !logonly && !withdraw)
+    {
+        FreeVec(nsm);
+        return APPNOTIFY_ERROR_GAMEMODEACTIVE;
     }
 
     nsm->nsm_Version = NOTIFYSERVER_VERSION;
     nsm->nsm_AppID = appID;
     nsm->nsm_CloseOnDC = GetTagData(APPNOTIFY_CloseOnDC, FALSE, tags) ? TRUE : FALSE;
+    nsm->nsm_Update = GetTagData(APPNOTIFY_Update, FALSE, tags) ? TRUE : FALSE;
+    nsm->nsm_ConfirmClose = GetTagData(APPNOTIFY_ConfirmClose, FALSE, tags) ? TRUE : FALSE;
+    nsm->nsm_LogOnly = logonly;
+    nsm->nsm_Pri = pri > 10 ? 10 : pri;
     nsm->nsm_ImageVertAlign = GetTagData(APPNOTIFY_ImageVertAlign, 0, tags);
-    ntf_Copy(nsm->nsm_Title, (CONST_STRPTR)GetTagData(APPNOTIFY_Title, (IPTR)nsm->nsm_AppName, tags),
-             sizeof(nsm->nsm_Title));
+    ntf_Copy(nsm->nsm_Title, title ? title : (CONST_STRPTR)nsm->nsm_AppName, sizeof(nsm->nsm_Title));
     ntf_Copy(nsm->nsm_Text, text, sizeof(nsm->nsm_Text));
     ntf_Copy(nsm->nsm_PubScreen, (CONST_STRPTR)GetTagData(APPNOTIFY_PubScreenName, 0, tags),
              sizeof(nsm->nsm_PubScreen));
     ntf_Copy(nsm->nsm_ImageFile, (CONST_STRPTR)GetTagData(APPNOTIFY_ImageFile, 0, tags),
              sizeof(nsm->nsm_ImageFile));
-    ntf_Copy(nsm->nsm_BackMsg, (CONST_STRPTR)GetTagData(APPNOTIFY_BackMsg, 0, tags),
+    ntf_Copy(nsm->nsm_IconFile, (CONST_STRPTR)GetTagData(APPNOTIFY_IconFile, 0, tags),
+             sizeof(nsm->nsm_IconFile));
+    ntf_Copy(nsm->nsm_SoundFile, (CONST_STRPTR)GetTagData(APPNOTIFY_SoundFile, 0, tags),
+             sizeof(nsm->nsm_SoundFile));
+    ntf_Copy(nsm->nsm_BackMsg, withdraw ? withdraw : (CONST_STRPTR)GetTagData(APPNOTIFY_BackMsg, 0, tags),
              sizeof(nsm->nsm_BackMsg));
+    nsm->nsm_Withdraw = withdraw ? TRUE : FALSE;
 
-    if (ntf_StartServer() && (reply = CreateMsgPort()))
+    if (ntf_StartServer())
     {
-        nsm->nsm_Msg.mn_Node.ln_Type = NT_MESSAGE;
-        nsm->nsm_Msg.mn_Length = sizeof(*nsm);
-        nsm->nsm_Msg.mn_ReplyPort = reply;
-
-        /* The server may be quitting; hold the port still while posting. */
-        Forbid();
-        if ((server = FindPort(NOTIFYSERVER_PORTNAME)))
-            PutMsg(server, &nsm->nsm_Msg);
-        Permit();
-
-        if (server)
+        if (!(reply = CreateMsgPort()))
+            result = APPNOTIFY_ERROR_OUTOFMEM;
+        else
         {
-            WaitPort(reply);
-            GetMsg(reply);
-            result = nsm->nsm_Result;
+            nsm->nsm_Msg.mn_Node.ln_Type = NT_MESSAGE;
+            nsm->nsm_Msg.mn_Length = sizeof(*nsm);
+            nsm->nsm_Msg.mn_ReplyPort = reply;
+
+            /* The server may be quitting; hold the port still while posting. */
+            Forbid();
+            if ((server = FindPort(NOTIFYSERVER_PORTNAME)))
+                PutMsg(server, &nsm->nsm_Msg);
+            Permit();
+
+            if (server)
+            {
+                WaitPort(reply);
+                GetMsg(reply);
+                result = nsm->nsm_Result;
+            }
+            DeleteMsgPort(reply);
         }
-        DeleteMsgPort(reply);
     }
 
     FreeVec(nsm);

@@ -13,7 +13,7 @@
 
 #define NOTIFYSERVER_PORTNAME   "AROS.Notifications"
 #define NOTIFYSERVER_PATH       "SYS:System/Notifications"
-#define NOTIFYSERVER_VERSION    1
+#define NOTIFYSERVER_VERSION    2
 
 #define NOTIFYSERVER_SCREENMAX  128
 #define NOTIFYSERVER_PATHMAX    512
@@ -24,14 +24,21 @@ struct NotifyServerMsg
     struct Message  nsm_Msg;
     ULONG           nsm_Version;
     ULONG           nsm_AppID;
-    LONG            nsm_Result;     /* set by the server: 1 shown, 0 not */
+    ULONG           nsm_Result;     /* set by the server: APPNOTIFY_ result */
     BOOL            nsm_CloseOnDC;
+    BOOL            nsm_Update;
+    BOOL            nsm_LogOnly;
+    BOOL            nsm_ConfirmClose;
+    BOOL            nsm_Withdraw;   /* nsm_BackMsg: take those back */
     UBYTE           nsm_ImageVertAlign;
+    UBYTE           nsm_Pri;
     TEXT            nsm_AppName[APPNOTIFY_TITLE_MAX + 1];
     TEXT            nsm_Title[APPNOTIFY_TITLE_MAX + 1];
     TEXT            nsm_Text[APPNOTIFY_TEXT_MAX + 1];
     TEXT            nsm_PubScreen[NOTIFYSERVER_SCREENMAX];
     TEXT            nsm_ImageFile[NOTIFYSERVER_PATHMAX];
+    TEXT            nsm_IconFile[NOTIFYSERVER_PATHMAX];
+    TEXT            nsm_SoundFile[NOTIFYSERVER_PATHMAX];
     TEXT            nsm_BackMsg[NOTIFYSERVER_BACKMAX];
 };
 

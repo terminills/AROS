@@ -67,6 +67,7 @@ static STRPTR app_ProgramPath(struct TagItem *tags)
     return NULL;
 }
 
+
 static BOOL app_SameApp(struct AppEntry *ae, CONST_STRPTR name, CONST_STRPTR url)
 {
     return (Stricmp(ae->ae_Name, name) == 0) && (Stricmp(ae->ae_URL, url) == 0);
@@ -84,34 +85,70 @@ static BOOL app_IdentTaken(struct ApplicationBase *AppBase, CONST_STRPTR ident)
     return FALSE;
 }
 
+static void app_BuildIdent(STRPTR dst, struct AppEntry *ae, ULONG n)
+{
+    TEXT inst[16], *p = inst + sizeof(inst) - 1;
+    ULONG v = n;
+
+    *p = '\0';
+    if (n)
+    {
+        do
+            *--p = '0' + (v % 10);
+        while (v /= 10);
+        *--p = '_';
+    }
+    strcpy(dst, ae->ae_Name);
+    strcat(dst, p);
+    if (ae->ae_URL[0])
+    {
+        strcat(dst, ".");
+        strncat(dst, ae->ae_URL, APP_IDENTMAX - strlen(dst) - 1);
+    }
+}
+
 /* "name.url", then "name_1.url", "name_2.url", ... for later instances. */
-static void app_MakeIdent(struct ApplicationBase *AppBase, struct AppEntry *ae)
+static BOOL app_MakeIdent(struct ApplicationBase *AppBase, struct AppEntry *ae)
 {
     ULONG n;
 
+    app_BuildIdent(ae->ae_BaseIdent, ae, 0);
     for (n = 0; ; n++)
     {
-        TEXT inst[16], *p = inst + sizeof(inst) - 1;
-        ULONG v = n;
-
-        *p = '\0';
-        if (n)
-        {
-            do
-                *--p = '0' + (v % 10);
-            while (v /= 10);
-            *--p = '_';
-        }
-        strcpy(ae->ae_Ident, ae->ae_Name);
-        strcat(ae->ae_Ident, p);
-        if (ae->ae_URL[0])
-        {
-            strcat(ae->ae_Ident, ".");
-            strncat(ae->ae_Ident, ae->ae_URL, sizeof(ae->ae_Ident) - strlen(ae->ae_Ident) - 1);
-        }
+        app_BuildIdent(ae->ae_Ident, ae, n);
         if (!app_IdentTaken(AppBase, ae->ae_Ident))
-            return;
+        {
+            ae->ae_Counter = n;
+            return TRUE;
+        }
+        if (ae->ae_Flags & APPF_NOCOUNTER)
+            return FALSE;
     }
+}
+
+/* [ENVDir/]basename.xml below ENV:, or the custom file name. */
+static STRPTR app_PrefsName(struct AppEntry *ae, struct TagItem *tags)
+{
+    CONST_STRPTR custom = (CONST_STRPTR)GetTagData(REGAPP_CustomPrefsFileName, 0, tags);
+    CONST_STRPTR dir = (CONST_STRPTR)GetTagData(REGAPP_ENVDir, 0, tags);
+    CONST_STRPTR base = (CONST_STRPTR)GetTagData(REGAPP_CustomPrefsBaseName, 0, tags);
+    STRPTR name;
+
+    if (custom)
+        return app_StrDup(custom);
+    if (!base)
+        base = ae->ae_BaseIdent;
+    if (!(name = AllocVec(APP_PATHMAX, MEMF_ANY | MEMF_CLEAR)))
+        return NULL;
+    if (dir && *dir)
+    {
+        strncpy(name, dir, APP_PATHMAX - 1);
+        if (name[strlen(name) - 1] != '/' && name[strlen(name) - 1] != ':')
+            strncat(name, "/", APP_PATHMAX - strlen(name) - 1);
+    }
+    strncat(name, base, APP_PATHMAX - strlen(name) - 1);
+    strncat(name, ".xml", APP_PATHMAX - strlen(name) - 1);
+    return name;
 }
 
 static ULONG app_FlagFor(Tag tag)
@@ -135,50 +172,23 @@ static ULONG app_FlagFor(Tag tag)
     case APPATTR_AllowsBlanker:         return APPF_ALLOWBLANKER;
     case REGAPP_SavePrefs:
     case APPATTR_SavePrefs:             return APPF_SAVEPREFS;
+    case REGAPP_Hidden:
     case APPATTR_Hidden:                return APPF_HIDDEN;
+    case REGAPP_NeedsGameMode:
+    case APPATTR_NeedsGameMode:         return APPF_GAMEMODE;
+    case REGAPP_NoIcon:
+    case APPATTR_NoIcon:                return APPF_NOICON;
     }
     return 0;
 }
 
-static void app_FreeDocs(struct AppEntry *ae)
+static void app_FreeEntry(struct AppEntry *ae)
 {
-    struct AppDoc *ad;
-
-    while ((ad = (struct AppDoc *)REMHEAD((struct List *)&ae->ae_LastDocs)))
-        FreeVec(ad);
-}
-
-static void app_AddDoc(struct AppEntry *ae, CONST_STRPTR path)
-{
-    struct AppDoc *ad, *next;
-    ULONG count = 0;
-
-    if (!path || !*path)
-        return;
-
-    /* Re-opening a document moves it to the front. */
-    ForeachNodeSafe(&ae->ae_LastDocs, ad, next)
-    {
-        if (Stricmp(ad->ad_Path, path) == 0)
-        {
-            REMOVE(ad);
-            FreeVec(ad);
-        }
-    }
-
-    if (!(ad = AllocVec(sizeof(struct AppDoc) + strlen(path), MEMF_ANY)))
-        return;
-    strcpy(ad->ad_Path, path);
-    ADDHEAD((struct List *)&ae->ae_LastDocs, ad);
-
-    ForeachNodeSafe(&ae->ae_LastDocs, ad, next)
-    {
-        if (++count > APP_LASTDOCS)
-        {
-            REMOVE(ad);
-            FreeVec(ad);
-        }
-    }
+    po_Release(ae->ae_Prefs);
+    FreeVec(ae->ae_PrefsName);
+    FreeVec(ae->ae_Description);
+    FreeVec(ae->ae_FileName);
+    FreeVec(ae);
 }
 
 /*****************************************************************************
@@ -202,7 +212,9 @@ static void app_AddDoc(struct AppEntry *ae, CONST_STRPTR path)
 
     INPUTS
         name - application name, without spaces.
-        tags - REGAPP_ tags.
+        tags - REGAPP_ tags. With REGAPP_LoadPrefs the application's prefs
+               file, ENV:[ENVDir/]name.urlidentifier.xml (or ENVARC: if
+               that is missing), is read into APPATTR_MainPrefsDict.
 
     RESULT
         The application ID, or 0. With REGAPP_UniqueApplication, 0 is also
@@ -213,15 +225,17 @@ static void app_AddDoc(struct AppEntry *ae, CONST_STRPTR path)
         Call UnregisterApplication() from the same task before exiting.
 
     SEE ALSO
-        UnregisterApplication(), GetApplicationAttrsA()
+        UnregisterApplicationA(), GetApplicationAttrsA()
 
 *****************************************************************************/
 {
     AROS_LIBFUNC_INIT
 
     struct TagItem *tstate = tags, *tag;
+    struct ApplicationIconInfo *aii;
     struct AppEntry *ae, *other;
     CONST_STRPTR url;
+    BOOL loadprefs;
     ULONG id = 0;
 
     if (!name || !*name || strchr(name, ' ') || strlen(name) >= APP_NAMEMAX)
@@ -249,10 +263,21 @@ static void app_AddDoc(struct AppEntry *ae, CONST_STRPTR path)
                 ae->ae_Flags &= ~flag;
         }
     }
+    if (!GetTagData(REGAPP_IdenticalNameCounter, TRUE, tags))
+        ae->ae_Flags |= APPF_NOCOUNTER;
+
+    ae->ae_Icon.iconType = APPICONT_ProgramIcon;
+    if ((aii = (struct ApplicationIconInfo *)GetTagData(REGAPP_AppIconInfo, 0, tags)))
+        ae->ae_Icon = *aii;
+    if (ae->ae_Flags & APPF_NOICON)
+        ae->ae_Icon.iconType = APPICONT_None;
+
+    loadprefs = GetTagData(REGAPP_LoadPrefs, FALSE, tags)
+                || GetTagData(REGAPP_CustomPrefsFileName, 0, tags)
+                || GetTagData(REGAPP_CustomPrefsBaseName, 0, tags);
 
     ae->ae_Description = app_StrDup((CONST_STRPTR)GetTagData(REGAPP_Description, 0, tags));
     ae->ae_FileName = app_ProgramPath(tags);
-    NEWLIST((struct List *)&ae->ae_LastDocs);
     ae->ae_Owner = FindTask(NULL);
 
     if (!(ae->ae_Port = CreateMsgPort()))
@@ -272,11 +297,26 @@ static void app_AddDoc(struct AppEntry *ae, CONST_STRPTR path)
         }
     }
 
-    app_MakeIdent(AppBase, ae);
+    if (!app_MakeIdent(AppBase, ae) || !(ae->ae_PrefsName = app_PrefsName(ae, tags)))
+    {
+        ReleaseSemaphore(&AppBase->ab_Lock);
+        goto fail;
+    }
+
+    if (loadprefs && (ae->ae_Prefs = po_NewDict()))
+        prefs_Read(AppBase, ae->ae_Prefs, ae->ae_PrefsName, TRUE, TRUE);
+
     ae->ae_ID = id = AppBase->ab_NextID++;
     if (!AppBase->ab_NextID)
         AppBase->ab_NextID = 1;
     ADDTAIL((struct List *)&AppBase->ab_Apps, ae);
+
+    app_BroadcastTo(AppBase, APPF_APPNOTIFY, id, APPLIBMT_AppRegister);
+    if (ae->ae_Flags & APPF_GAMEMODE)
+        app_Broadcast(AppBase, id, APPLIBMT_GameModeEntered);
+    app_UpdateBlanker(AppBase);
+    if (!(ae->ae_Flags & APPF_NOICON))
+        app_NoteAppStarted(AppBase, ae);
 
     ReleaseSemaphore(&AppBase->ab_Lock);
 
@@ -286,9 +326,7 @@ static void app_AddDoc(struct AppEntry *ae, CONST_STRPTR path)
 fail:
     if (ae->ae_Port)
         DeleteMsgPort(ae->ae_Port);
-    FreeVec(ae->ae_Description);
-    FreeVec(ae->ae_FileName);
-    FreeVec(ae);
+    app_FreeEntry(ae);
     return 0;
 
     AROS_LIBFUNC_EXIT
@@ -297,7 +335,7 @@ fail:
 /*****************************************************************************
 
     NAME */
-        AROS_LH2(BOOL, UnregisterApplication,
+        AROS_LH2(BOOL, UnregisterApplicationA,
 
 /*  SYNOPSIS */
         AROS_LHA(ULONG, appID, D0),
@@ -308,39 +346,67 @@ fail:
 
 /*  FUNCTION
         Remove an application registered with RegisterApplication().
-        Messages still waiting on its port are replied.
+        Messages still waiting on its port are replied, game mode and a
+        blanker veto are undone, and with REGAPP_SavePrefs the prefs are
+        written to ENV: and ENVARC:.
+
+        Docks that locked the application's icon are sent
+        APPLIBMT_AppUnregister; until they unlock it the application stays.
 
     INPUTS
         appID - the application ID.
-        tags  - none defined yet, pass NULL.
+        tags  - UNREGAPP_WaitForUnlock: FALSE to fail at once while the
+                icon is locked, instead of waiting. NULL is fine.
 
     RESULT
-        FALSE if there was no such application.
+        FALSE if there was no such application, or its icon is locked and
+        UNREGAPP_WaitForUnlock is FALSE.
 
 *****************************************************************************/
 {
     AROS_LIBFUNC_INIT
 
+    BOOL wait = GetTagData(UNREGAPP_WaitForUnlock, TRUE, tags);
     struct AppEntry *ae;
     struct Message *msg;
 
-    (void)tags;
-
     ObtainSemaphore(&AppBase->ab_Lock);
-    if (!(ae = app_Find(AppBase, appID)))
+    app_Reap(AppBase);
+    if (!(ae = app_Find(AppBase, appID)) || (ae->ae_Flags & APPF_LEAVING))
     {
         ReleaseSemaphore(&AppBase->ab_Lock);
         return FALSE;
+    }
+
+    if (ae->ae_IconLocks && !wait)
+    {
+        app_BroadcastTo(AppBase, APPF_APPNOTIFY, appID, APPLIBMT_AppWantsChangeIconType);
+        ReleaseSemaphore(&AppBase->ab_Lock);
+        return FALSE;
+    }
+
+    ae->ae_Flags |= APPF_LEAVING;
+    app_BroadcastTo(AppBase, APPF_APPNOTIFY, appID, APPLIBMT_AppUnregister);
+    while (ae->ae_IconLocks)
+    {
+        ReleaseSemaphore(&AppBase->ab_Lock);
+        Delay(2);
+        ObtainSemaphore(&AppBase->ab_Lock);
+        app_Reap(AppBase);
     }
     REMOVE(ae);
 
     if (ae->ae_Flags & APPF_GAMEMODE)
         app_Broadcast(AppBase, ae->ae_ID, APPLIBMT_GameModeLeft);
+    app_UpdateBlanker(AppBase);
 
     while ((msg = GetMsg(ae->ae_Port)))
         ReplyMsg(msg);
     app_Reap(AppBase);
     ReleaseSemaphore(&AppBase->ab_Lock);
+
+    if ((ae->ae_Flags & APPF_SAVEPREFS) && ae->ae_Prefs)
+        prefs_Write(AppBase, ae->ae_Prefs, ae->ae_PrefsName, TRUE, TRUE);
 
     /*
      * The port's signal belongs to the task that registered. From any other
@@ -350,10 +416,7 @@ fail:
     if (FindTask(NULL) == ae->ae_Owner)
         DeleteMsgPort(ae->ae_Port);
 
-    app_FreeDocs(ae);
-    FreeVec(ae->ae_Description);
-    FreeVec(ae->ae_FileName);
-    FreeVec(ae);
+    app_FreeEntry(ae);
     return TRUE;
 
     AROS_LIBFUNC_EXIT
@@ -372,11 +435,16 @@ fail:
         struct ApplicationBase *, AppBase, 7, Application)
 
 /*  FUNCTION
-        Change the attributes of an application, see APPATTR_ tags marked
-        (S) in <libraries/application.h>.
+        Change the attributes of an application, see the APPATTR_ tags
+        marked (S) in <libraries/application.h>.
+
+        APPATTR_IconType fails while a dock has the icon locked; the docks
+        are asked to unlock it, so try again a little later.
+        APPATTR_MainPrefsDict hands the dictionary to the application,
+        which releases the one it had.
 
     RESULT
-        FALSE if there was no such application or a tag cannot be set.
+        FALSE if there was no such application or a tag could not be set.
 
 *****************************************************************************/
 {
@@ -406,26 +474,69 @@ fail:
                 ae->ae_Flags ^= APPF_GAMEMODE;
                 app_Broadcast(AppBase, ae->ae_ID,
                               tag->ti_Data ? APPLIBMT_GameModeEntered : APPLIBMT_GameModeLeft);
+                app_UpdateBlanker(AppBase);
+            }
+            break;
+
+        case APPATTR_AllowsBlanker:
+            if (tag->ti_Data)
+                ae->ae_Flags |= APPF_ALLOWBLANKER;
+            else
+                ae->ae_Flags &= ~APPF_ALLOWBLANKER;
+            app_UpdateBlanker(AppBase);
+            break;
+
+        case APPATTR_Hidden:
+            if (!tag->ti_Data != !(ae->ae_Flags & APPF_HIDDEN))
+            {
+                ae->ae_Flags ^= APPF_HIDDEN;
+                app_BroadcastTo(AppBase, APPF_APPNOTIFY, ae->ae_ID, APPLIBMT_AppDidChangeHidden);
+            }
+            break;
+
+        case APPATTR_IconType:
+            if (!tag->ti_Data)
+                ok = FALSE;
+            else if (ae->ae_IconLocks)
+            {
+                app_BroadcastTo(AppBase, APPF_APPNOTIFY, ae->ae_ID, APPLIBMT_AppWantsChangeIconType);
+                ok = FALSE;
+            }
+            else
+            {
+                ae->ae_Icon = *(struct ApplicationIconInfo *)tag->ti_Data;
+                app_BroadcastTo(AppBase, APPF_APPNOTIFY, ae->ae_ID, APPLIBMT_AppDidChangeIconType);
             }
             break;
 
         case APPATTR_AppOpenedDocument:
-            app_AddDoc(ae, (CONST_STRPTR)tag->ti_Data);
+            app_NoteDocOpened(AppBase, ae, (CONST_STRPTR)tag->ti_Data);
             break;
 
         case APPATTR_ClearLastUsedDocs:
             if (tag->ti_Data)
-                app_FreeDocs(ae);
+                app_ClearDocsOfApp(AppBase, ae);
+            break;
+
+        case APPATTR_MainPrefsDict:
+            if (po_Type((PrefsObject *)tag->ti_Data) != ALPOT_Dictionary)
+                ok = FALSE;
+            else if ((PrefsObject *)tag->ti_Data != ae->ae_Prefs)
+            {
+                po_Release(ae->ae_Prefs);
+                ae->ae_Prefs = (PrefsObject *)tag->ti_Data;
+            }
             break;
 
         case APPATTR_FlushPrefs:
-        case APPATTR_IconType:
-        case APPATTR_MainPrefsDict:
+            if ((ae->ae_Flags & APPF_SAVEPREFS) && ae->ae_Prefs
+                && prefs_Write(AppBase, ae->ae_Prefs, ae->ae_PrefsName, TRUE, TRUE))
+                ok = FALSE;
             break;
 
         default:
             flag = app_FlagFor(tag->ti_Tag);
-            if (flag && flag != APPF_UNIQUE)
+            if (flag && flag != APPF_UNIQUE && flag != APPF_NOICON)
             {
                 if (tag->ti_Data)
                     ae->ae_Flags |= flag;
@@ -444,33 +555,10 @@ fail:
     AROS_LIBFUNC_EXIT
 }
 
-static struct List *app_DocList(struct AppEntry *ae)
-{
-    struct List *list;
-    struct AppDoc *ad;
-
-    if (!(list = AllocVec(sizeof(struct List), MEMF_ANY)))
-        return NULL;
-    NEWLIST(list);
-
-    ForeachNode(&ae->ae_LastDocs, ad)
-    {
-        struct ApplicationNode *an;
-        ULONG len = strlen(ad->ad_Path) + 1;
-
-        if (!(an = AllocVec(sizeof(*an) + len, MEMF_ANY | MEMF_CLEAR)))
-            break;
-        an->an_Node.ln_Name = (STRPTR)(an + 1);
-        CopyMem(ad->ad_Path, an->an_Node.ln_Name, len);
-        ADDTAIL(list, an);
-    }
-    return list;
-}
-
 /*****************************************************************************
 
     NAME */
-        AROS_LH2(ULONG, GetApplicationAttrsA,
+        AROS_LH2(BOOL, GetApplicationAttrsA,
 
 /*  SYNOPSIS */
         AROS_LHA(ULONG, appID, D0),
@@ -484,8 +572,13 @@ static struct List *app_DocList(struct AppEntry *ae)
         an APTR or STRPTR for pointer attributes, a ULONG for the others.
         Strings stay valid while the application is registered.
 
+        APPATTR_MainPrefsDict is the application's own dictionary, made
+        empty if it had none; APPATTR_LastUsedDocsArray is a copy, to be
+        ALPO_Release'd. APPATTR_IconType may only be used while the icon
+        is locked with LockApplicationIcon().
+
     RESULT
-        The number of attributes read.
+        FALSE if there was no such application or a tag is unknown.
 
 *****************************************************************************/
 {
@@ -493,14 +586,14 @@ static struct List *app_DocList(struct AppEntry *ae)
 
     struct TagItem *tstate = tags, *tag;
     struct AppEntry *ae;
-    ULONG count = 0;
+    BOOL ok = TRUE;
 
     ObtainSemaphore(&AppBase->ab_Lock);
     app_Reap(AppBase);
     if (!(ae = app_Find(AppBase, appID)))
     {
         ReleaseSemaphore(&AppBase->ab_Lock);
-        return 0;
+        return FALSE;
     }
 
     while ((tag = NextTagItem(&tstate)))
@@ -520,20 +613,30 @@ static struct List *app_DocList(struct AppEntry *ae)
         case APPATTR_URLIdentifier: *pstore = ae->ae_URL; break;
         case APPATTR_Description:   *pstore = ae->ae_Description; break;
         case APPATTR_FileName:      *pstore = ae->ae_FileName; break;
-        case APPATTR_LastUsedDocs:  *pstore = app_DocList(ae); break;
-        case APPATTR_NeedsGameMode: *lstore = (ae->ae_Flags & APPF_GAMEMODE) != 0; break;
+        case APPATTR_IconType:      *pstore = &ae->ae_Icon; break;
+        case APPATTR_AppIdentifierCounter: *lstore = ae->ae_Counter; break;
         case APPATTR_UniqueApplication: *lstore = (ae->ae_Flags & APPF_UNIQUE) != 0; break;
+        case APPATTR_LastUsedDocsArray:
+            if (!(*pstore = app_DocsOfApp(AppBase, ae)))
+                ok = FALSE;
+            break;
+        case APPATTR_MainPrefsDict:
+            if (!ae->ae_Prefs)
+                ae->ae_Prefs = po_NewDict();
+            if (!(*pstore = ae->ae_Prefs))
+                ok = FALSE;
+            break;
         default:
-            if (!(flag = app_FlagFor(tag->ti_Tag)))
-                continue;
-            *lstore = (ae->ae_Flags & flag) != 0;
+            if ((flag = app_FlagFor(tag->ti_Tag)))
+                *lstore = (ae->ae_Flags & flag) != 0;
+            else
+                ok = FALSE;
             break;
         }
-        count++;
     }
     ReleaseSemaphore(&AppBase->ab_Lock);
 
-    return count;
+    return ok;
 
     AROS_LIBFUNC_EXIT
 }
@@ -605,6 +708,10 @@ static struct List *app_DocList(struct AppEntry *ae)
         APPLIBMT_PrintDoc, can be reused at once. msg may be NULL for the
         other types.
 
+        The APPLIBMT_App... types always go to every application with
+        AppNotifications set, the APPLIBMT_Blanker... types to every one
+        with BlankerNotifications set, whatever receiverAppID is.
+
     RESULT
         TRUE if at least one application was sent the message.
 
@@ -614,22 +721,29 @@ static struct List *app_DocList(struct AppEntry *ae)
 
     CONST_STRPTR text = NULL;
     struct AppEntry *ae;
-    BOOL sent = FALSE;
+    BOOL sent = FALSE, always;
+    ULONG flag = 0;
 
     if (msg)
     {
-        if (type == APPLIBMT_CustomMsg)
+        if (type == APPLIBMT_CustomMsg || type == APPLIBMT_ConfirmClose)
             text = ((struct ApplicationCustomMsg *)msg)->customMsg;
         else if (type == APPLIBMT_OpenDoc || type == APPLIBMT_PrintDoc)
             text = ((struct ApplicationOpenPrintDocMsg *)msg)->fileName;
     }
+    always = app_IsAlwaysBroadcast(type, &flag);
 
     ObtainSemaphore(&AppBase->ab_Lock);
     app_Reap(AppBase);
     ForeachNode(&AppBase->ab_Apps, ae)
     {
-        if ((receiverAppID && ae->ae_ID != receiverAppID)
-            || (!receiverAppID && ae->ae_ID == senderAppID))
+        if (always)
+        {
+            if (ae->ae_ID == senderAppID || !(ae->ae_Flags & flag))
+                continue;
+        }
+        else if ((receiverAppID && ae->ae_ID != receiverAppID)
+                 || (!receiverAppID && ae->ae_ID == senderAppID))
             continue;
         if (app_Post(AppBase, ae, senderAppID, type, text))
             sent = TRUE;
@@ -644,7 +758,7 @@ static struct List *app_DocList(struct AppEntry *ae)
 /*****************************************************************************
 
     NAME */
-        AROS_LH0(struct List *, GetApplicationList,
+        AROS_LH0(struct MinList *, GetApplicationList,
 
 /*  SYNOPSIS */
 
@@ -659,12 +773,12 @@ static struct List *app_DocList(struct AppEntry *ae)
 {
     AROS_LIBFUNC_INIT
 
-    struct List *list;
+    struct MinList *list;
     struct AppEntry *ae;
 
-    if (!(list = AllocVec(sizeof(struct List), MEMF_ANY)))
+    if (!(list = AllocVec(sizeof(struct MinList), MEMF_ANY)))
         return NULL;
-    NEWLIST(list);
+    NEWLIST((struct List *)list);
 
     ObtainSemaphore(&AppBase->ab_Lock);
     ForeachNode(&AppBase->ab_Apps, ae)
@@ -675,29 +789,31 @@ static struct List *app_DocList(struct AppEntry *ae)
         ULONG fl = ae->ae_FileName ? strlen(ae->ae_FileName) + 1 : 0;
         STRPTR p;
 
+        if (ae->ae_Flags & APPF_LEAVING)
+            continue;
         if (!(an = AllocVec(sizeof(*an) + il + nl + dl + fl, MEMF_ANY | MEMF_CLEAR)))
             break;
         p = (STRPTR)(an + 1);
-        an->an_Node.ln_Name = p;
+        an->identifier = p;
         CopyMem(ae->ae_Ident, p, il);
         p += il;
-        an->an_Name = p;
+        an->name = p;
         CopyMem(ae->ae_Name, p, nl);
         p += nl;
         if (dl)
         {
-            an->an_Description = p;
+            an->description = p;
             CopyMem(ae->ae_Description, p, dl);
             p += dl;
         }
         if (fl)
         {
-            an->an_FileName = p;
+            an->fileName = p;
             CopyMem(ae->ae_FileName, p, fl);
         }
-        an->an_AppID = ae->ae_ID;
-        an->an_Hidden = (ae->ae_Flags & APPF_HIDDEN) != 0;
-        ADDTAIL(list, an);
+        an->appID = ae->ae_ID;
+        an->hidden = (ae->ae_Flags & APPF_HIDDEN) != 0;
+        ADDTAIL((struct List *)list, (struct Node *)an);
     }
     ReleaseSemaphore(&AppBase->ab_Lock);
 
@@ -712,13 +828,13 @@ static struct List *app_DocList(struct AppEntry *ae)
         AROS_LH1(VOID, FreeApplicationList,
 
 /*  SYNOPSIS */
-        AROS_LHA(struct List *, list, A0),
+        AROS_LHA(struct MinList *, list, A0),
 
 /*  LOCATION */
         struct ApplicationBase *, AppBase, 13, Application)
 
 /*  FUNCTION
-        Free a list from GetApplicationList() or APPATTR_LastUsedDocs.
+        Free a list from GetApplicationList().
 
 *****************************************************************************/
 {
@@ -729,7 +845,7 @@ static struct List *app_DocList(struct AppEntry *ae)
     (void)AppBase;
     if (!list)
         return;
-    while ((node = REMHEAD(list)))
+    while ((node = REMHEAD((struct List *)list)))
         FreeVec(node);
     FreeVec(list);
 

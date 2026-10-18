@@ -1,7 +1,10 @@
 
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
 include $(SRCDIR)/config/aros.cfg
 
-FILES := application_apps application_notify
+FILES := application_apps application_notify application_applib application_prefs \
+    application_pofuncs application_xml
 
 USER_LDFLAGS := -static
 

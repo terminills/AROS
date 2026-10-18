@@ -7,6 +7,7 @@
 #include <aros/symbolsets.h>
 #include <aros/debug.h>
 #include <exec/memory.h>
+#include <dos/dosextens.h>
 #include <proto/exec.h>
 
 #include <string.h>
@@ -22,6 +23,7 @@ static int Application_Init(LIBBASETYPEPTR AppBase)
     InitSemaphore(&AppBase->ab_Lock);
     NEWLIST((struct List *)&AppBase->ab_Apps);
     AppBase->ab_NextID = 1;
+    AppBase->ab_BlankerAllowed = TRUE;
 
     AppBase->ab_Reaper.mp_Node.ln_Type = NT_MSGPORT;
     AppBase->ab_Reaper.mp_Flags = PA_IGNORE;
@@ -45,6 +47,10 @@ static int Application_Expunge(LIBBASETYPEPTR AppBase)
     /* Messages still out with receivers point back at ab_Reaper. */
     if (!idle)
         return FALSE;
+
+    po_Release(AppBase->ab_Global);
+    AppBase->ab_Global = NULL;
+    AppBase->ab_GlobalLoaded = FALSE;
 
     CloseLibrary((struct Library *)UtilityBase);
     CloseLibrary((struct Library *)DOSBase);
@@ -110,6 +116,7 @@ BOOL app_Post(struct ApplicationBase *AppBase, struct AppEntry *to, ULONG sender
     switch (type)
     {
     case APPLIBMT_CustomMsg:
+    case APPLIBMT_ConfirmClose:
         size = sizeof(struct ApplicationCustomMsg);
         break;
     case APPLIBMT_OpenDoc:
@@ -136,7 +143,7 @@ BOOL app_Post(struct ApplicationBase *AppBase, struct AppEntry *to, ULONG sender
         STRPTR copy = (STRPTR)am + size;
 
         CopyMem((APTR)text, copy, textlen);
-        if (type == APPLIBMT_CustomMsg)
+        if (type == APPLIBMT_CustomMsg || type == APPLIBMT_ConfirmClose)
             ((struct ApplicationCustomMsg *)am)->customMsg = copy;
         else
             ((struct ApplicationOpenPrintDocMsg *)am)->fileName = copy;
@@ -156,4 +163,46 @@ void app_Broadcast(struct ApplicationBase *AppBase, ULONG sender, ULONG type)
         if (ae->ae_ID != sender)
             app_Post(AppBase, ae, sender, type, NULL);
     }
+}
+
+/* Every application whose flags include 'flag', except the sender. */
+void app_BroadcastTo(struct ApplicationBase *AppBase, ULONG flag, ULONG sender, ULONG type)
+{
+    struct AppEntry *ae;
+
+    ForeachNode(&AppBase->ab_Apps, ae)
+    {
+        if (ae->ae_ID != sender && (ae->ae_Flags & flag) && !(ae->ae_Flags & APPF_LEAVING))
+            app_Post(AppBase, ae, sender, type, NULL);
+    }
+}
+
+/* The types that only go to applications which asked for them. */
+BOOL app_IsAlwaysBroadcast(ULONG type, ULONG *flag)
+{
+    switch (type)
+    {
+    case APPLIBMT_AppRegister:
+    case APPLIBMT_AppUnregister:
+    case APPLIBMT_AppWantsChangeIconType:
+    case APPLIBMT_AppDidChangeIconType:
+    case APPLIBMT_AppDidChangeHidden:
+    case APPLIBMT_LastAppDocChange:
+        *flag = APPF_APPNOTIFY;
+        return TRUE;
+    case APPLIBMT_BlankerAllow:
+    case APPLIBMT_BlankerDisallow:
+    case APPLIBMT_BlankerBlank:
+    case APPLIBMT_BlankerMonitorOff:
+    case APPLIBMT_BlankerUnBlank:
+        *flag = APPF_BLANKNOTIFY;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* File access needs a process. */
+BOOL app_IsProcess(void)
+{
+    return FindTask(NULL)->tc_Node.ln_Type == NT_PROCESS;
 }
