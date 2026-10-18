@@ -13,11 +13,12 @@
 
 #define NOTIFYSERVER_PORTNAME   "AROS.Notifications"
 #define NOTIFYSERVER_PATH       "SYS:System/Notifications"
-#define NOTIFYSERVER_VERSION    2
+#define NOTIFYSERVER_VERSION    3
 
 #define NOTIFYSERVER_SCREENMAX  128
 #define NOTIFYSERVER_PATHMAX    512
 #define NOTIFYSERVER_BACKMAX    512
+#define NOTIFYSERVER_GAUGESMAX  512
 
 struct NotifyServerMsg
 {
@@ -40,6 +41,7 @@ struct NotifyServerMsg
     TEXT            nsm_IconFile[NOTIFYSERVER_PATHMAX];
     TEXT            nsm_SoundFile[NOTIFYSERVER_PATHMAX];
     TEXT            nsm_BackMsg[NOTIFYSERVER_BACKMAX];
+    TEXT            nsm_Gauges[NOTIFYSERVER_GAUGESMAX];
 };
 
 #endif /* APPLICATION_SERVER_H */

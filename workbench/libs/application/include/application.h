@@ -150,6 +150,12 @@ struct ApplicationIconInfo
 /* AROS: take back this application's pop-ups whose BackMsg is this string,
    shown or waiting; nothing new is shown. */
 #define APPNOTIFY_Withdraw              (APPNOTIFY_Dummy + 14) /* STRPTR                          */
+/* AROS: bars under the text, one per line: "<percent>;#RRGGBB;<label>", such
+   as a printer's ink levels or a download's progress. At most
+   APPNOTIFY_GAUGES_MAX. */
+#define APPNOTIFY_Gauges                (APPNOTIFY_Dummy + 15) /* STRPTR                          */
+
+#define APPNOTIFY_GAUGES_MAX            8
 
 #define APPNOTIFY_TITLE_MAX             64
 #define APPNOTIFY_TEXT_MAX              160

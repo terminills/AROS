@@ -88,6 +88,7 @@ struct Request
     TEXT    rq_Sound[NOTIFYSERVER_PATHMAX];
     TEXT    rq_BackMsg[NOTIFYSERVER_BACKMAX];
     TEXT    rq_RexxPort[64];    /* BACKRXMSG goes here as an ARexx command */
+    TEXT    rq_Gauges[NOTIFYSERVER_GAUGESMAX];
 };
 
 struct Waiting
@@ -109,6 +110,10 @@ struct Popup
     UWORD            p_ImgW, p_ImgH;
     UWORD            p_NumLines;
     UWORD            p_LineStart[MAX_LINES], p_LineLen[MAX_LINES];
+    UWORD            p_NumGauges;
+    UBYTE            p_GaugeLevel[APPNOTIFY_GAUGES_MAX];     /* percent */
+    ULONG            p_GaugeRGB[APPNOTIFY_GAUGES_MAX];       /* 0xRRGGBB */
+    TEXT             p_GaugeLabel[APPNOTIFY_GAUGES_MAX][48];
 };
 
 /* Applications registered on behalf of ARexx scripts (REGISTERAPP). */
@@ -228,8 +233,42 @@ static void LogRequest(struct Request *rq)
     if (!(fh = Open(NPREFS_LOGFILE, MODE_READWRITE)))
         return;
     Seek(fh, 0, OFFSET_END);
-    FPrintf(fh, "%s %s [%s] %s: %s\n", (IPTR)date, (IPTR)time, (IPTR)rq->rq_AppName,
+    FPrintf(fh, "%s %s [%s] %s: %s", (IPTR)date, (IPTR)time, (IPTR)rq->rq_AppName,
             (IPTR)rq->rq_Title, (IPTR)rq->rq_Text);
+    if (rq->rq_Gauges[0])
+    {
+        /* "62;#000000;Black\n9;#00FFFF;Cyan" -> " [Black 62%, Cyan 9%]" */
+        CONST_STRPTR g = rq->rq_Gauges;
+
+        FPuts(fh, " [");
+        while (*g)
+        {
+            CONST_STRPTR level = g, label;
+            LONG n;
+
+            while (*g && *g != ';' && *g != '\n')
+                g++;
+            n = g - level;
+            label = g;
+            if (*label == ';' && (label = strchr(label + 1, ';')))
+                label++;
+            else
+                label = "";
+            while (*label && *label != '\n')
+                FPutC(fh, *label++);
+            FPutC(fh, ' ');
+            FWrite(fh, (STRPTR)level, 1, n);
+            FPutC(fh, '%');
+            g = strchr(g, '\n');
+            if (!g)
+                break;
+            g++;
+            if (*g)
+                FPuts(fh, ", ");
+        }
+        FPutC(fh, ']');
+    }
+    FPutC(fh, '\n');
     Close(fh);
 }
 
@@ -455,6 +494,97 @@ static BOOL Sticky(struct Popup *p)
     return p->p_TicksLeft < 0;
 }
 
+/* APPNOTIFY_Gauges: lines of "<percent>;#RRGGBB;<label>". */
+static void ParseGauges(struct Popup *p, CONST_STRPTR g)
+{
+    while (g && *g && p->p_NumGauges < APPNOTIFY_GAUGES_MAX)
+    {
+        UWORD n = p->p_NumGauges;
+        LONG level = 0, i;
+        ULONG rgb = 0;
+        CONST_STRPTR end = strchr(g, '\n');
+
+        if (!end)
+            end = g + strlen(g);
+        while (g < end && *g >= '0' && *g <= '9')
+            level = level * 10 + (*g++ - '0');
+        if (g < end && *g == ';')
+            g++;
+        if (g < end && *g == '#')
+        {
+            for (g++, i = 0; i < 6 && g < end; i++, g++)
+            {
+                TEXT c = *g | 0x20;
+                rgb = (rgb << 4) | (c >= 'a' ? c - 'a' + 10 : c - '0');
+            }
+        }
+        else
+            rgb = 0x808080;
+        if (g < end && *g == ';')
+            g++;
+        for (i = 0; g < end && i < (LONG)sizeof(p->p_GaugeLabel[0]) - 1; i++)
+            p->p_GaugeLabel[n][i] = *g++;
+        p->p_GaugeLabel[n][i] = '\0';
+        p->p_GaugeLevel[n] = level > 100 ? 100 : level;
+        p->p_GaugeRGB[n] = rgb;
+        p->p_NumGauges++;
+        g = *end ? end + 1 : end;
+    }
+}
+
+#define GAUGE_HEIGHT(p) ((p)->p_Font->tf_YSize + 6)
+
+/* One bar: the level in its colour, the rest left empty, the label centred on it. */
+static void DrawGauge(struct Popup *p, struct RastPort *rp, struct DrawInfo *dri, UWORD i,
+                      UWORD x, UWORD y, UWORD w)
+{
+    UWORD h = GAUGE_HEIGHT(p) - 2, fill = (w - 2) * p->p_GaugeLevel[i] / 100, len, tw;
+    ULONG rgb = p->p_GaugeRGB[i];
+    UWORD lum = (((rgb >> 16) & 0xff) * 3 + ((rgb >> 8) & 0xff) * 6 + (rgb & 0xff)) / 10;
+    TEXT text[64];
+
+    SetAPen(rp, dri ? dri->dri_Pens[SHADOWPEN] : 1);
+    Move(rp, x, y);
+    Draw(rp, x + w - 1, y);
+    Draw(rp, x + w - 1, y + h - 1);
+    Draw(rp, x, y + h - 1);
+    Draw(rp, x, y);
+    if (fill)
+    {
+        if (CyberGfxBase)
+            FillPixelArray(rp, x + 1, y + 1, fill, h - 2, rgb);
+        else
+        {
+            SetAPen(rp, dri ? dri->dri_Pens[FILLPEN] : 3);
+            RectFill(rp, x + 1, y + 1, x + fill, y + h - 2);
+        }
+    }
+
+    strcpy(text, p->p_GaugeLabel[i]);
+    if (strlen(text) < sizeof(text) - 8)
+    {
+        TEXT num[8], *q = num + sizeof(num) - 1;
+        UBYTE v = p->p_GaugeLevel[i];
+
+        *q = '\0';
+        *--q = '%';
+        do
+            *--q = '0' + v % 10;
+        while (v /= 10);
+        if (text[0])
+            strcat(text, ": ");
+        strcat(text, q);
+    }
+    len = strlen(text);
+    while (len && (tw = TextLength(rp, text, len)) > w - 4)
+        len--;
+    tw = TextLength(rp, text, len);
+    /* light text where it sits on a dark fill */
+    SetAPen(rp, dri ? dri->dri_Pens[(fill > w / 2 && lum < 110) ? SHINEPEN : TEXTPEN] : 1);
+    Move(rp, x + (w - tw) / 2, y + (h - p->p_Font->tf_YSize) / 2 + p->p_Font->tf_Baseline);
+    Text(rp, text, len);
+}
+
 static void DrawPopup(struct Popup *p)
 {
     struct Window *win = p->p_Window;
@@ -532,6 +662,13 @@ static void DrawPopup(struct Popup *p)
         Move(rp, tx, ty);
         Text(rp, p->p_Req.rq_Text + p->p_LineStart[i], p->p_LineLen[i]);
         ty += p->p_Font->tf_YSize;
+    }
+
+    ty = ty - p->p_Font->tf_Baseline + 4;
+    for (i = 0; i < p->p_NumGauges; i++)
+    {
+        DrawGauge(p, rp, dri, i, tx, ty, w - tx - POPUP_PAD);
+        ty += GAUGE_HEIGHT(p);
     }
 
     if (dri)
@@ -667,8 +804,10 @@ static ULONG OpenPopup(struct Request *rq)
     SetFont(&tmprp, p->p_Font);
     WrapText(p, &tmprp, textw);
 
+    ParseGauges(p, rq->rq_Gauges);
     h = POPUP_PAD + 2 + POPUP_PAD + (rq->rq_Title[0] ? p->p_Font->tf_YSize + 4 : 0)
-        + p->p_NumLines * p->p_Font->tf_YSize;
+        + p->p_NumLines * p->p_Font->tf_YSize
+        + (p->p_NumGauges ? 4 + p->p_NumGauges * GAUGE_HEIGHT(p) : 0);
     minh = 2 * POPUP_PAD + 2 + (p->p_ARGB ? POPUP_IMAGE : 0);
     if (Sticky(p) && minh < 2 * POPUP_PAD + CLOSE_BOX)
         minh = 2 * POPUP_PAD + CLOSE_BOX;
@@ -1205,6 +1344,7 @@ static void HandleRequests(struct MsgPort *port)
             CopyStr(rq.rq_Icon, nsm->nsm_IconFile, sizeof(rq.rq_Icon));
             CopyStr(rq.rq_Sound, nsm->nsm_SoundFile, sizeof(rq.rq_Sound));
             CopyStr(rq.rq_BackMsg, nsm->nsm_BackMsg, sizeof(rq.rq_BackMsg));
+            CopyStr(rq.rq_Gauges, nsm->nsm_Gauges, sizeof(rq.rq_Gauges));
             if (nsm->nsm_Withdraw)
             {
                 DropAppNotifications(rq.rq_AppID, rq.rq_BackMsg);

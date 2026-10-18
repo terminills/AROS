@@ -14,7 +14,7 @@
     SYNOPSIS
 
         TEXT/A,TITLE/K,APP/K,IMAGE/K,ICON/K,SOUND/K,PRI/K/N,SCREEN/K,URL/K,
-        UPDATE/S,LOGONLY/S,WAIT/S
+        GAUGE/K/M,UPDATE/S,LOGONLY/S,WAIT/S
 
     LOCATION
 
@@ -38,6 +38,8 @@
                    it is closed.
         SCREEN  -- a public screen, or FRONT for the frontmost one.
         URL     -- double-clicking opens this in the browser.
+        GAUGE   -- a bar under the text, "<percent>;#RRGGBB;<label>";
+                   up to eight, each with its own GAUGE.
         UPDATE  -- take back this application's earlier notifications.
         LOGONLY -- only add it to the log.
         WAIT    -- wait until the pop-up is closed. Return code 0 if it
@@ -54,6 +56,7 @@
 
         Notify "Backup finished" TITLE "Backup" PRI 2
         Notify "Click to read the news" URL https://aros.org WAIT
+        Notify "Backing up" GAUGE "40;#3070C0;Work:"
 
 ******************************************************************************/
 
@@ -71,8 +74,8 @@ static const char version[] __attribute__((used)) = VERSTAG;
 
 #define BACKMSG "C:Notify"
 
-enum { A_TEXT, A_TITLE, A_APP, A_IMAGE, A_ICON, A_SOUND, A_PRI, A_SCREEN, A_URL, A_UPDATE, A_LOGONLY,
-       A_WAIT, A_COUNT };
+enum { A_TEXT, A_TITLE, A_APP, A_IMAGE, A_ICON, A_SOUND, A_PRI, A_SCREEN, A_URL, A_GAUGE, A_UPDATE,
+       A_LOGONLY, A_WAIT, A_COUNT };
 
 struct Library *ApplicationBase;
 
@@ -95,14 +98,14 @@ int main(void)
     IPTR args[A_COUNT];
     struct RDArgs *rda;
     struct MsgPort *port = NULL;
-    TEXT app[APPNOTIFY_TITLE_MAX], backmsg[512];
+    TEXT app[APPNOTIFY_TITLE_MAX], backmsg[512], gauges[512] = "";
     CONST_STRPTR backtag = BACKMSG;
     ULONG appid, res, i;
     LONG pri, rc = RETURN_FAIL;
 
     memset(args, 0, sizeof(args));
     if (!(rda = ReadArgs("TEXT/A,TITLE/K,APP/K,IMAGE/K,ICON/K,SOUND/K,PRI/K/N,SCREEN/K,URL/K,"
-                         "UPDATE/S,LOGONLY/S,WAIT/S", args, NULL)))
+                         "GAUGE/K/M,UPDATE/S,LOGONLY/S,WAIT/S", args, NULL)))
     {
         PrintFault(IoErr(), "Notify");
         return RETURN_FAIL;
@@ -129,6 +132,19 @@ int main(void)
         backtag = backmsg;
     }
     pri = args[A_PRI] ? *(LONG *)args[A_PRI] : 0;
+    if (args[A_GAUGE])
+    {
+        STRPTR *g;
+
+        for (g = (STRPTR *)args[A_GAUGE]; *g; g++)
+        {
+            if (strlen(gauges) + strlen(*g) + 2 >= sizeof(gauges))
+                break;
+            if (gauges[0])
+                strcat(gauges, "\n");
+            strcat(gauges, *g);
+        }
+    }
 
     if (!(appid = RegisterApplication(app, REGAPP_NoIcon, TRUE, TAG_DONE)))
     {
@@ -144,6 +160,7 @@ int main(void)
                  args[A_ICON] ? APPNOTIFY_IconFile : TAG_IGNORE, args[A_ICON],
                  args[A_SOUND] ? APPNOTIFY_SoundFile : TAG_IGNORE, args[A_SOUND],
                  args[A_SCREEN] ? APPNOTIFY_PubScreenName : TAG_IGNORE, args[A_SCREEN],
+                 gauges[0] ? APPNOTIFY_Gauges : TAG_IGNORE, (IPTR)gauges,
                  APPNOTIFY_Pri,           pri < 0 ? 0 : pri,
                  APPNOTIFY_Update,        args[A_UPDATE] != 0,
                  APPNOTIFY_LogOnly,       args[A_LOGONLY] != 0,

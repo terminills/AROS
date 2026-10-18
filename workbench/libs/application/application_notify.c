@@ -176,6 +176,7 @@ static BOOL ntf_StartServer(void)
     ntf_Copy(nsm->nsm_BackMsg, withdraw ? withdraw : (CONST_STRPTR)GetTagData(APPNOTIFY_BackMsg, 0, tags),
              sizeof(nsm->nsm_BackMsg));
     nsm->nsm_Withdraw = withdraw ? TRUE : FALSE;
+    ntf_Copy(nsm->nsm_Gauges, (CONST_STRPTR)GetTagData(APPNOTIFY_Gauges, 0, tags), sizeof(nsm->nsm_Gauges));
 
     if (ntf_StartServer())
     {
