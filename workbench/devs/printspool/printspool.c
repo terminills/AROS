@@ -11,7 +11,8 @@
     are written and .job once the last opener has closed the unit. The spooler
     sends .job files in sequence order, deletes them when done, writes its state
     ("<job>: printing on <device> unit <n>, <sent>/<size> KB", "...: waiting, ...",
-    "idle") to PrintSpool/Status and drops a job when <job>.cancel exists. What
+    "idle") to PrintSpool/Status, the job's state changes to PrintSpool/Job,
+    and drops a job when <job>.cancel exists. What
     printer.device says is being printed (PRD_SETJOBINFO) is kept in <job>.info
     as Application= and Document= lines.
 */
@@ -77,7 +78,51 @@ static void set_status(struct PrintSpoolBase *PrintSpoolBase, CONST_STRPTR text)
         lock = CreateDir("ENV:PrintSpool");
     if (lock != BNULL)
         UnLock(lock);
-    SetVar("PrintSpool/Status", text, -1, GVF_GLOBAL_ONLY);
+    if (text != NULL)
+        SetVar("PrintSpool/Status", text, -1, GVF_GLOBAL_ONLY);
+}
+
+/*
+ * PrintSpool/Job: the job being sent, as Key=value lines, rewritten when its
+ * state changes (printing, waiting, done, cancelled), for programs that tell
+ * the user about printing (PrinterWatch).
+ */
+static void job_event(struct PrintSpoolBase *PrintSpoolBase, CONST_STRPTR name, LONG unit,
+    CONST_STRPTR device, LONG devunit, CONST_STRPTR state, CONST_STRPTR reason,
+    CONST_STRPTR app, CONST_STRPTR doc)
+{
+    TEXT text[512];
+
+    __sprintf(text, "Job=%s\nUnit=%ld\nDevice=%s\nDeviceUnit=%ld\nState=%s\nReason=%s\n"
+        "Application=%s\nDocument=%s\n", name, (long)unit, device, (long)devunit, state,
+        reason ? reason : (CONST_STRPTR)"", app, doc);
+    set_status(PrintSpoolBase, NULL);
+    SetVar("PrintSpool/Job", text, -1, GVF_GLOBAL_ONLY);
+}
+
+/* Application= and Document= from <job>.info. */
+static void job_info(struct PrintSpoolBase *PrintSpoolBase, CONST_STRPTR name,
+    STRPTR app, LONG appsize, STRPTR doc, LONG docsize)
+{
+    TEXT path[300], line[200];
+    BPTR fh;
+
+    app[0] = doc[0] = '\0';
+    job_path(PrintSpoolBase, name, ".info", path, sizeof(path));
+    if ((fh = Open(path, MODE_OLDFILE)) == BNULL)
+        return;
+    while (FGets(fh, line, sizeof(line)))
+    {
+        LONG n = strlen(line);
+
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+            line[--n] = '\0';
+        if (strncmp(line, "Application=", 12) == 0 && n - 12 < appsize)
+            strcpy(app, line + 12);
+        else if (strncmp(line, "Document=", 9) == 0 && n - 9 < docsize)
+            strcpy(doc, line + 9);
+    }
+    Close(fh);
 }
 
 /* The highest job sequence number in the spool directory. */
@@ -231,9 +276,9 @@ static void spooler_main(void)
     for (;;)
     {
         BPTR file;
-        TEXT device[64];
+        TEXT device[64], app[64], doc[128], reason[96] = "";
         LONG unit = 0, devunit, actual, sent = 0, total = 0;
-        BOOL done = FALSE;
+        BOOL done = FALSE, started = FALSE;
 
         publish_finished(PrintSpoolBase);
 
@@ -259,6 +304,7 @@ static void spooler_main(void)
             DeleteFile(path);
             continue;
         }
+        job_info(PrintSpoolBase, name, app, sizeof(app), doc, sizeof(doc));
 
         while (!done)
         {
@@ -269,6 +315,11 @@ static void spooler_main(void)
                 break;
             __sprintf(status, "%s: waiting, cannot open %s unit %ld", name, device, (long)devunit);
             set_status(PrintSpoolBase, status);
+            if (strcmp(reason, "unreachable") != 0)
+            {
+                strcpy(reason, "unreachable");
+                job_event(PrintSpoolBase, name, unit, device, devunit, "waiting", reason, app, doc);
+            }
             Delay(RETRY_TICKS);
         }
         if (cancelled(PrintSpoolBase, name))
@@ -276,6 +327,12 @@ static void spooler_main(void)
             done = TRUE;
             __sprintf(status, "%s: cancelled", name);
             set_status(PrintSpoolBase, status);
+        }
+        else
+        {
+            job_event(PrintSpoolBase, name, unit, device, devunit, "printing", NULL, app, doc);
+            started = TRUE;
+            reason[0] = '\0';
         }
 
         {
@@ -303,17 +360,29 @@ static void spooler_main(void)
                 if (DoIO((struct IORequest *)io) == 0)
                 {
                     sent += actual;
+                    if (reason[0])
+                    {
+                        /* going again after a wait */
+                        reason[0] = '\0';
+                        job_event(PrintSpoolBase, name, unit, device, devunit, "printing", NULL, app, doc);
+                    }
                     break;
                 }
                 /* Out of paper, offline, unplugged: wait, then send the chunk again. */
                 __sprintf(status, "%s: waiting, %s error %ld", name, device, (long)io->io_Error);
                 set_status(PrintSpoolBase, status);
+                if (strcmp(reason, "error") != 0)
+                {
+                    strcpy(reason, "error");
+                    job_event(PrintSpoolBase, name, unit, device, devunit, "waiting", reason, app, doc);
+                }
                 Delay(RETRY_TICKS);
                 if (cancelled(PrintSpoolBase, name))
                 {
                     done = TRUE;
                     break;
                 }
+
             }
         }
         if (io->io_Device != NULL)
@@ -321,6 +390,9 @@ static void spooler_main(void)
             CloseDevice((struct IORequest *)io);
             io->io_Device = NULL;
         }
+        /* The device has the whole job (ipp.device has heard back from the printer). */
+        job_event(PrintSpoolBase, name, unit, device, devunit,
+            done || !started ? "cancelled" : "done", NULL, app, doc);
         Close(file);
         DeleteFile(path);
         job_path(PrintSpoolBase, name, ".cancel", path, sizeof(path));
