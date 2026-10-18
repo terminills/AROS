@@ -1,0 +1,10 @@
+
+include $(SRCDIR)/config/aros.cfg
+
+#MM- workbench-system : workbench-system-notifications
+#MM workbench-system-notifications : includes linklibs workbench-libs-application
+
+%build_prog progname="Notifications" mmake=workbench-system-notifications \
+    files=notifications targetdir=$(AROS_SYSTEM)
+
+%common
