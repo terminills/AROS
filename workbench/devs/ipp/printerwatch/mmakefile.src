@@ -1,0 +1,29 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+# PrinterWatch shares FindPrinters' DNS-SD and IPP code, which fetches
+# printer pictures over https with mbedTLS.
+FPDIR := $(SRCDIR)/$(CURDIR)/../findprinters
+USER_INCLUDES := -I$(SRCDIR)/workbench/libs/mbedtls
+USER_CPPFLAGS := -DMBEDTLS_CONFIG_FILE='"mbedtls_aros_config.h"'
+USER_CFLAGS := $(CFLAGS_GNU99)
+
+WBSTARTUPDIR := $(AROSDIR)/WBStartup
+
+#MM- workbench-devs-common : workbench-devs-ipp-printerwatch
+#MM- workbench-devs-ipp-printerwatch : workbench-devs-ipp-printerwatch-prog \
+#MM    workbench-devs-ipp-printerwatch-icon
+#MM workbench-devs-ipp-printerwatch-prog : network-includes-copy workbench-libs-mbedtls \
+#MM    workbench-libs-application workbench-directories
+
+%build_prog mmake=workbench-devs-ipp-printerwatch-prog \
+  progname=PrinterWatch targetdir=$(WBSTARTUPDIR) \
+  files="printerwatch $(FPDIR)/fp_mdns $(FPDIR)/fp_ipp $(FPDIR)/fp_http" \
+  uselibs="mbedtls mbedx509 mbedcrypto"
+
+%build_icons mmake=workbench-devs-ipp-printerwatch-icon \
+  icons=PrinterWatch dir=$(WBSTARTUPDIR) \
+  srcdir=$(SRCDIR)/$(CURDIR)/icons
+
+%common
