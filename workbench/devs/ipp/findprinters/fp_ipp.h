@@ -22,11 +22,26 @@ struct PrinterInfo {
     char pi_Supply[FP_SUPPLIES][48];    /* marker-names */
     LONG pi_Level[FP_SUPPLIES];         /* marker-levels, percent; -1 unknown */
     char pi_Colour[FP_SUPPLIES][16];    /* marker-colors, #RRGGBB */
+    LONG pi_Low[FP_SUPPLIES];           /* marker-low-levels, percent; -1 unknown */
     LONG pi_NumSupplies;
 };
 
 /* Get-Printer-Attributes on an ipp:// printer; FALSE when it does not answer. */
 BOOL IPP_GetInfo(const char *uri, struct PrinterInfo *pi);
+
+/* job-state values (RFC 8011 5.3.7), and IPP_JOB_GONE when the printer no longer knows the job */
+#define IPP_JOB_PENDING     3
+#define IPP_JOB_HELD        4
+#define IPP_JOB_PROCESSING  5
+#define IPP_JOB_STOPPED     6
+#define IPP_JOB_CANCELED    7
+#define IPP_JOB_ABORTED     8
+#define IPP_JOB_COMPLETED   9
+#define IPP_JOB_GONE        100
+
+/* Get-Job-Attributes: the job's state, its job-state-reasons comma separated in reasons;
+   -1 when the printer does not answer. */
+LONG IPP_GetJobState(const char *uri, ULONG jobid, char *reasons, LONG max);
 
 /* The printer's picture of itself (printer-icons), the one nearest 128 pixels, written to path
    as a PNG. FALSE when it has none or it could not be read; then *from is the picture's URL

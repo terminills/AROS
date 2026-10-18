@@ -101,6 +101,10 @@ static BOOL connOpen(struct Conn *c, const char *host, UWORD port, BOOL tls)
 
     memset(c, 0, sizeof(*c));
     c->c_Socket = -1;
+    if (SocketBase == NULL) {
+        HTTP_LastError = HTTP_ERR_CONNECT;
+        return FALSE;
+    }
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
     sin.sin_port = htons(port);

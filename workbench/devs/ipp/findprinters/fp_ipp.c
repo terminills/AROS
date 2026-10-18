@@ -25,13 +25,14 @@
 #define TAG_CHARSET                 0x47
 #define TAG_NATURAL_LANGUAGE        0x48
 
+#define IPP_OP_GET_JOB_ATTRIBUTES   0x0009
 #define IPP_OP_GET_PRINTER_ATTRIBUTES 0x000b
 #define REPLY_MAX                   65536
 
 static const char *wanted[] = {
     "printer-make-and-model", "printer-icons", "printer-state", "printer-state-reasons",
     "printer-state-message", "media-ready",
-    "marker-names", "marker-levels", "marker-colors", NULL
+    "marker-names", "marker-levels", "marker-colors", "marker-low-levels", NULL
 };
 
 static UBYTE *put(UBYTE *p, UBYTE tag, const char *name, const char *value)
@@ -71,13 +72,13 @@ static void addValue(char *to, LONG max, const UBYTE *v, LONG len)
 BOOL IPP_GetInfo(const char *uri, struct PrinterInfo *pi)
 {
     UBYTE req[1024], *p = req, *buf, *body;
-    LONG status, bodylen, i, names = 0, levels = 0, colours = 0;
+    LONG status, bodylen, i, names = 0, levels = 0, colours = 0, lows = 0;
     const char *attr = "";
     char url[300];
 
     memset(pi, 0, sizeof(*pi));
     for (i = 0; i < FP_SUPPLIES; i++)
-        pi->pi_Level[i] = -1;
+        pi->pi_Level[i] = pi->pi_Low[i] = -1;
     if (strlen(uri) > 256)
         return FALSE;
 
@@ -147,6 +148,8 @@ BOOL IPP_GetInfo(const char *uri, struct PrinterInfo *pi)
             text(pi->pi_Supply[names++], sizeof(pi->pi_Supply[0]), v, vl);
         else if (strcmp(attr, "marker-levels") == 0 && levels < FP_SUPPLIES && vl == 4)
             pi->pi_Level[levels++] = (v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3];
+        else if (strcmp(attr, "marker-low-levels") == 0 && lows < FP_SUPPLIES && vl == 4)
+            pi->pi_Low[lows++] = (v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3];
         else if (strcmp(attr, "marker-colors") == 0 && colours < FP_SUPPLIES)
             text(pi->pi_Colour[colours++], sizeof(pi->pi_Colour[0]), v, vl);
     }
@@ -182,4 +185,83 @@ BOOL IPP_SavePicture(const struct PrinterInfo *pi, const char *path, const char 
     }
     FreeVec(buf);
     return ok;
+}
+
+LONG IPP_GetJobState(const char *uri, ULONG jobid, char *reasons, LONG max)
+{
+    UBYTE req[600], *p = req, *buf, *body;
+    LONG status, bodylen, i, state = -1;
+    const char *attr = "";
+    char url[300], current[48];
+
+    if (reasons && max)
+        reasons[0] = 0;
+    if (strlen(uri) > 256)
+        return -1;
+    *p++ = 1;
+    *p++ = 1;
+    *p++ = IPP_OP_GET_JOB_ATTRIBUTES >> 8;
+    *p++ = IPP_OP_GET_JOB_ATTRIBUTES & 0xff;
+    *p++ = 0; *p++ = 0; *p++ = 0; *p++ = 2;
+    *p++ = TAG_OPERATION_ATTRIBUTES;
+    p = put(p, TAG_CHARSET, "attributes-charset", "utf-8");
+    p = put(p, TAG_NATURAL_LANGUAGE, "attributes-natural-language", "en");
+    p = put(p, TAG_URI, "printer-uri", uri);
+    *p++ = TAG_INTEGER;
+    *p++ = 0;
+    *p++ = 6;
+    memcpy(p, "job-id", 6);
+    p += 6;
+    *p++ = 0;
+    *p++ = 4;
+    *p++ = jobid >> 24; *p++ = jobid >> 16; *p++ = jobid >> 8; *p++ = jobid;
+    p = put(p, TAG_KEYWORD, "requested-attributes", "job-state");
+    p = put(p, TAG_KEYWORD, "", "job-state-reasons");
+    *p++ = TAG_END_OF_ATTRIBUTES;
+
+    if (!(buf = AllocVec(REPLY_MAX, MEMF_ANY)))
+        return -1;
+    strcpy(url, uri);
+    status = HTTP_Request("POST", url, "application/ipp", req, p - req, buf, REPLY_MAX, &body, &bodylen, NULL, 0);
+    if (status != 200 || bodylen < 9) {
+        FreeVec(buf);
+        return -1;
+    }
+    if (((body[2] << 8) | body[3]) >= 0x0100) {
+        /* client-error-not-found: the printer has forgotten a finished job */
+        FreeVec(buf);
+        return ((body[2] << 8) | body[3]) == 0x0406 ? IPP_JOB_GONE : -1;
+    }
+    for (i = 8; i < bodylen;) {
+        UBYTE tag = body[i++];
+        LONG nl, vl;
+        const UBYTE *name, *v;
+
+        if (tag == TAG_END_OF_ATTRIBUTES)
+            break;
+        if (tag < 0x10)
+            continue;
+        if (i + 2 > bodylen)
+            break;
+        nl = (body[i] << 8) | body[i + 1];
+        name = body + i + 2;
+        i += 2 + nl;
+        if (i + 2 > bodylen)
+            break;
+        vl = (body[i] << 8) | body[i + 1];
+        v = body + i + 2;
+        i += 2 + vl;
+        if (i > bodylen)
+            break;
+        if (nl > 0) {
+            text(current, sizeof(current), name, nl);
+            attr = current;
+        }
+        if (strcmp(attr, "job-state") == 0 && vl == 4)
+            state = (v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3];
+        else if (strcmp(attr, "job-state-reasons") == 0 && reasons)
+            addValue(reasons, max, v, vl);
+    }
+    FreeVec(buf);
+    return state;
 }
