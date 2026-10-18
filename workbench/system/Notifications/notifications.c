@@ -2,22 +2,30 @@
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
     Desc: Notification server. Shows the pop-ups that application.library's
-          Notify() asks for, and takes the same requests over ARexx at the
-          RINGHIO port, so AmigaOS 4 scripts work unchanged.
+          Notify() asks for, keeps the notification log, and takes the same
+          requests over ARexx at the RINGHIO port, so AmigaOS 4 scripts work
+          unchanged. Settings come from Prefs/Notifications.
 */
 
 #include <aros/debug.h>
 #include <exec/memory.h>
+#include <exec/interrupts.h>
 #include <dos/dos.h>
 #include <dos/rdargs.h>
+#include <dos/notify.h>
+#include <dos/datetime.h>
 #include <devices/timer.h>
+#include <devices/input.h>
+#include <devices/inputevent.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <intuition/intuitionbase.h>
 #include <graphics/rastport.h>
 #include <datatypes/datatypes.h>
 #include <datatypes/pictureclass.h>
+#include <datatypes/soundclass.h>
 #include <cybergraphx/cybergraphics.h>
+#include <workbench/icon.h>
 #include <rexx/storage.h>
 #include <rexx/errors.h>
 #include <libraries/application.h>
@@ -27,51 +35,80 @@
 #include <proto/graphics.h>
 #include <proto/datatypes.h>
 #include <proto/cybergraphics.h>
+#include <proto/icon.h>
 #include <proto/rexxsyslib.h>
 #include <proto/application.h>
 #include <proto/openurl.h>
 #include <proto/utility.h>
+#include <proto/alib.h>
 
 #include <string.h>
 
 #include "../../libs/application/application_server.h"
+#include "notifyprefs.h"
 
-#define VERSTAG "\0$VER: Notifications 1.0 (18.10.2026)"
+#define VERSTAG "\0$VER: Notifications 1.1 (18.10.2026)"
 static const char version[] __attribute__((used)) = VERSTAG;
 
 #define REXX_PORTNAME   "RINGHIO"
-#define POPUP_WIDTH     320
 #define POPUP_PAD       8
 #define POPUP_GAP       6
 #define POPUP_MARGIN    16
 #define POPUP_IMAGE     32
+#define CLOSE_BOX       11
 #define TICK_MICROS     250000
-#define MAX_LINES       8
+#define TICKS_PER_SEC   (1000000 / TICK_MICROS)
+#define AWAY_SECS       60
+#define MAX_LINES       10
+#define MAX_QUEUED      32
+#define LOG_MAX         65536
+#define SOUND_SECS      30
 
 struct Library *ApplicationBase;
 struct Library *OpenURLBase;
 struct Library *CyberGfxBase;
 struct Library *DataTypesBase;
+struct Library *IconBase;
 struct RxsLib *RexxSysBase;
+
+/* One notification, waiting or shown. */
+struct Request
+{
+    ULONG   rq_AppID;
+    BOOL    rq_CloseOnDC;
+    BOOL    rq_ConfirmClose;
+    UBYTE   rq_VAlign;
+    UBYTE   rq_Pri;
+    TEXT    rq_AppName[APPNOTIFY_TITLE_MAX + 1];
+    TEXT    rq_Title[APPNOTIFY_TITLE_MAX + 1];
+    TEXT    rq_Text[APPNOTIFY_TEXT_MAX + 1];
+    TEXT    rq_Screen[NOTIFYSERVER_SCREENMAX];
+    TEXT    rq_Image[NOTIFYSERVER_PATHMAX];
+    TEXT    rq_Icon[NOTIFYSERVER_PATHMAX];
+    TEXT    rq_Sound[NOTIFYSERVER_PATHMAX];
+    TEXT    rq_BackMsg[NOTIFYSERVER_BACKMAX];
+    TEXT    rq_RexxPort[64];    /* BACKRXMSG goes here as an ARexx command */
+};
+
+struct Waiting
+{
+    struct MinNode  w_Node;
+    struct Request  w_Req;
+};
 
 struct Popup
 {
     struct MinNode   p_Node;
+    struct Request   p_Req;
     struct Window   *p_Window;
     struct Screen   *p_Screen;      /* locked while the pop-up is open */
     struct TextFont *p_Font;
-    ULONG            p_AppID;
-    LONG             p_TicksLeft;
-    BOOL             p_CloseOnDC;
+    LONG             p_TicksLeft;   /* < 0: stays until closed */
     ULONG            p_LastSecs, p_LastMicros;
-    ULONG           *p_ARGB;        /* image, POPUP_IMAGE x POPUP_IMAGE, or NULL */
+    ULONG           *p_ARGB;        /* image, at most POPUP_IMAGE square, or NULL */
     UWORD            p_ImgW, p_ImgH;
-    UBYTE            p_VAlign;
     UWORD            p_NumLines;
     UWORD            p_LineStart[MAX_LINES], p_LineLen[MAX_LINES];
-    TEXT             p_Title[APPNOTIFY_TITLE_MAX + 1];
-    TEXT             p_Text[APPNOTIFY_TEXT_MAX + 1];
-    TEXT             p_BackMsg[NOTIFYSERVER_BACKMAX];
 };
 
 /* Applications registered on behalf of ARexx scripts (REGISTERAPP). */
@@ -82,9 +119,34 @@ struct RexxApp
     TEXT           ra_Name[APPNOTIFY_TITLE_MAX + 1];
 };
 
-static struct MinList popups, rexxapps;
+struct Settings
+{
+    LONG    s_Position;
+    LONG    s_DisplayTime;
+    LONG    s_MaxVisible;
+    LONG    s_Width;
+    BOOL    s_HoldAway;
+    BOOL    s_DND;
+    BOOL    s_Beep;
+    BOOL    s_Sounds;
+    BOOL    s_Log;
+    TEXT    s_DefSound[NOTIFYSERVER_PATHMAX];
+};
+
+static struct MinList popups, waiting, rexxapps;
+static ULONG numwaiting;
 static struct TextAttr topaz8 = { "topaz.font", 8, FS_NORMAL, FPF_ROMFONT };
-static struct MsgPort *idcmpport;
+static struct MsgPort *idcmpport, *rexxport;
+static struct Settings set;
+static PrefsObject *prefs;          /* the server's own application prefs */
+static ULONG myappid;
+
+static Object *sound;
+static LONG soundticks;
+
+/* Input activity, counted by an input handler; read every tick. */
+static volatile ULONG inputcount;
+static ULONG lastinputcount, tickssinceinput;
 
 /***************************************************************************/
 
@@ -95,6 +157,109 @@ static void CopyStr(STRPTR dst, CONST_STRPTR src, ULONG size)
     strncpy(dst, src, size - 1);
     dst[size - 1] = '\0';
 }
+
+static void LoadSettings(void)
+{
+    static CONST_STRPTR positions[] = NPREFS_POSITIONS;
+    CONST_STRPTR s;
+
+    if (prefs && myappid)
+        ReadPrefs(prefs, READPREFS_AppID, myappid, TAG_DONE);
+
+    set.s_Position = DictGetOptionForKey(prefs, NPK_POSITION, positions, NDEF_POSITION);
+    set.s_DisplayTime = DictGetIntegerForKey(prefs, NPK_DISPLAYTIME, NDEF_DISPLAYTIME);
+    set.s_MaxVisible = DictGetIntegerForKey(prefs, NPK_MAXVISIBLE, NDEF_MAXVISIBLE);
+    set.s_Width = DictGetIntegerForKey(prefs, NPK_WIDTH, NDEF_WIDTH);
+    set.s_HoldAway = DictGetBoolForKey(prefs, NPK_HOLDAWAY, NDEF_HOLDAWAY);
+    set.s_DND = DictGetBoolForKey(prefs, NPK_DND, NDEF_DND);
+    set.s_Beep = DictGetBoolForKey(prefs, NPK_BEEP, NDEF_BEEP);
+    set.s_Sounds = DictGetBoolForKey(prefs, NPK_SOUNDS, NDEF_SOUNDS);
+    set.s_Log = DictGetBoolForKey(prefs, NPK_LOG, NDEF_LOG);
+    s = DictGetStringForKey(prefs, NPK_DEFSOUND, "");
+    CopyStr(set.s_DefSound, s, sizeof(set.s_DefSound));
+
+    if (set.s_DisplayTime < 0 || set.s_DisplayTime > NLIM_DISPLAYTIME)
+        set.s_DisplayTime = NDEF_DISPLAYTIME;
+    if (set.s_MaxVisible < 1 || set.s_MaxVisible > NLIM_MAXVISIBLE)
+        set.s_MaxVisible = NDEF_MAXVISIBLE;
+    if (set.s_Width < NLIM_WIDTHMIN || set.s_Width > NLIM_WIDTHMAX)
+        set.s_Width = NDEF_WIDTH;
+}
+
+/* Applications switched off in the preferences show nothing. */
+static BOOL AppAllowed(CONST_STRPTR name)
+{
+    return DictGetBoolForKey(DictGetObjectForKey(prefs, NPK_APPS), name, TRUE);
+}
+
+/***************************************************************************/
+
+static void LogRequest(struct Request *rq)
+{
+    struct DateTime dt;
+    TEXT date[LEN_DATSTRING], time[LEN_DATSTRING];
+    BPTR fh;
+
+    if (!set.s_Log)
+        return;
+
+    /* Keep the log small: start over, keeping one old generation. */
+    if ((fh = Open(NPREFS_LOGFILE, MODE_OLDFILE)))
+    {
+        LONG size;
+
+        Seek(fh, 0, OFFSET_END);
+        size = Seek(fh, 0, OFFSET_CURRENT);
+        Close(fh);
+        if (size > LOG_MAX)
+        {
+            DeleteFile(NPREFS_LOGFILE ".old");
+            Rename(NPREFS_LOGFILE, NPREFS_LOGFILE ".old");
+        }
+    }
+
+    memset(&dt, 0, sizeof(dt));
+    DateStamp(&dt.dat_Stamp);
+    dt.dat_Format = FORMAT_INT;
+    dt.dat_StrDate = date;
+    dt.dat_StrTime = time;
+    DateToStr(&dt);
+
+    if (!(fh = Open(NPREFS_LOGFILE, MODE_READWRITE)))
+        return;
+    Seek(fh, 0, OFFSET_END);
+    FPrintf(fh, "%s %s [%s] %s: %s\n", (IPTR)date, (IPTR)time, (IPTR)rq->rq_AppName,
+            (IPTR)rq->rq_Title, (IPTR)rq->rq_Text);
+    Close(fh);
+}
+
+static void StopSound(void)
+{
+    if (sound)
+    {
+        DisposeDTObject(sound);
+        sound = NULL;
+    }
+}
+
+static void PlaySound(CONST_STRPTR file)
+{
+    struct dtTrigger dtt;
+
+    if (!set.s_Sounds || !file || !*file || !DataTypesBase)
+        return;
+    StopSound();
+    if (!(sound = NewDTObject((APTR)file, DTA_GroupID, GID_SOUND, TAG_DONE)))
+        return;
+    dtt.MethodID = DTM_TRIGGER;
+    dtt.dtt_GInfo = NULL;
+    dtt.dtt_Function = STM_PLAY;
+    dtt.dtt_Data = NULL;
+    DoMethodA(sound, (Msg)&dtt);
+    soundticks = SOUND_SECS * TICKS_PER_SEC;
+}
+
+/***************************************************************************/
 
 /* "FRONT" is the frontmost screen if it is public, otherwise Workbench. */
 static struct Screen *LockTargetScreen(CONST_STRPTR name)
@@ -134,62 +299,127 @@ static struct Screen *LockTargetScreen(CONST_STRPTR name)
     return scr;
 }
 
-/* Load a picture as ARGB, scaled down to fit POPUP_IMAGE x POPUP_IMAGE. */
-static void LoadImage(struct Popup *p, CONST_STRPTR file)
+/* Keep an ARGB picture, scaled down to fit POPUP_IMAGE x POPUP_IMAGE. */
+static void KeepImage(struct Popup *p, CONST ULONG *src, UWORD w, UWORD h)
+{
+    UWORD x, y, ow = w, oh = h;
+
+    if (w > POPUP_IMAGE || h > POPUP_IMAGE)
+    {
+        /* keep the aspect ratio */
+        if (w >= h)
+        {
+            ow = POPUP_IMAGE;
+            oh = (h * POPUP_IMAGE) / w ? (h * POPUP_IMAGE) / w : 1;
+        }
+        else
+        {
+            oh = POPUP_IMAGE;
+            ow = (w * POPUP_IMAGE) / h ? (w * POPUP_IMAGE) / h : 1;
+        }
+    }
+    if ((p->p_ARGB = AllocVec(ow * oh * 4, MEMF_ANY)))
+    {
+        for (y = 0; y < oh; y++)
+            for (x = 0; x < ow; x++)
+                p->p_ARGB[y * ow + x] = src[(y * h / oh) * w + (x * w / ow)];
+        p->p_ImgW = ow;
+        p->p_ImgH = oh;
+    }
+}
+
+static BOOL LoadImage(struct Popup *p, CONST_STRPTR file)
 {
     struct BitMapHeader *bmh = NULL;
     ULONG *src;
     Object *o;
-    UWORD w, h, x, y, ow, oh;
 
     if (!file || !*file || !DataTypesBase)
-        return;
+        return FALSE;
 
     if (!(o = NewDTObject((APTR)file,
                           DTA_GroupID,      GID_PICTURE,
                           PDTA_DestMode,    PMODE_V43,
                           PDTA_Remap,       FALSE,
                           TAG_DONE)))
-        return;
+        return FALSE;
 
     if (GetDTAttrs(o, PDTA_BitMapHeader, (IPTR)&bmh, TAG_DONE) && bmh
         && bmh->bmh_Width && bmh->bmh_Height)
     {
-        w = bmh->bmh_Width;
-        h = bmh->bmh_Height;
+        UWORD w = bmh->bmh_Width, h = bmh->bmh_Height;
+
         if ((src = AllocVec(w * h * 4, MEMF_ANY)))
         {
             if (DoMethod(o, PDTM_READPIXELARRAY, (IPTR)src, PBPAFMT_ARGB, w * 4, 0, 0, w, h))
-            {
-                ow = w > POPUP_IMAGE ? POPUP_IMAGE : w;
-                oh = h > POPUP_IMAGE ? POPUP_IMAGE : h;
-                if (w > POPUP_IMAGE || h > POPUP_IMAGE)
-                {
-                    /* keep the aspect ratio */
-                    if (w >= h)
-                        oh = (h * POPUP_IMAGE) / w ? (h * POPUP_IMAGE) / w : 1;
-                    else
-                        ow = (w * POPUP_IMAGE) / h ? (w * POPUP_IMAGE) / h : 1;
-                }
-                if ((p->p_ARGB = AllocVec(ow * oh * 4, MEMF_ANY)))
-                {
-                    for (y = 0; y < oh; y++)
-                        for (x = 0; x < ow; x++)
-                            p->p_ARGB[y * ow + x] = src[(y * h / oh) * w + (x * w / ow)];
-                    p->p_ImgW = ow;
-                    p->p_ImgH = oh;
-                }
-            }
+                KeepImage(p, src, w, h);
             FreeVec(src);
         }
     }
     DisposeDTObject(o);
+    return p->p_ARGB != NULL;
+}
+
+/* A Workbench icon: its true-colour image, or its palette image. */
+static BOOL LoadIcon(struct Popup *p, CONST_STRPTR file)
+{
+    struct DiskObject *dobj;
+    TEXT name[NOTIFYSERVER_PATHMAX];
+    ULONG len, w = 0, h = 0, *argb = NULL;
+
+    if (!file || !*file || !IconBase)
+        return FALSE;
+    CopyStr(name, file, sizeof(name));
+    len = strlen(name);
+    if (len > 5 && Stricmp(name + len - 5, ".info") == 0)
+        name[len - 5] = '\0';
+
+    if (!(dobj = GetIconTags(name, ICONGETA_FailIfUnavailable, TRUE, TAG_DONE)))
+        return FALSE;
+
+    IconControl(dobj, ICONCTRLA_GetWidth, (IPTR)&w, ICONCTRLA_GetHeight, (IPTR)&h,
+                ICONCTRLA_GetARGBImageData1, (IPTR)&argb, TAG_DONE);
+    if (w && h && w <= 512 && h <= 512)
+    {
+        if (argb)
+            KeepImage(p, argb, w, h);
+        else
+        {
+            struct ColorRegister *pal = NULL;
+            UBYTE *pix = NULL;
+            LONG transp = -1, npal = 0;
+            ULONG *tmp, i;
+
+            IconControl(dobj, ICONCTRLA_GetImageData1, (IPTR)&pix, ICONCTRLA_GetPalette1, (IPTR)&pal,
+                        ICONCTRLA_GetPaletteSize1, (IPTR)&npal,
+                        ICONCTRLA_GetTransparentColor1, (IPTR)&transp, TAG_DONE);
+            if (pix && pal && (tmp = AllocVec(w * h * 4, MEMF_ANY)))
+            {
+                for (i = 0; i < w * h; i++)
+                {
+                    UBYTE *d = (UBYTE *)&tmp[i];
+                    UBYTE c = pix[i];
+
+                    if (c >= npal)
+                        c = 0;
+                    d[0] = (c == transp) ? 0 : 0xff;
+                    d[1] = pal[c].red;
+                    d[2] = pal[c].green;
+                    d[3] = pal[c].blue;
+                }
+                KeepImage(p, tmp, w, h);
+                FreeVec(tmp);
+            }
+        }
+    }
+    FreeDiskObject(dobj);
+    return p->p_ARGB != NULL;
 }
 
 /* Break the text into lines no wider than 'width' pixels. */
 static void WrapText(struct Popup *p, struct RastPort *rp, UWORD width)
 {
-    STRPTR t = p->p_Text;
+    STRPTR t = p->p_Req.rq_Text;
     UWORD start = 0, len = strlen(t);
 
     p->p_NumLines = 0;
@@ -207,6 +437,8 @@ static void WrapText(struct Popup *p, struct RastPort *rp, UWORD width)
         }
         if (end < len && t[end] != '\n' && lastspace > start)
             end = lastspace;
+        if (end == start)
+            end++;
 
         p->p_LineStart[p->p_NumLines] = start;
         p->p_LineLen[p->p_NumLines] = end - start;
@@ -216,6 +448,11 @@ static void WrapText(struct Popup *p, struct RastPort *rp, UWORD width)
         while (start < len && (t[start] == ' ' || t[start] == '\n'))
             start++;
     }
+}
+
+static BOOL Sticky(struct Popup *p)
+{
+    return p->p_TicksLeft < 0;
 }
 
 static void DrawPopup(struct Popup *p)
@@ -237,7 +474,8 @@ static void DrawPopup(struct Popup *p)
     SetAPen(rp, bg);
     RectFill(rp, 0, 0, w - 1, h - 1);
 
-    /* a raised frame with an accent line along the top */
+    /* a raised frame with an accent line along the top; urgent ones get
+       a thicker one */
     SetAPen(rp, shine);
     Move(rp, 0, h - 1);
     Draw(rp, 0, 0);
@@ -246,15 +484,32 @@ static void DrawPopup(struct Popup *p)
     Draw(rp, w - 1, h - 1);
     Draw(rp, 0, h - 1);
     SetAPen(rp, hl);
-    RectFill(rp, 1, 1, w - 2, 2);
+    RectFill(rp, 1, 1, w - 2, p->p_Req.rq_Pri > 8 ? 4 : 2);
+
+    if (Sticky(p))
+    {
+        UWORD cx = w - POPUP_PAD - CLOSE_BOX, cy = POPUP_PAD;
+
+        SetAPen(rp, shadow);
+        Move(rp, cx, cy);
+        Draw(rp, cx + CLOSE_BOX - 1, cy);
+        Draw(rp, cx + CLOSE_BOX - 1, cy + CLOSE_BOX - 1);
+        Draw(rp, cx, cy + CLOSE_BOX - 1);
+        Draw(rp, cx, cy);
+        SetAPen(rp, fg);
+        Move(rp, cx + 3, cy + 3);
+        Draw(rp, cx + CLOSE_BOX - 4, cy + CLOSE_BOX - 4);
+        Move(rp, cx + CLOSE_BOX - 4, cy + 3);
+        Draw(rp, cx + 3, cy + CLOSE_BOX - 4);
+    }
 
     if (p->p_ARGB && CyberGfxBase)
     {
         UWORD iy = POPUP_PAD + 2;
 
-        if (p->p_VAlign == 1)
+        if (p->p_Req.rq_VAlign == 1)
             iy = (h - p->p_ImgH) / 2;
-        else if (p->p_VAlign == 2)
+        else if (p->p_Req.rq_VAlign == 2)
             iy = h - POPUP_PAD - p->p_ImgH;
         WritePixelArrayAlpha(p->p_ARGB, 0, 0, p->p_ImgW * 4, rp,
                              POPUP_PAD + (POPUP_IMAGE - p->p_ImgW) / 2, iy,
@@ -264,18 +519,18 @@ static void DrawPopup(struct Popup *p)
 
     ty = POPUP_PAD + 2 + p->p_Font->tf_Baseline;
     SetAPen(rp, fg);
-    if (p->p_Title[0])
+    if (p->p_Req.rq_Title[0])
     {
         SetSoftStyle(rp, FSF_BOLD, AskSoftStyle(rp));
         Move(rp, tx, ty);
-        Text(rp, p->p_Title, strlen(p->p_Title));
+        Text(rp, p->p_Req.rq_Title, strlen(p->p_Req.rq_Title));
         SetSoftStyle(rp, FS_NORMAL, AskSoftStyle(rp));
         ty += p->p_Font->tf_YSize + 4;
     }
     for (i = 0; i < p->p_NumLines; i++)
     {
         Move(rp, tx, ty);
-        Text(rp, p->p_Text + p->p_LineStart[i], p->p_LineLen[i]);
+        Text(rp, p->p_Req.rq_Text + p->p_LineStart[i], p->p_LineLen[i]);
         ty += p->p_Font->tf_YSize;
     }
 
@@ -283,32 +538,48 @@ static void DrawPopup(struct Popup *p)
         FreeScreenDrawInfo(p->p_Screen, dri);
 }
 
-/* Stack the pop-ups of each screen up from its bottom right corner. */
+/* Stack the pop-ups of each screen away from the chosen corner, the
+   newest nearest to it. */
 static void Restack(void)
 {
+    BOOL top = (set.s_Position == NPOS_TOPRIGHT || set.s_Position == NPOS_TOPLEFT);
+    BOOL left = (set.s_Position == NPOS_BOTTOMLEFT || set.s_Position == NPOS_TOPLEFT);
     struct Popup *p, *q;
 
     ForeachNode(&popups, p)
     {
-        LONG bottom = p->p_Screen->Height - POPUP_MARGIN;
+        struct Screen *s = p->p_Screen;
+        struct Window *w = p->p_Window;
+        LONG offset = 0, y, x;
+        LONG minY = s->BarHeight + 1;
 
         ForeachNode(&popups, q)
         {
             if (q == p)
                 break;
-            if (q->p_Screen == p->p_Screen)
-                bottom -= q->p_Window->Height + POPUP_GAP;
+            if (q->p_Screen == s)
+                offset += q->p_Window->Height + POPUP_GAP;
         }
-        if (bottom - p->p_Window->Height < p->p_Screen->BarHeight + 1)
-            bottom = p->p_Screen->BarHeight + 1 + p->p_Window->Height;
-        if (p->p_Window->TopEdge != bottom - p->p_Window->Height)
-            ChangeWindowBox(p->p_Window, p->p_Window->LeftEdge, bottom - p->p_Window->Height,
-                            p->p_Window->Width, p->p_Window->Height);
+        if (top)
+            y = minY + POPUP_MARGIN / 2 + offset;
+        else
+            y = s->Height - POPUP_MARGIN - offset - w->Height;
+        if (y < minY)
+            y = minY;
+        if (y + w->Height > s->Height)
+            y = s->Height - w->Height;
+        x = left ? POPUP_MARGIN : s->Width - w->Width - POPUP_MARGIN;
+        if (x < 0)
+            x = 0;
+        if (w->TopEdge != y || w->LeftEdge != x)
+            ChangeWindowBox(w, x, y, w->Width, w->Height);
     }
 }
 
+static void ShowWaiting(void);
+
 /* CloseWindow() on a window sharing a port: drop its messages first. */
-static void ClosePopup(struct Popup *p)
+static void ClosePopup(struct Popup *p, BOOL next)
 {
     struct IntuiMessage *im;
     struct Node *succ;
@@ -330,6 +601,15 @@ static void ClosePopup(struct Popup *p)
     ModifyIDCMP(p->p_Window, 0);
     Permit();
 
+    if (p->p_Req.rq_ConfirmClose && p->p_Req.rq_AppID && ApplicationBase)
+    {
+        struct ApplicationCustomMsg acm;
+
+        memset(&acm, 0, sizeof(acm));
+        acm.customMsg = p->p_Req.rq_BackMsg[0] ? p->p_Req.rq_BackMsg : NULL;
+        SendApplicationMsg(myappid, p->p_Req.rq_AppID, &acm.almsg, APPLIBMT_ConfirmClose);
+    }
+
     CloseWindow(p->p_Window);
     CloseFont(p->p_Font);
     UnlockPubScreen(NULL, p->p_Screen);
@@ -337,66 +617,83 @@ static void ClosePopup(struct Popup *p)
     FreeVec(p);
 
     Restack();
+    if (next)
+        ShowWaiting();
 }
 
-static LONG ShowPopup(ULONG appID, CONST_STRPTR title, CONST_STRPTR text, CONST_STRPTR screen,
-                      CONST_STRPTR image, UBYTE valign, CONST_STRPTR backmsg, BOOL closeondc)
+static ULONG NumShown(void)
+{
+    struct Popup *p;
+    ULONG n = 0;
+
+    ForeachNode(&popups, p)
+        n++;
+    return n;
+}
+
+static ULONG OpenPopup(struct Request *rq)
 {
     struct Popup *p;
     struct RastPort tmprp;
-    UWORD textw, h, minh, len;
+    UWORD textw, h, minh, len, width = set.s_Width;
 
-    if (!text || !*text)
-        return 0;
     if (!(p = AllocVec(sizeof(*p), MEMF_ANY | MEMF_CLEAR)))
-        return 0;
+        return APPNOTIFY_ERROR_OUTOFMEM;
+    p->p_Req = *rq;
 
-    CopyStr(p->p_Title, title, sizeof(p->p_Title));
-    CopyStr(p->p_Text, text, sizeof(p->p_Text));
-    CopyStr(p->p_BackMsg, backmsg, sizeof(p->p_BackMsg));
-    p->p_AppID = appID;
-    p->p_CloseOnDC = closeondc;
-    p->p_VAlign = valign;
-
-    if (!(p->p_Screen = LockTargetScreen(screen)))
+    if (!(p->p_Screen = LockTargetScreen(rq->rq_Screen)))
     {
         FreeVec(p);
-        return 0;
+        return APPNOTIFY_ERROR_GENERIC;
     }
     if (!(p->p_Font = OpenFont(p->p_Screen->Font)))
         p->p_Font = OpenFont(&topaz8);
-
     if (!p->p_Font)
     {
         UnlockPubScreen(NULL, p->p_Screen);
         FreeVec(p);
-        return 0;
+        return APPNOTIFY_ERROR_GENERIC;
     }
 
-    LoadImage(p, image);
+    if (!LoadImage(p, rq->rq_Image) && !LoadIcon(p, rq->rq_Icon))
+        LoadImage(p, rq->rq_Icon);
 
-    textw = POPUP_WIDTH - 2 * POPUP_PAD - (p->p_ARGB ? POPUP_IMAGE + POPUP_PAD : 0);
+    if (width > p->p_Screen->Width - 2 * POPUP_MARGIN)
+        width = p->p_Screen->Width - 2 * POPUP_MARGIN;
+    textw = width - 2 * POPUP_PAD - (p->p_ARGB ? POPUP_IMAGE + POPUP_PAD : 0);
+    if (rq->rq_Pri >= 10)
+        p->p_TicksLeft = -1;
     InitRastPort(&tmprp);
     SetFont(&tmprp, p->p_Font);
     WrapText(p, &tmprp, textw);
 
-    h = POPUP_PAD + 2 + POPUP_PAD + (p->p_Title[0] ? p->p_Font->tf_YSize + 4 : 0)
+    h = POPUP_PAD + 2 + POPUP_PAD + (rq->rq_Title[0] ? p->p_Font->tf_YSize + 4 : 0)
         + p->p_NumLines * p->p_Font->tf_YSize;
     minh = 2 * POPUP_PAD + 2 + (p->p_ARGB ? POPUP_IMAGE : 0);
+    if (Sticky(p) && minh < 2 * POPUP_PAD + CLOSE_BOX)
+        minh = 2 * POPUP_PAD + CLOSE_BOX;
     if (h < minh)
         h = minh;
 
-    /* Long texts stay up longer: 4 s, plus 1 s per 20 characters, up to 10 s. */
-    len = strlen(p->p_Text) + strlen(p->p_Title);
-    p->p_TicksLeft = (4 + len / 20) * (1000000 / TICK_MICROS);
-    if (p->p_TicksLeft > 10 * (1000000 / TICK_MICROS))
-        p->p_TicksLeft = 10 * (1000000 / TICK_MICROS);
+    if (!Sticky(p))
+    {
+        if (set.s_DisplayTime)
+            p->p_TicksLeft = set.s_DisplayTime * TICKS_PER_SEC;
+        else
+        {
+            /* Long texts stay up longer: 4 s, plus 1 s per 20 characters, up to 10 s. */
+            len = strlen(rq->rq_Text) + strlen(rq->rq_Title);
+            p->p_TicksLeft = (4 + len / 20) * TICKS_PER_SEC;
+            if (p->p_TicksLeft > 10 * TICKS_PER_SEC)
+                p->p_TicksLeft = 10 * TICKS_PER_SEC;
+        }
+    }
 
     p->p_Window = OpenWindowTags(NULL,
                                  WA_PubScreen,   (IPTR)p->p_Screen,
-                                 WA_Left,        p->p_Screen->Width - POPUP_WIDTH - POPUP_MARGIN,
+                                 WA_Left,        p->p_Screen->Width - width - POPUP_MARGIN,
                                  WA_Top,         p->p_Screen->Height - POPUP_MARGIN - h,
-                                 WA_Width,       POPUP_WIDTH,
+                                 WA_Width,       width,
                                  WA_Height,      h,
                                  WA_Borderless,  TRUE,
                                  WA_Activate,    FALSE,
@@ -404,7 +701,7 @@ static LONG ShowPopup(ULONG appID, CONST_STRPTR title, CONST_STRPTR text, CONST_
                                  WA_RMBTrap,     TRUE,
                                  WA_SmartRefresh, TRUE,
                                  WA_NoCareRefresh, TRUE,
-                                 WA_Title,       (IPTR)p->p_Title,
+                                 WA_Title,       (IPTR)p->p_Req.rq_Title,
                                  TAG_DONE);
     if (!p->p_Window)
     {
@@ -412,7 +709,7 @@ static LONG ShowPopup(ULONG appID, CONST_STRPTR title, CONST_STRPTR text, CONST_
         UnlockPubScreen(NULL, p->p_Screen);
         FreeVec(p->p_ARGB);
         FreeVec(p);
-        return 0;
+        return APPNOTIFY_ERROR_GENERIC;
     }
 
     p->p_Window->UserPort = idcmpport;
@@ -421,29 +718,134 @@ static LONG ShowPopup(ULONG appID, CONST_STRPTR title, CONST_STRPTR text, CONST_
     ADDHEAD((struct List *)&popups, p);
     DrawPopup(p);
     Restack();
-    return 1;
+
+    if (rq->rq_Pri > 8 && set.s_Beep)
+        DisplayBeep(p->p_Screen);
+    PlaySound(rq->rq_Sound[0] ? rq->rq_Sound : set.s_DefSound);
+    return APPNOTIFY_OK_MSGQUEUED;
+}
+
+static void ShowWaiting(void)
+{
+    struct Waiting *w;
+
+    while (NumShown() < (ULONG)set.s_MaxVisible
+           && (w = (struct Waiting *)REMHEAD((struct List *)&waiting)))
+    {
+        numwaiting--;
+        OpenPopup(&w->w_Req);
+        FreeVec(w);
+    }
+}
+
+/* APPNOTIFY_Update: this application's earlier notifications go; with
+   backmsg, only those with that BackMsg (APPNOTIFY_Withdraw). */
+static void DropAppNotifications(ULONG appID, CONST_STRPTR backmsg)
+{
+    struct Popup *p, *pn;
+    struct Waiting *w, *wn;
+
+    ForeachNodeSafe(&waiting, w, wn)
+    {
+        if (w->w_Req.rq_AppID == appID && (!backmsg || strcmp(w->w_Req.rq_BackMsg, backmsg) == 0))
+        {
+            REMOVE(w);
+            FreeVec(w);
+            numwaiting--;
+        }
+    }
+    ForeachNodeSafe(&popups, p, pn)
+    {
+        if (p->p_Req.rq_AppID == appID && (!backmsg || strcmp(p->p_Req.rq_BackMsg, backmsg) == 0))
+            ClosePopup(p, FALSE);
+    }
+}
+
+/* Log a notification, then show it, queue it, or leave it in the log only. */
+static ULONG Deliver(struct Request *rq, BOOL update, BOOL logonly)
+{
+    struct Waiting *w;
+
+    LogRequest(rq);
+    if (logonly)
+        return APPNOTIFY_OK_MSGQUEUED;
+    if (!AppAllowed(rq->rq_AppName))
+        return APPNOTIFY_ERROR_APPNOTALLOWED;
+    if (update)
+        DropAppNotifications(rq->rq_AppID, NULL);
+    if (set.s_DND && rq->rq_Pri < 10)
+        return APPNOTIFY_OK_MSGQUEUED;
+
+    if (NumShown() < (ULONG)set.s_MaxVisible)
+        return OpenPopup(rq);
+
+    if (numwaiting >= MAX_QUEUED)
+        return APPNOTIFY_ERROR_TOOMANYMESSAGESQUEUED;
+    if (!(w = AllocVec(sizeof(*w), MEMF_ANY)))
+        return APPNOTIFY_ERROR_OUTOFMEM;
+    w->w_Req = *rq;
+    ADDTAIL((struct List *)&waiting, w);
+    numwaiting++;
+    return APPNOTIFY_OK_MSGQUEUED;
+}
+
+/***************************************************************************/
+
+static void SendRexxBack(CONST_STRPTR portname, CONST_STRPTR command)
+{
+    struct MsgPort *port;
+    struct RexxMsg *rm;
+
+    if (!RexxSysBase || !rexxport || !(rm = CreateRexxMsg(rexxport, NULL, NULL)))
+        return;
+    if (!(rm->rm_Args[0] = (IPTR)CreateArgstring((STRPTR)command, strlen(command))))
+    {
+        DeleteRexxMsg(rm);
+        return;
+    }
+    rm->rm_Action = RXCOMM;
+    Forbid();
+    if ((port = FindPort(portname)))
+        PutMsg(port, &rm->rm_Node);
+    Permit();
+    if (!port)
+    {
+        DeleteArgstring((UBYTE *)rm->rm_Args[0]);
+        DeleteRexxMsg(rm);
+    }
 }
 
 static void DoubleClicked(struct Popup *p)
 {
-    if (p->p_BackMsg[0])
+    struct Request *rq = &p->p_Req;
+
+    if (rq->rq_BackMsg[0])
     {
-        if (Strnicmp(p->p_BackMsg, "URL:", 4) == 0)
+        if (rq->rq_RexxPort[0])
+            SendRexxBack(rq->rq_RexxPort, rq->rq_BackMsg);
+        else if (Strnicmp(rq->rq_BackMsg, "URL:", 4) == 0)
         {
             if (OpenURLBase)
-                URL_OpenA(p->p_BackMsg + 4, NULL);
+                URL_OpenA(rq->rq_BackMsg + 4, NULL);
         }
-        else if (p->p_AppID && ApplicationBase)
+        else if (rq->rq_AppID && ApplicationBase)
         {
             struct ApplicationCustomMsg acm;
 
             memset(&acm, 0, sizeof(acm));
-            acm.customMsg = p->p_BackMsg;
-            SendApplicationMsg(0, p->p_AppID, &acm.almsg, APPLIBMT_CustomMsg);
+            acm.customMsg = rq->rq_BackMsg;
+            SendApplicationMsg(myappid, rq->rq_AppID, &acm.almsg, APPLIBMT_CustomMsg);
         }
     }
-    if (p->p_CloseOnDC)
-        ClosePopup(p);
+    if (rq->rq_CloseOnDC)
+        ClosePopup(p, TRUE);
+}
+
+static BOOL InCloseBox(struct Popup *p, WORD x, WORD y)
+{
+    WORD cx = p->p_Window->Width - POPUP_PAD - CLOSE_BOX;
+
+    return Sticky(p) && x >= cx && x < cx + CLOSE_BOX && y >= POPUP_PAD && y < POPUP_PAD + CLOSE_BOX;
 }
 
 static void HandleIDCMP(void)
@@ -455,6 +857,7 @@ static void HandleIDCMP(void)
         struct Window *win = im->IDCMPWindow;
         ULONG class = im->Class;
         UWORD code = im->Code;
+        WORD mx = im->MouseX, my = im->MouseY;
         ULONG secs = im->Seconds, micros = im->Micros;
         struct Popup *p, *hit = NULL;
 
@@ -472,10 +875,12 @@ static void HandleIDCMP(void)
             continue;
 
         if (code == MENUDOWN)
-            ClosePopup(hit);
+            ClosePopup(hit, TRUE);
         else if (code == SELECTDOWN)
         {
-            if (DoubleClick(hit->p_LastSecs, hit->p_LastMicros, secs, micros))
+            if (InCloseBox(hit, mx, my))
+                ClosePopup(hit, TRUE);
+            else if (DoubleClick(hit->p_LastSecs, hit->p_LastMicros, secs, micros))
             {
                 hit->p_LastSecs = hit->p_LastMicros = 0;
                 DoubleClicked(hit);
@@ -502,35 +907,89 @@ static BOOL PointerOver(struct Popup *p)
 static void Tick(void)
 {
     struct Popup *p, *next;
+    ULONG count = inputcount;
+    BOOL away;
+
+    if (count != lastinputcount)
+    {
+        lastinputcount = count;
+        tickssinceinput = 0;
+    }
+    else if (tickssinceinput < AWAY_SECS * TICKS_PER_SEC)
+        tickssinceinput++;
+    away = set.s_HoldAway && tickssinceinput >= AWAY_SECS * TICKS_PER_SEC;
 
     ForeachNodeSafe(&popups, p, next)
     {
+        if (Sticky(p))
+            continue;
         if (PointerOver(p))
         {
-            if (p->p_TicksLeft < 2 * (1000000 / TICK_MICROS))
-                p->p_TicksLeft = 2 * (1000000 / TICK_MICROS);
+            if (p->p_TicksLeft < 2 * TICKS_PER_SEC)
+                p->p_TicksLeft = 2 * TICKS_PER_SEC;
         }
-        else if (--p->p_TicksLeft <= 0)
-            ClosePopup(p);
+        else if (!away && --p->p_TicksLeft <= 0)
+            ClosePopup(p, TRUE);
     }
+
+    if (sound && --soundticks <= 0)
+        StopSound();
+}
+
+AROS_UFH2(struct InputEvent *, InputWatch,
+          AROS_UFHA(struct InputEvent *, events, A0),
+          AROS_UFHA(APTR, data, A1))
+{
+    AROS_USERFUNC_INIT
+
+    struct InputEvent *ie;
+
+    (void)data;
+    for (ie = events; ie; ie = ie->ie_NextEvent)
+    {
+        if (ie->ie_Class == IECLASS_RAWKEY || ie->ie_Class == IECLASS_RAWMOUSE
+            || ie->ie_Class == IECLASS_NEWPOINTERPOS)
+        {
+            inputcount++;
+            break;
+        }
+    }
+    return events;
+
+    AROS_USERFUNC_EXIT
 }
 
 /***************************************************************************
- * ARexx: REGISTERAPP APP=name
- *        RINGHIO APP=name [SCREEN=pub] [TITLE=t] [IMG=file] [IMGVALIGN=n]
- *                [CLOSEONDC] [BACKMSG=msg] TEXT=rest of the line
+ * ARexx, as the AmigaOS 4 notification server takes it:
+ *   REGISTERAPP APP/K/A,UPDATE/S,IMG/K,ICON/K,TITLE/K,TEXT/F
+ *   NOTIFY APP/K/A,UPDATE/S,CLOSEONDC/S,PRI/K/N,SCREEN/K,IMG/K,ICON/K,
+ *          IMGVALIGN/K/N,LOGONLY/S,TITLE/K,AREXXPORT/K,BACKRXMSG/K,TEXT/F
+ *   UNREGISTERAPP APP/K/A
+ * and RINGHIO, the older form some scripts use:
+ *   RINGHIO APP/K/A,SCREEN/K,TITLE/K,IMG/K,IMGVALIGN/K/N,CLOSEONDC/S,
+ *           BACKMSG/K,TEXT/K/F
+ * RC is 0, or 10 with the APPNOTIFY_ code in RC2.
  ***************************************************************************/
+
+static struct RexxApp *FindRexxApp(CONST_STRPTR name)
+{
+    struct RexxApp *ra;
+
+    ForeachNode(&rexxapps, ra)
+    {
+        if (Stricmp(ra->ra_Name, name) == 0)
+            return ra;
+    }
+    return NULL;
+}
 
 static ULONG RexxAppID(CONST_STRPTR name, BOOL create)
 {
     struct RexxApp *ra;
     ULONG id;
 
-    ForeachNode(&rexxapps, ra)
-    {
-        if (Stricmp(ra->ra_Name, name) == 0)
-            return ra->ra_AppID;
-    }
+    if ((ra = FindRexxApp(name)))
+        return ra->ra_AppID;
     if (!ApplicationBase)
         return 0;
     if ((id = FindApplication(FINDAPP_Name, (IPTR)name, TAG_DONE)) || !create)
@@ -538,7 +997,8 @@ static ULONG RexxAppID(CONST_STRPTR name, BOOL create)
 
     if (!(ra = AllocVec(sizeof(*ra), MEMF_ANY | MEMF_CLEAR)))
         return 0;
-    if (!(ra->ra_AppID = RegisterApplication(name, REGAPP_Description, (IPTR)"ARexx script", TAG_DONE)))
+    if (!(ra->ra_AppID = RegisterApplication(name, REGAPP_Description, (IPTR)"ARexx script",
+                                             REGAPP_NoIcon, TRUE, TAG_DONE)))
     {
         FreeVec(ra);
         return 0;
@@ -548,14 +1008,25 @@ static ULONG RexxAppID(CONST_STRPTR name, BOOL create)
     return ra->ra_AppID;
 }
 
-static LONG RexxCommand(STRPTR line)
+static void RexxRequest(struct Request *rq, ULONG id, CONST_STRPTR app, CONST_STRPTR title,
+                        CONST_STRPTR text)
+{
+    memset(rq, 0, sizeof(*rq));
+    rq->rq_AppID = id;
+    CopyStr(rq->rq_AppName, app, sizeof(rq->rq_AppName));
+    CopyStr(rq->rq_Title, title ? title : app, sizeof(rq->rq_Title));
+    CopyStr(rq->rq_Text, text, sizeof(rq->rq_Text));
+}
+
+static ULONG RexxCommand(STRPTR line)
 {
     struct RDArgs *rda;
-    STRPTR args;
+    struct Request rq;
+    STRPTR args, buf;
     TEXT cmd[16];
     UWORD i = 0;
-    LONG rc = RC_ERROR;
-    IPTR a[8];
+    ULONG alen, res = APPNOTIFY_ERROR_TAGS;
+    IPTR a[13];
 
     while (*line == ' ' || *line == '\t')
         line++;
@@ -568,53 +1039,119 @@ static LONG RexxCommand(STRPTR line)
     args = line + i;
 
     if (!(rda = AllocDosObject(DOS_RDARGS, NULL)))
-        return RC_FATAL;
+        return APPNOTIFY_ERROR_OUTOFMEM;
 
     /* ReadArgs() wants the line to end in a newline. */
+    alen = strlen(args);
+    if (!(buf = AllocVec(alen + 2, MEMF_ANY)))
     {
-        ULONG alen = strlen(args);
-        STRPTR buf = AllocVec(alen + 2, MEMF_ANY);
-
-        if (!buf)
-        {
-            FreeDosObject(DOS_RDARGS, rda);
-            return RC_FATAL;
-        }
-        CopyMem(args, buf, alen);
-        buf[alen] = '\n';
-        buf[alen + 1] = '\0';
-        rda->RDA_Source.CS_Buffer = buf;
-        rda->RDA_Source.CS_Length = alen + 1;
-        rda->RDA_Source.CS_CurChr = 0;
-        rda->RDA_Flags |= RDAF_NOPROMPT;
-        memset(a, 0, sizeof(a));
-
-        if (Stricmp(cmd, "REGISTERAPP") == 0)
-        {
-            if (ReadArgs("APP/A", a, rda))
-            {
-                rc = RexxAppID((STRPTR)a[0], TRUE) ? RC_OK : RC_ERROR;
-                FreeArgs(rda);
-            }
-        }
-        else if (Stricmp(cmd, "RINGHIO") == 0)
-        {
-            if (ReadArgs("APP/A,SCREEN/K,TITLE/K,IMG/K,IMGVALIGN/K/N,CLOSEONDC/S,BACKMSG/K,TEXT/K/F",
-                         a, rda))
-            {
-                ULONG id = RexxAppID((STRPTR)a[0], TRUE);
-                UBYTE valign = a[4] ? *(LONG *)a[4] : 0;
-
-                if (id && ShowPopup(id, a[2] ? (STRPTR)a[2] : (STRPTR)a[0], (STRPTR)a[7],
-                                    (STRPTR)a[1], (STRPTR)a[3], valign, (STRPTR)a[6], a[5] != 0))
-                    rc = RC_OK;
-                FreeArgs(rda);
-            }
-        }
-        FreeVec(buf);
+        FreeDosObject(DOS_RDARGS, rda);
+        return APPNOTIFY_ERROR_OUTOFMEM;
     }
+    CopyMem(args, buf, alen);
+    buf[alen] = '\n';
+    buf[alen + 1] = '\0';
+    rda->RDA_Source.CS_Buffer = buf;
+    rda->RDA_Source.CS_Length = alen + 1;
+    rda->RDA_Source.CS_CurChr = 0;
+    rda->RDA_Flags |= RDAF_NOPROMPT;
+    memset(a, 0, sizeof(a));
+
+    if (Stricmp(cmd, "REGISTERAPP") == 0)
+    {
+        if (ReadArgs("APP/K/A,UPDATE/S,IMG/K,ICON/K,TITLE/K,TEXT/F", a, rda))
+        {
+            ULONG id = RexxAppID((STRPTR)a[0], TRUE);
+
+            if (!id)
+                res = APPNOTIFY_ERROR_GENERIC;
+            else if (a[5] && *(STRPTR)a[5])
+            {
+                RexxRequest(&rq, id, (STRPTR)a[0], (STRPTR)a[4], (STRPTR)a[5]);
+                CopyStr(rq.rq_Image, (STRPTR)a[2], sizeof(rq.rq_Image));
+                CopyStr(rq.rq_Icon, (STRPTR)a[3], sizeof(rq.rq_Icon));
+                res = Deliver(&rq, a[1] != 0, FALSE);
+            }
+            else
+                res = APPNOTIFY_OK_MSGQUEUED;
+            FreeArgs(rda);
+        }
+    }
+    else if (Stricmp(cmd, "UNREGISTERAPP") == 0)
+    {
+        if (ReadArgs("APP/K/A", a, rda))
+        {
+            struct RexxApp *ra = FindRexxApp((STRPTR)a[0]);
+
+            if (ra)
+            {
+                DropAppNotifications(ra->ra_AppID, NULL);
+                REMOVE(ra);
+                UnregisterApplication(ra->ra_AppID, NULL);
+                FreeVec(ra);
+                res = APPNOTIFY_OK_MSGQUEUED;
+            }
+            else
+                res = APPNOTIFY_ERROR_APPNOTREGISTERED;
+            FreeArgs(rda);
+        }
+    }
+    else if (Stricmp(cmd, "NOTIFY") == 0)
+    {
+        if (ReadArgs("APP/K/A,UPDATE/S,CLOSEONDC/S,PRI/K/N,SCREEN/K,IMG/K,ICON/K,IMGVALIGN/K/N,"
+                     "LOGONLY/S,TITLE/K,AREXXPORT/K,BACKRXMSG/K,TEXT/F", a, rda))
+        {
+            ULONG id = RexxAppID((STRPTR)a[0], FALSE);
+
+            if (!id)
+                res = APPNOTIFY_ERROR_APPNOTREGISTERED;
+            else
+            {
+                LONG pri = a[3] ? *(LONG *)a[3] : 0;
+
+                RexxRequest(&rq, id, (STRPTR)a[0], (STRPTR)a[9], (STRPTR)a[12]);
+                rq.rq_CloseOnDC = a[2] != 0;
+                rq.rq_Pri = pri < 0 ? 0 : (pri > 10 ? 10 : pri);
+                rq.rq_VAlign = a[7] ? *(LONG *)a[7] : 0;
+                CopyStr(rq.rq_Screen, (STRPTR)a[4], sizeof(rq.rq_Screen));
+                CopyStr(rq.rq_Image, (STRPTR)a[5], sizeof(rq.rq_Image));
+                CopyStr(rq.rq_Icon, (STRPTR)a[6], sizeof(rq.rq_Icon));
+                CopyStr(rq.rq_RexxPort, (STRPTR)a[10], sizeof(rq.rq_RexxPort));
+                CopyStr(rq.rq_BackMsg, (STRPTR)a[11], sizeof(rq.rq_BackMsg));
+                res = (rq.rq_Text[0] || rq.rq_Title[0]) ? Deliver(&rq, a[1] != 0, a[8] != 0)
+                                                        : APPNOTIFY_ERROR_TAGS;
+            }
+            FreeArgs(rda);
+        }
+    }
+    else if (Stricmp(cmd, "RINGHIO") == 0)
+    {
+        if (ReadArgs("APP/K/A,SCREEN/K,TITLE/K,IMG/K,IMGVALIGN/K/N,CLOSEONDC/S,BACKMSG/K,TEXT/K/F",
+                     a, rda))
+        {
+            ULONG id = RexxAppID((STRPTR)a[0], TRUE);
+
+            if (!id)
+                res = APPNOTIFY_ERROR_GENERIC;
+            else if (a[7] && *(STRPTR)a[7])
+            {
+                RexxRequest(&rq, id, (STRPTR)a[0], (STRPTR)a[2], (STRPTR)a[7]);
+                rq.rq_CloseOnDC = a[5] != 0;
+                rq.rq_VAlign = a[4] ? *(LONG *)a[4] : 0;
+                CopyStr(rq.rq_Screen, (STRPTR)a[1], sizeof(rq.rq_Screen));
+                CopyStr(rq.rq_Image, (STRPTR)a[3], sizeof(rq.rq_Image));
+                CopyStr(rq.rq_BackMsg, (STRPTR)a[6], sizeof(rq.rq_BackMsg));
+                res = Deliver(&rq, FALSE, FALSE);
+            }
+            FreeArgs(rda);
+        }
+    }
+    else
+        res = APPNOTIFY_ERROR_GENERIC;
+
+    FreeVec(buf);
     FreeDosObject(DOS_RDARGS, rda);
-    return rc;
+    return res;
 }
 
 static void HandleRexx(struct MsgPort *port)
@@ -623,11 +1160,22 @@ static void HandleRexx(struct MsgPort *port)
 
     while ((rm = (struct RexxMsg *)GetMsg(port)))
     {
+        ULONG res;
+
+        if (rm->rm_Node.mn_Node.ln_Type == NT_REPLYMSG)
+        {
+            /* a BACKRXMSG we sent */
+            DeleteArgstring((UBYTE *)rm->rm_Args[0]);
+            DeleteRexxMsg(rm);
+            continue;
+        }
+
         if (IsRexxMsg(rm) && (rm->rm_Action & RXCODEMASK) == RXCOMM && rm->rm_Args[0])
-            rm->rm_Result1 = RexxCommand((STRPTR)rm->rm_Args[0]);
+            res = RexxCommand((STRPTR)rm->rm_Args[0]);
         else
-            rm->rm_Result1 = RC_ERROR;
-        rm->rm_Result2 = 0;
+            res = APPNOTIFY_ERROR_GENERIC;
+        rm->rm_Result1 = res ? RC_ERROR : RC_OK;
+        rm->rm_Result2 = res;
         ReplyMsg(&rm->rm_Node);
     }
 }
@@ -637,18 +1185,72 @@ static void HandleRexx(struct MsgPort *port)
 static void HandleRequests(struct MsgPort *port)
 {
     struct NotifyServerMsg *nsm;
+    struct Request rq;
 
     while ((nsm = (struct NotifyServerMsg *)GetMsg(port)))
     {
         if (nsm->nsm_Version == NOTIFYSERVER_VERSION)
-            nsm->nsm_Result = ShowPopup(nsm->nsm_AppID, nsm->nsm_Title, nsm->nsm_Text,
-                                        nsm->nsm_PubScreen, nsm->nsm_ImageFile,
-                                        nsm->nsm_ImageVertAlign, nsm->nsm_BackMsg,
-                                        nsm->nsm_CloseOnDC);
+        {
+            memset(&rq, 0, sizeof(rq));
+            rq.rq_AppID = nsm->nsm_AppID;
+            rq.rq_CloseOnDC = nsm->nsm_CloseOnDC;
+            rq.rq_ConfirmClose = nsm->nsm_ConfirmClose;
+            rq.rq_VAlign = nsm->nsm_ImageVertAlign;
+            rq.rq_Pri = nsm->nsm_Pri;
+            CopyStr(rq.rq_AppName, nsm->nsm_AppName, sizeof(rq.rq_AppName));
+            CopyStr(rq.rq_Title, nsm->nsm_Title, sizeof(rq.rq_Title));
+            CopyStr(rq.rq_Text, nsm->nsm_Text, sizeof(rq.rq_Text));
+            CopyStr(rq.rq_Screen, nsm->nsm_PubScreen, sizeof(rq.rq_Screen));
+            CopyStr(rq.rq_Image, nsm->nsm_ImageFile, sizeof(rq.rq_Image));
+            CopyStr(rq.rq_Icon, nsm->nsm_IconFile, sizeof(rq.rq_Icon));
+            CopyStr(rq.rq_Sound, nsm->nsm_SoundFile, sizeof(rq.rq_Sound));
+            CopyStr(rq.rq_BackMsg, nsm->nsm_BackMsg, sizeof(rq.rq_BackMsg));
+            if (nsm->nsm_Withdraw)
+            {
+                DropAppNotifications(rq.rq_AppID, rq.rq_BackMsg);
+                ShowWaiting();
+                nsm->nsm_Result = APPNOTIFY_OK_MSGQUEUED;
+            }
+            else
+                nsm->nsm_Result = Deliver(&rq, nsm->nsm_Update, nsm->nsm_LogOnly);
+        }
         else
-            nsm->nsm_Result = 0;
+            nsm->nsm_Result = APPNOTIFY_ERROR_GENERIC;
         ReplyMsg(&nsm->nsm_Msg);
     }
+}
+
+static void Reconfigure(void)
+{
+    LoadSettings();
+    Restack();
+    ShowWaiting();
+}
+
+/* Messages to the server as an application. Returns FALSE on Quit. */
+static BOOL HandleAppMsgs(struct MsgPort *port)
+{
+    struct ApplicationMsg *am;
+    BOOL run = TRUE;
+
+    while ((am = (struct ApplicationMsg *)GetMsg(port)))
+    {
+        switch (am->type)
+        {
+        case APPLIBMT_Quit:
+        case APPLIBMT_ForceQuit:
+            run = FALSE;
+            break;
+        case APPLIBMT_ReloadPrefs:
+            Reconfigure();
+            break;
+        case APPLIBMT_OpenPrefs:
+            SystemTags(NPREFS_EDITOR, SYS_Asynch, TRUE, SYS_Input, 0, SYS_Output, 0, TAG_DONE);
+            break;
+        }
+        ReplyMsg(&am->msg);
+    }
+    return run;
 }
 
 static struct MsgPort *MakePublicPort(CONST_STRPTR name)
@@ -688,7 +1290,7 @@ static void RefuseRequests(struct MsgPort *port)
 
     while ((nsm = (struct NotifyServerMsg *)GetMsg(port)))
     {
-        nsm->nsm_Result = 0;
+        nsm->nsm_Result = APPNOTIFY_ERROR_SERVERNOTRUNNING;
         ReplyMsg(&nsm->nsm_Msg);
     }
 }
@@ -699,26 +1301,40 @@ static void RefuseRexx(struct MsgPort *port)
 
     while ((rm = (struct RexxMsg *)GetMsg(port)))
     {
+        if (rm->rm_Node.mn_Node.ln_Type == NT_REPLYMSG)
+        {
+            DeleteArgstring((UBYTE *)rm->rm_Args[0]);
+            DeleteRexxMsg(rm);
+            continue;
+        }
         rm->rm_Result1 = RC_FATAL;
-        rm->rm_Result2 = 0;
+        rm->rm_Result2 = APPNOTIFY_ERROR_SERVERNOTRUNNING;
         ReplyMsg(&rm->rm_Node);
     }
 }
 
 int main(void)
 {
-    struct MsgPort *reqport = NULL, *rexxport = NULL, *timerport = NULL;
+    struct MsgPort *reqport = NULL, *timerport = NULL, *inputport = NULL, *appport = NULL;
     struct timerequest *treq = NULL;
+    struct IOStdReq *inputreq = NULL;
+    struct Interrupt inputint;
+    struct NotifyRequest nr;
     struct RexxApp *ra;
-    BOOL timeropen = FALSE;
+    struct Waiting *w;
+    BOOL timeropen = FALSE, inputopen = FALSE, inputon = FALSE, notifyon = FALSE;
+    BYTE notifysig = -1;
     int ret = RETURN_FAIL;
 
     NEWLIST((struct List *)&popups);
+    NEWLIST((struct List *)&waiting);
     NEWLIST((struct List *)&rexxapps);
 
-    ApplicationBase = OpenLibrary("application.library", 0);
+    if (!(ApplicationBase = OpenLibrary("application.library", 1)))
+        return RETURN_FAIL;
     DataTypesBase = OpenLibrary("datatypes.library", 39);
     CyberGfxBase = OpenLibrary("cybergraphics.library", 0);
+    IconBase = OpenLibrary("icon.library", 44);
     RexxSysBase = (struct RxsLib *)OpenLibrary("rexxsyslib.library", 0);
     OpenURLBase = OpenLibrary("openurl.library", 0);
 
@@ -731,12 +1347,51 @@ int main(void)
     if (RexxSysBase)
         rexxport = MakePublicPort(REXX_PORTNAME);
 
+    myappid = RegisterApplication(NPREFS_APPNAME,
+                                  REGAPP_URLIdentifier,       (IPTR)NPREFS_URL,
+                                  REGAPP_Description,         (IPTR)"Shows notifications",
+                                  REGAPP_UniqueApplication,   TRUE,
+                                  REGAPP_NoIcon,              TRUE,
+                                  REGAPP_HasPrefsWindow,      TRUE,
+                                  REGAPP_CustomPrefsFileName, (IPTR)NPREFS_FILE,
+                                  TAG_DONE);
+    if (myappid)
+        GetApplicationAttrs(myappid, APPATTR_Port, (IPTR)&appport,
+                            APPATTR_MainPrefsDict, (IPTR)&prefs, TAG_DONE);
+    LoadSettings();
+
     if (!(idcmpport = CreateMsgPort()) || !(timerport = CreateMsgPort())
         || !(treq = (struct timerequest *)CreateIORequest(timerport, sizeof(*treq))))
         goto out;
     if (OpenDevice(TIMERNAME, UNIT_VBLANK, &treq->tr_node, 0))
         goto out;
     timeropen = TRUE;
+
+    /* Count input events, to tell when the user is away. */
+    if ((inputport = CreateMsgPort())
+        && (inputreq = (struct IOStdReq *)CreateIORequest(inputport, sizeof(*inputreq)))
+        && !OpenDevice("input.device", 0, (struct IORequest *)inputreq, 0))
+    {
+        inputopen = TRUE;
+        memset(&inputint, 0, sizeof(inputint));
+        inputint.is_Code = (VOID_FUNC)AROS_ASMSYMNAME(InputWatch);
+        inputint.is_Node.ln_Pri = 60;
+        inputint.is_Node.ln_Name = (STRPTR)NPREFS_APPNAME;
+        inputreq->io_Command = IND_ADDHANDLER;
+        inputreq->io_Data = &inputint;
+        inputon = (DoIO((struct IORequest *)inputreq) == 0);
+    }
+
+    /* Follow changes made by Prefs/Notifications. */
+    if ((notifysig = AllocSignal(-1)) >= 0)
+    {
+        memset(&nr, 0, sizeof(nr));
+        nr.nr_Name = "ENV:" NPREFS_FILE;
+        nr.nr_Flags = NRF_SEND_SIGNAL;
+        nr.nr_stuff.nr_Signal.nr_Task = FindTask(NULL);
+        nr.nr_stuff.nr_Signal.nr_SignalNum = notifysig;
+        notifyon = StartNotify(&nr);
+    }
 
     treq->tr_node.io_Command = TR_ADDREQUEST;
     treq->tr_time.tv_secs = 0;
@@ -749,14 +1404,21 @@ int main(void)
         ULONG sigs = Wait((1UL << reqport->mp_SigBit) | (1UL << idcmpport->mp_SigBit)
                           | (1UL << timerport->mp_SigBit)
                           | (rexxport ? 1UL << rexxport->mp_SigBit : 0)
+                          | (appport ? 1UL << appport->mp_SigBit : 0)
+                          | (notifyon ? 1UL << notifysig : 0)
                           | SIGBREAKF_CTRL_C);
 
+        /* new settings first, so a request sent right after them uses them */
+        if (notifyon && (sigs & (1UL << notifysig)))
+            Reconfigure();
         if (sigs & (1UL << reqport->mp_SigBit))
             HandleRequests(reqport);
         if (rexxport && (sigs & (1UL << rexxport->mp_SigBit)))
             HandleRexx(rexxport);
         if (sigs & (1UL << idcmpport->mp_SigBit))
             HandleIDCMP();
+        if (appport && (sigs & (1UL << appport->mp_SigBit)) && !HandleAppMsgs(appport))
+            break;
         if ((sigs & (1UL << timerport->mp_SigBit)) && CheckIO(&treq->tr_node))
         {
             WaitIO(&treq->tr_node);
@@ -773,15 +1435,36 @@ int main(void)
 out:
     DropPublicPort(reqport, RefuseRequests);
     DropPublicPort(rexxport, RefuseRexx);
+    rexxport = NULL;
 
+    while ((w = (struct Waiting *)REMHEAD((struct List *)&waiting)))
+        FreeVec(w);
     while (!IsListEmpty((struct List *)&popups))
-        ClosePopup((struct Popup *)popups.mlh_Head);
+        ClosePopup((struct Popup *)popups.mlh_Head, FALSE);
+    StopSound();
 
     while ((ra = (struct RexxApp *)REMHEAD((struct List *)&rexxapps)))
     {
         UnregisterApplication(ra->ra_AppID, NULL);
         FreeVec(ra);
     }
+
+    if (notifyon)
+        EndNotify(&nr);
+    if (notifysig >= 0)
+        FreeSignal(notifysig);
+    if (inputon)
+    {
+        inputreq->io_Command = IND_REMHANDLER;
+        inputreq->io_Data = &inputint;
+        DoIO((struct IORequest *)inputreq);
+    }
+    if (inputopen)
+        CloseDevice((struct IORequest *)inputreq);
+    if (inputreq)
+        DeleteIORequest((struct IORequest *)inputreq);
+    if (inputport)
+        DeleteMsgPort(inputport);
 
     if (timeropen)
     {
@@ -796,16 +1479,20 @@ out:
     if (idcmpport)
         DeleteMsgPort(idcmpport);
 
+    if (myappid)
+        UnregisterApplication(myappid, NULL);
+
     if (OpenURLBase)
         CloseLibrary(OpenURLBase);
     if (RexxSysBase)
         CloseLibrary((struct Library *)RexxSysBase);
+    if (IconBase)
+        CloseLibrary(IconBase);
     if (CyberGfxBase)
         CloseLibrary(CyberGfxBase);
     if (DataTypesBase)
         CloseLibrary(DataTypesBase);
-    if (ApplicationBase)
-        CloseLibrary(ApplicationBase);
+    CloseLibrary(ApplicationBase);
 
     return ret;
 }
