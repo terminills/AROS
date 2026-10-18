@@ -123,3 +123,18 @@ void IPP_SetStatus(struct IPPBase *IPPBase, struct IPPUnit *iu, const char *text
         UnLock(lock);
     SetVar("IPP/Status", line, -1, GVF_GLOBAL_ONLY);
 }
+
+/* ENV:IPP/Unit<n>.Job: the printer and its job-id for the last job the printer
+   took, for following it to the end (PrinterWatch). */
+void IPP_SetJob(struct IPPBase *IPPBase, struct IPPUnit *iu)
+{
+    char var[24] = "IPP/Unit", text[IPP_URI_MAX + 40] = "JobID=";
+
+    IPP_AppendNumber(var, iu->iu_Number);
+    strcat(var, ".Job");
+    IPP_AppendNumber(text, iu->iu_JobID);
+    strcat(text, "\nURI=");
+    strcat(text, iu->iu_Config.ic_URI);
+    strcat(text, "\n");
+    SetVar(var, text, -1, GVF_GLOBAL_ONLY);
+}

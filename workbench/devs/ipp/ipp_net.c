@@ -27,6 +27,7 @@
 /* RFC 8010 section 3.5: delimiter and value tags. */
 #define TAG_OPERATION_ATTRIBUTES    0x01
 #define TAG_END_OF_ATTRIBUTES       0x03
+#define TAG_INTEGER                 0x21
 #define TAG_NAME_WITHOUT_LANGUAGE   0x42
 #define TAG_URI                     0x45
 #define TAG_CHARSET                 0x47
@@ -188,6 +189,63 @@ BOOL IPP_Send(struct IPPBase *IPPBase, struct IPPUnit *iu, const UBYTE *data, LO
     return ok;
 }
 
+/* TRUE once the IPP message after the HTTP head at body is there up to its
+   end-of-attributes tag (after a chunk size line when the answer is chunked). */
+static BOOL attrsComplete(const UBYTE *buf, LONG body, LONG got)
+{
+    LONG i = body;
+
+    if (strstr((const char *)buf, "chunked")) {
+        while (i + 1 < got && !(buf[i] == '\r' && buf[i + 1] == '\n'))
+            i++;
+        i += 2;
+    }
+    for (i += 8; i < got;) {
+        UBYTE tag = buf[i++];
+        LONG nl, vl;
+
+        if (tag == TAG_END_OF_ATTRIBUTES)
+            return TRUE;
+        if (tag < 0x10)
+            continue;
+        if (i + 2 > got)
+            return FALSE;
+        nl = (buf[i] << 8) | buf[i + 1];
+        if (i + 4 + nl > got)
+            return FALSE;
+        vl = (buf[i + 2 + nl] << 8) | buf[i + 3 + nl];
+        i += 4 + nl + vl;
+    }
+    return FALSE;
+}
+
+/* The job-id attribute of a Print-Job answer, 0 when it is not there. */
+static ULONG jobId(const UBYTE *msg, LONG len)
+{
+    LONG i;
+
+    for (i = 8; i + 2 < len;) {
+        UBYTE tag = msg[i++];
+        LONG nl, vl;
+
+        if (tag == TAG_END_OF_ATTRIBUTES)
+            break;
+        if (tag < 0x10)
+            continue;
+        nl = (msg[i] << 8) | msg[i + 1];
+        if (i + 2 + nl + 2 > len)
+            break;
+        vl = (msg[i + 2 + nl] << 8) | msg[i + 3 + nl];
+        if (tag == TAG_INTEGER && nl == 6 && memcmp(msg + i + 2, "job-id", 6) == 0 && vl == 4
+            && i + 4 + nl + 4 <= len) {
+            const UBYTE *v = msg + i + 4 + nl;
+            return (v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3];
+        }
+        i += 4 + nl + vl;
+    }
+    return 0;
+}
+
 /* The last chunk, then the printer's answer: HTTP 200 and an IPP status below 0x0100. */
 BOOL IPP_EndJob(struct IPPBase *IPPBase, struct IPPUnit *iu)
 {
@@ -200,12 +258,14 @@ BOOL IPP_EndJob(struct IPPBase *IPPBase, struct IPPUnit *iu)
     if (!sendAll(iu, (UBYTE *)"0\r\n\r\n", 5))
         return FALSE;
 
+    /* The whole answer, to the end of its attributes (the job-id is among them):
+       the printer closes the connection after it, as asked. */
     while (got < (LONG)sizeof(buf) - 1 && (n = recv(iu->iu_Socket, buf + got, sizeof(buf) - 1 - got, 0)) > 0) {
         got += n;
         for (i = 0; body < 0 && i + 3 < got; i++)
             if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n')
                 body = i + 4;
-        if (body >= 0 && got >= body + 4)
+        if (body >= 0 && attrsComplete(buf, body, got))
             break;
     }
     buf[got] = 0;
@@ -245,6 +305,7 @@ BOOL IPP_EndJob(struct IPPBase *IPPBase, struct IPPUnit *iu)
         setError(iu, "the printer did not take the job, IPP status ", code);
         return FALSE;
     }
+    iu->iu_JobID = jobId(buf + body, got - body);
     return TRUE;
 }
 

@@ -10,7 +10,8 @@
     printer fails the open), each write is sent, and the close ends the job and
     reads the printer's answer. printspool.device in front of it ("ipp.device 0"
     in PrintSpool/Unit<n>) gives the background printing and the queue.
-    ENV:IPP/Status says how the last job went.
+    ENV:IPP/Status says how the last job went, and ENV:IPP/Unit<n>.Job the
+    printer's job-id for it, to follow it to the end.
 */
 
 #include <aros/debug.h>
@@ -123,6 +124,7 @@ static int GM_UNIQUENAME(Open)(struct IPPBase *IPPBase, struct IOStdReq *io, ULO
         Permit();
         iu->iu_Failed = FALSE;
         iu->iu_Bytes = 0;
+        iu->iu_JobID = 0;
         iu->iu_Error[0] = 0;
         if (!IPP_ReadConfig(IPPBase, unitnum, &iu->iu_Config)) {
             strcpy(iu->iu_Error, "no printer set for this unit (FindPrinters UNIT n)");
@@ -161,6 +163,8 @@ static int GM_UNIQUENAME(Close)(struct IPPBase *IPPBase, struct IOStdReq *io)
             IPP_AppendNumber(done, iu->iu_Bytes);
             strcat(done, " bytes");
             IPP_SetStatus(IPPBase, iu, done);
+            if (iu->iu_JobID)
+                IPP_SetJob(IPPBase, iu);
         } else if (!iu->iu_Failed)
             IPP_SetStatus(IPPBase, iu, iu->iu_Error);
         IPP_Disconnect(IPPBase, iu);

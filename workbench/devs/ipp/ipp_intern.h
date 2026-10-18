@@ -38,6 +38,7 @@ struct IPPUnit {
     LONG iu_Socket;
     BOOL iu_Failed;
     ULONG iu_Bytes;
+    ULONG iu_JobID;                     /* the printer's job-id, 0 when it gave none */
     struct IPPConfig iu_Config;
     struct IPPTarget iu_Target;
     char iu_Error[160];
@@ -57,6 +58,7 @@ BOOL IPP_ReadConfig(struct IPPBase *IPPBase, ULONG unit, struct IPPConfig *ic);
 BOOL IPP_ParseURI(const char *uri, struct IPPTarget *t);
 void IPP_AppendNumber(char *s, ULONG n);
 void IPP_SetStatus(struct IPPBase *IPPBase, struct IPPUnit *iu, const char *text);
+void IPP_SetJob(struct IPPBase *IPPBase, struct IPPUnit *iu);
 
 /* ipp_net.c */
 BOOL IPP_BeginJob(struct IPPBase *IPPBase, struct IPPUnit *iu, ULONG id);
