@@ -198,9 +198,15 @@ takeownership:
                 (void)*capreg;
             }
 
-            /* Clear the SMI control bits */
+            /*
+             * Disable every SMI source and acknowledge the SMI events already
+             * latched (RW1C bits 29-31), keeping the reserved bits as they are.
+             */
             volatile ULONG *smictl = (volatile ULONG *)((IPTR)capreg + 4);
-            *smictl = AROS_LONG2LE(0);
+            ULONG smival = AROS_LE2LONG(*smictl);
+            smival &= ((0x7 << 1) | (0xff << 5) | (0x7 << 17));
+            smival |= (0x7UL << 29);
+            *smictl = AROS_LONG2LE(smival);
             (void)*smictl;
         } else if(capid == XHCI_EXT_CAP_ID_SUPPORTED_PROTOCOL) {
             ULONG caprev   = AROS_LE2LONG(*(capreg + 0));  /* DWORD0: revision */
