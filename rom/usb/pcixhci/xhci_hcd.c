@@ -882,9 +882,11 @@ WORD xhciQueueTRB(struct PCIController *hc, volatile struct pcisusbXHCIRing *rin
                                DEBUGWARNCOLOR_SET "xHCI: link <ringio %p>[%d] 0x%p -> 0x0000000000000000" DEBUGCOLOR_RESET "\n",
                                ring->ringio, ring->next, ring->ringio[ring->next]);
             ring->ringio[ring->next] = NULL;
+            /* A Link TRB inside a TD keeps the TD chained (xHCI 4.11.5.1) */
             xhciInsertTRB(hc, ring,
                           link_dma,
-                          TRBF_FLAG_TRTYPE_LINK | TRBF_FLAG_TC,
+                          TRBF_FLAG_TRTYPE_LINK | TRBF_FLAG_TC |
+                          (AROS_LE2LONG(ring->ring[ring->next - 1].flags) & TRBF_FLAG_CH),
                           0);
             ring->next = 0;
             if(ring->end & RINGENDCFLAG)
@@ -938,9 +940,11 @@ WORD xhciQueueTRB_IO(struct PCIController *hc, volatile struct pcisusbXHCIRing *
                                DEBUGWARNCOLOR_SET "xHCI: <ringio %p>[%d]  0x%p -> 0x0000000000000000" DEBUGCOLOR_RESET "\n",
                                ring->ringio, ring->next, ring->ringio[ring->next]);
             ring->ringio[ring->next] = NULL;
+            /* A Link TRB inside a TD keeps the TD chained (xHCI 4.11.5.1) */
             xhciInsertTRB(hc, ring,
                           link_dma,
-                          TRBF_FLAG_TRTYPE_LINK | TRBF_FLAG_TC,
+                          TRBF_FLAG_TRTYPE_LINK | TRBF_FLAG_TC |
+                          (AROS_LE2LONG(ring->ring[ring->next - 1].flags) & TRBF_FLAG_CH),
                           0);
             ring->next = 0;
             if(ring->end & RINGENDCFLAG)
