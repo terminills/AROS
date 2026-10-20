@@ -519,7 +519,7 @@ BOOL amdgpu_log_init(void)
     nlog.buf = AllocMem(NLOG_SIZE, MEMF_ANY);
     if (!nlog.buf)
         return FALSE;
-    CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Log", NP_Priority, -1,
+    CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Log", NP_Priority, 61,
                       NP_Affinity, TASKAFFINITY_ANY, NP_Entry, (IPTR)nlog_flusher, NP_StackSize, 32 * 1024, TAG_DONE);
     return TRUE;
 }
@@ -528,6 +528,45 @@ BOOL amdgpu_log_init(void)
 extern ULONG amdgpu_2d_diag[8];
 void compat_irq_counts(ULONG *raw, ULONG *handled);
 void amdgpu_compat_log(const char *fmt, ...);
+
+#include <exec/execbase.h>
+#include <exec/tasks.h>
+#include <aros/x86_64/cpucontext.h>
+#include <proto/debug.h>
+#include <libraries/debug.h>
+
+/* who is ready (preempted) while the heartbeat runs: a spinner shows up here with its PC */
+static void nlog_ready_tasks(void)
+{
+    struct Library *DebugBase = OpenLibrary("debug.library", 0);
+    struct Task *t;
+    char line[384];
+    int len = 0, count = 0;
+
+    Forbid();
+    ForeachNode(&SysBase->TaskReady, t)
+    {
+        UQUAD rip = 0;
+        char *mod = NULL, *sym = NULL;
+
+        if ((t->tc_Flags & TF_ETASK) && t->tc_UnionETask.tc_ETask && t->tc_UnionETask.tc_ETask->et_RegFrame)
+            rip = ((struct ExceptionContext *)t->tc_UnionETask.tc_ETask->et_RegFrame)->rip;
+        if (DebugBase && rip)
+        {
+            struct TagItem tags[] = { { DL_ModuleName, (IPTR)&mod }, { DL_SymbolName, (IPTR)&sym }, { TAG_DONE, 0 } };
+            DecodeLocationA((APTR)rip, tags);
+        }
+        if (len < (int)sizeof(line) - 100)
+            len += snprintf(line + len, sizeof(line) - len, " '%s' pri %d rip %llx %s:%s;", t->tc_Node.ln_Name,
+                            (int)t->tc_Node.ln_Pri, rip, mod ? mod : "?", sym ? sym : "?");
+        count++;
+    }
+    Permit();
+    if (count)
+        amdgpu_compat_log("[alive]   ready:%s\n", line);
+    if (DebugBase)
+        CloseLibrary(DebugBase);
+}
 
 static void nlog_alive(void)
 {
@@ -538,6 +577,7 @@ static void nlog_alive(void)
         ULONG raw = 0, handled = 0;
 
         Delay(100);
+        nlog_ready_tasks();
         compat_irq_counts(&raw, &handled);
         amdgpu_compat_log("[alive] %lu: 2d calls %lu posted %lu ops %lu/%lu flush %lu/%lu last op %lu fence timeouts %lu, irq raw %lu handled %lu\n",
             (unsigned long)++n, (unsigned long)amdgpu_2d_diag[0], (unsigned long)amdgpu_2d_diag[1],
