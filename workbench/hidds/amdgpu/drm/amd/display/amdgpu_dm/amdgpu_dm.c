@@ -9709,6 +9709,13 @@ static void dm_arm_vblank_event(struct amdgpu_crtc *acrtc,
 	if (!acrtc->base.state->event || acrtc_state->active_planes == 0)
 		return;
 
+	/*
+	 * Without vblank support there is no interrupt to deliver an armed
+	 * event; leave it on the commit so the commit tail sends it.
+	 */
+	if (!drm_dev_has_vblank(acrtc->base.dev))
+		return;
+
 	if (pflip_update) {
 		extern unsigned long amdgpu_diag_vbl[16];
 		WARN_ON(acrtc->pflip_status != AMDGPU_FLIP_NONE);
@@ -9749,6 +9756,9 @@ static void dm_arm_vblank_event_pre_programming(struct amdgpu_crtc *acrtc,
 	assert_spin_locked(&acrtc->base.dev->event_lock);
 
 	if (!acrtc->base.state->event || acrtc_state->active_planes == 0)
+		return;
+
+	if (!drm_dev_has_vblank(acrtc->base.dev))
 		return;
 
 	if (pflip_update || cursor_update)
