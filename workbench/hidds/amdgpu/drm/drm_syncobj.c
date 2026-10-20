@@ -1033,6 +1033,7 @@ static void syncobj_wait_fence_func(struct dma_fence *fence,
 	struct syncobj_wait_entry *wait =
 		container_of(cb, struct syncobj_wait_entry, fence_cb);
 
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[16]++; }
 	wake_up_process(wait->task);
 }
 
@@ -1101,6 +1102,7 @@ static signed long drm_syncobj_array_wait_timeout(struct drm_syncobj **syncobjs,
 	 * returning -EINVAL again.
 	 */
 	signaled_count = 0;
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[14]++; }
 	for (i = 0; i < count; ++i) {
 		struct dma_fence *fence;
 
@@ -1188,6 +1190,9 @@ static signed long drm_syncobj_array_wait_timeout(struct drm_syncobj **syncobjs,
 			goto done_waiting;
 
 		if (timeout == 0) {
+			extern unsigned long amdgpu_diag_counters[24];
+
+			amdgpu_diag_counters[15]++;
 			timeout = -ETIME;
 			goto done_waiting;
 		}
