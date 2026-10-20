@@ -744,6 +744,14 @@ psp_cmd_submit_buf(struct psp_context *psp,
 			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[1] : 0,
 			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[2] : 0,
 			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[3] : 0);
+	if (!timeout || psp->cmd_buf_mem->resp.status) {
+		extern void amdgpu_log_sync(void);
+		dev_warn(psp->adev->dev, "[psp-probe] frame[4..5] %08x %08x fence_buf now %u\n",
+			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[4] : 0,
+			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[5] : 0,
+			 *((unsigned int *)psp->fence_buf));
+		amdgpu_log_sync();
+	}
 
 	/* In some cases, psp response status is not 0 even there is no
 	 * problem while the command is submitted. Some version of PSP FW

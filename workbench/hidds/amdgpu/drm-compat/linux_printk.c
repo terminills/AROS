@@ -523,7 +523,24 @@ BOOL amdgpu_log_init(void)
                       NP_Affinity, TASKAFFINITY_ANY, NP_Entry, (IPTR)nlog_flusher, NP_StackSize, 32 * 1024, TAG_DONE);
     return TRUE;
 }
+
+/* laptop diag (not for commit): wait until the flusher has written everything so far */
+void amdgpu_log_sync(void)
+{
+    int i;
+
+    for (i = 0; i < 100 && nlog.head != nlog.tail; i++)
+    {
+        if (nlog.flusher && nlog.sigbit != (ULONG)-1)
+            Signal(nlog.flusher, 1UL << nlog.sigbit);
+        Delay(5);
+    }
+    Delay(60);
+}
 #else
+void amdgpu_log_sync(void)
+{
+}
 #define nlog_append(s, n) ((void)(s), (void)(n))
 #ifdef DRM_COMPAT_SERIAL_ALL
 #define NLOG_SERIAL_ALL TRUE
