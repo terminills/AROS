@@ -6473,7 +6473,7 @@ static u32 amdgpu_diag_rd(u32 *p, u32 *after)
 void amdgpu_diag_snapshot(void)
 {
 	extern void *amdgpu_diag_adev;
-	extern unsigned long amdgpu_diag_counters[8];
+	extern unsigned long amdgpu_diag_counters[24];
 	extern void amdgpu_compat_log(const char *fmt, ...);
 	struct amdgpu_device *adev = amdgpu_diag_adev;
 	struct amdgpu_ring *ring;
@@ -6496,6 +6496,10 @@ void amdgpu_diag_snapshot(void)
 		ih->rptr, ihw0, ihw1, ihreg,
 		amdgpu_diag_counters[0], amdgpu_diag_counters[6], amdgpu_diag_counters[7], amdgpu_diag_counters[1],
 		amdgpu_diag_counters[2], amdgpu_diag_counters[3], amdgpu_diag_counters[4], amdgpu_diag_counters[5]);
+	amdgpu_compat_log("[diag] waits: wait_cs %lu timeouts %lu libdrm query %lu wait_fences %lu syncobj waits %lu timeouts %lu cbs %lu | sched run %lu done %lu\n",
+		amdgpu_diag_counters[8], amdgpu_diag_counters[9], amdgpu_diag_counters[12], amdgpu_diag_counters[13],
+		amdgpu_diag_counters[14], amdgpu_diag_counters[15], amdgpu_diag_counters[16],
+		amdgpu_diag_counters[10], amdgpu_diag_counters[11]);
 }
 
 static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,
@@ -6508,7 +6512,7 @@ static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,
 	int i;
 
 	DRM_DEBUG("IH: CP EOP\n");
-	{ extern unsigned long amdgpu_diag_counters[8]; amdgpu_diag_counters[1]++; }
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[1]++; }
 
 	if (adev->enable_mes && doorbell_offset) {
 		struct amdgpu_userq_fence_driver *fence_drv = NULL;

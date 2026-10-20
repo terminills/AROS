@@ -498,6 +498,7 @@ drm_public int amdgpu_cs_query_fence_status(struct amdgpu_cs_fence *fence,
 	}
 
 	*expired = false;
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[12]++; }
 
 	r = amdgpu_ioctl_wait_cs(fence->context, fence->ip_type,
 				fence->ip_instance, fence->ring,

@@ -209,6 +209,7 @@
 #include <drm/drm_print.h>
 #include <drm/drm_syncobj.h>
 #include <drm/drm_utils.h>
+#include <drm/gpu_scheduler.h>
 
 #include "drm_internal.h"
 
@@ -1032,6 +1033,7 @@ static void syncobj_wait_fence_func(struct dma_fence *fence,
 	struct syncobj_wait_entry *wait =
 		container_of(cb, struct syncobj_wait_entry, fence_cb);
 
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[16]++; }
 	wake_up_process(wait->task);
 }
 
@@ -1100,6 +1102,7 @@ static signed long drm_syncobj_array_wait_timeout(struct drm_syncobj **syncobjs,
 	 * returning -EINVAL again.
 	 */
 	signaled_count = 0;
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[14]++; }
 	for (i = 0; i < count; ++i) {
 		struct dma_fence *fence;
 
@@ -1187,6 +1190,20 @@ static signed long drm_syncobj_array_wait_timeout(struct drm_syncobj **syncobjs,
 			goto done_waiting;
 
 		if (timeout == 0) {
+			extern unsigned long amdgpu_diag_counters[24];
+			extern void amdgpu_compat_log(const char *fmt, ...);
+			struct dma_fence *f0 = entries[0].fence;
+			struct drm_sched_fence *sf = f0 ? to_drm_sched_fence(f0) : NULL;
+			struct dma_fence *parent = sf ? sf->parent : NULL;
+
+			amdgpu_diag_counters[15]++;
+			amdgpu_compat_log("[syncobj] TIMEOUT count %u flags %x fence %p flags %lx seqno %llu ctx %llu ops %s cb %p | parent %p flags %lx seqno %llu | cbs fired %lu waits %lu sched run %lu done %lu\n",
+				count, flags, f0, f0 ? f0->flags : 0UL, f0 ? (unsigned long long)f0->seqno : 0ULL,
+				f0 ? (unsigned long long)f0->context : 0ULL,
+				f0 && f0->ops && f0->ops->get_driver_name ? f0->ops->get_driver_name(f0) : "?",
+				(void *)entries[0].fence_cb.func,
+				parent, parent ? parent->flags : 0UL, parent ? (unsigned long long)parent->seqno : 0ULL,
+				amdgpu_diag_counters[16], amdgpu_diag_counters[14], amdgpu_diag_counters[10], amdgpu_diag_counters[11]);
 			timeout = -ETIME;
 			goto done_waiting;
 		}
