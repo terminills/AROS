@@ -1,0 +1,137 @@
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <setjmp.h>
+typedef uint32_t ULONG;
+typedef uintptr_t IPTR;
+typedef int8_t BYTE;
+typedef uint8_t UBYTE;
+typedef int BOOL;
+typedef void *APTR;
+typedef const char *CONST_STRPTR;
+typedef void OOP_Object;
+typedef struct {void *UserData;} OOP_Class;
+struct Task {void *tc_UserData;};
+struct MsgPort {int dummy;};
+struct IORequest {int dummy;};
+struct timerequest {int dummy;};
+struct i8042base {int dummy;};
+struct kbd_data {
+    struct {struct i8042base *base; struct IORequest *ioTimer; void *self;} hwdata;
+    APTR irq; struct Task *CtrlTask; ULONG LEDSigBit;
+};
+#define TRUE 1
+#define FALSE 0
+#define NULLTAG 0
+#define TAG_DONE 0
+#define AROS_STACKSIZE 32768
+#define UNIT_MICROHZ 0
+#define KBD_CTRLCMD_SELF_TEST 0xaa
+#define KEYBOARDIRQ 1
+#define SIGF_SINGLE (1UL<<4)
+#define OOP_INST_DATA(cl,o) ((struct kbd_data *)(o))
+#define D(x)
+#define Disable() ((void)0)
+#define Enable() ((void)0)
+#define SysBase NULL
+static struct Task parent, child;
+static struct MsgPort port;
+static struct IORequest io;
+static struct i8042base base;
+static struct kbd_data *live;
+static int fault, controller, waits, frees, signals, closes, deletes, ports, irqadds, leds;
+static ULONG pending, lastmask;
+static jmp_buf done;
+static struct Task *FindTask(void *ignored) { return controller ? &child : &parent; }
+static BYTE AllocSignal(int ignored) {
+    if (fault==4) return -1;
+    pending &= ~(1UL<<17);
+    return 17;
+}
+static void FreeSignal(int bit) {assert(bit==17); frees++;}
+static struct Task *spawn(void *entry, OOP_Class *cl, OOP_Object *o, IPTR mask, struct Task *creator) {
+    assert(entry==(void *)(uintptr_t)0x1234567887654321ULL);
+    assert((uintptr_t)cl==0x123456789abcdef0ULL);
+    assert((uintptr_t)o==0x123456789abcdef8ULL);
+    assert(mask==(1UL<<17) && creator==&parent);
+    return fault==8 ? NULL : &child;
+}
+#define NewCreateTask(pc,entry,nt,name,st,stack,pt,pri,a1t,a1,a2t,a2,a3t,a3,ut,creator,end) spawn(entry,a1,a2,a3,creator)
+static ULONG Wait(ULONG mask) {
+    waits++; lastmask=mask;
+    assert(mask==(1UL<<17));
+    if (controller) { if (waits==1) return mask; longjmp(done,1); }
+    /* A pending SINGLE cannot satisfy this constructor's private wait. */
+    assert((pending & SIGF_SINGLE) && !(pending & mask));
+    pending |= mask; /* the helper now completes */
+    pending &= ~mask;
+    return mask;
+}
+static struct MsgPort *CreateMsgPort(void) {return fault==1 ? NULL : &port;}
+static struct IORequest *CreateIORequest(struct MsgPort *p, unsigned n) {return fault==2 ? NULL : &io;}
+static int OpenDevice(const char *n, int u, struct IORequest *i, int f) {return fault==3;}
+static void CloseDevice(struct IORequest *i) {assert(i==&io); closes++;}
+static void DeleteIORequest(struct IORequest *i) {assert(i==&io); deletes++;}
+static void DeleteMsgPort(struct MsgPort *p) {assert(p==&port); ports++;}
+static int i8042_kbd_clear_input(void) {return -1;}
+static void i8042_write_command_with_wait(struct IORequest *i, int c) {assert(i==&io);}
+static int i8042_wait_for_input(struct IORequest *i) {return fault==5 ? -1 : 0x55;}
+static int i8042_kbd_reset(struct i8042base *b, struct kbd_data *d) {return fault!=6;}
+static void i8042_kbd_update_leds(struct kbd_data *d) {leds++;}
+static void i8042_kbd_flush_output_buffer(void) {}
+static void i8042_kbd_irq_handler(struct kbd_data *d, void *x) {}
+static void *KrnAddIRQHandler(int irq, void (*h)(struct kbd_data *,void *), struct kbd_data *d, void *unused) {
+    assert(irq==1 && d==live); irqadds++; return fault==7 ? NULL : (void *)&base;
+}
+static void i8042_kbd_process_irq_key(struct kbd_data *d, UBYTE c, void *b) {assert(0);}
+static void Signal(struct Task *t, ULONG mask) {
+    assert(t==&parent && mask==(1UL<<17)); signals++;
+    if (fault) {
+        assert(live->CtrlTask==NULL && live->hwdata.ioTimer==NULL);
+        assert(live->LEDSigBit==(ULONG)-1);
+        assert(ports==(fault==1 ? 0 : 1));
+        assert(deletes==(fault<=2 ? 0 : 1));
+        assert(closes==(fault<=3 ? 0 : 1));
+        assert(frees==(fault<=4 ? 0 : 1));
+        /* Model an immediately scheduled constructor freeing the failed object. */
+        free(live); live=NULL;
+    }
+}
+@START@
+@CONTROLLER@
+static void clear(void) {
+    waits=frees=signals=closes=deletes=ports=irqadds=leds=0;
+    pending=SIGF_SINGLE; child.tc_UserData=&parent;
+}
+int main(void) {
+    assert(sizeof(void *)==8);
+    for (fault=0; fault<=8; fault+=4) {
+        clear(); controller=0;
+        BOOL ok=i8042_start_task((void *)(uintptr_t)0x1234567887654321ULL,
+          (void *)(uintptr_t)0x123456789abcdef0ULL,
+          (void *)(uintptr_t)0x123456789abcdef8ULL,"test");
+        assert(ok==(fault==0));
+        assert(waits==(fault==0)); assert(frees==(fault!=4));
+        assert(pending==SIGF_SINGLE);
+    }
+    puts("PASS private startup signal, task/signal allocation failures, 64-bit task arguments");
+    controller=1;
+    for (fault=1;fault<=7;fault++) {
+        clear(); live=calloc(1,sizeof(*live));
+        OOP_Class cl={&base};
+        i8042_kbd_controller_task(&cl,live,1UL<<17);
+        assert(signals==1 && live==NULL && waits==0);
+    }
+    puts("PASS seven controller failure injections with cleanup before immediate object free");
+    fault=0; clear(); live=calloc(1,sizeof(*live));
+    if (!setjmp(done)) {
+        OOP_Class cl={&base};
+        i8042_kbd_controller_task(&cl,live,1UL<<17);
+        assert(0);
+    }
+    assert(signals==1 && irqadds==1 && waits==2 && leds==2);
+    assert(live->CtrlTask==&child && live->irq==&base && live->LEDSigBit==17);
+    free(live);
+    puts("PASS successful startup retains resources and waits on the LED bit mask");
+}
