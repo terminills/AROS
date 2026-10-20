@@ -335,7 +335,9 @@ int scnprintk(char *buf, size_t size, const char *fmt, ...)
  * T:amdgpu.log when SYS: cannot be written - read-only boot media; "off"
  * to disable), and AMDGPU_SERIAL set to "all" sends every line to serial.
  */
-#if DEBUG
+/* laptop PSP diagnosis (not for commit): file log on in this build too */
+#define AMDGPU_FILELOG 1
+#if DEBUG || AMDGPU_FILELOG
 #define NLOG_SIZE   (2 * 1024 * 1024)
 
 static struct {
@@ -436,8 +438,13 @@ static void nlog_flusher(void)
          */
         if (!created && name[0] == '\0')
         {
-            strcpy(name, "SYS:amdgpu.log");
+            strcpy(name, "Efi:amdgpu.log");
             fh = Open(name, MODE_NEWFILE);
+            if (!fh)
+            {
+                strcpy(name, "SYS:amdgpu.log");
+                fh = Open(name, MODE_NEWFILE);
+            }
             if (!fh)
             {
                 strcpy(name, "T:amdgpu.log");
@@ -543,7 +550,7 @@ static void nlog_emit(char *buf, size_t n)
         n -= 2;
     }
     nlog_append(buf, n);
-#if DEBUG
+#if DEBUG || AMDGPU_FILELOG
     if (level <= 5 || nlog.serial_all || !nlog.buf)
 #else
     if (level <= 5 || NLOG_SERIAL_ALL)

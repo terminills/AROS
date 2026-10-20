@@ -58,6 +58,8 @@ int compat_map_write_combining(void *va, unsigned long size)
 #include <exec/execbase.h>
 #include <exec/memory.h>
 
+void amdgpu_compat_log(const char *fmt, ...);
+
 void compat_dump_memtype(const char *tag, void *va)
 {
     IPTR a = (IPTR)va, tmask = 0x000ffffffffff000UL;
@@ -90,21 +92,21 @@ void compat_dump_memtype(const char *tag, void *va)
         UserState(ssp);
     asm volatile("sti" ::: "memory");
 
-    bug("[memtype] %s %p: pdpe %016llx pde %016llx pte %016llx (pde pwt %d pcd %d pat %d) PAT %016llx MTRRdef %llx\n",
+    amdgpu_compat_log("[memtype] %s %p: pdpe %016llx pde %016llx pte %016llx (pde pwt %d pcd %d pat %d) PAT %016llx MTRRdef %llx\n",
         tag, va, l3, l2, l1, (int)((l2 >> 3) & 1), (int)((l2 >> 4) & 1),
         (int)((l2 >> 12) & 1), pat, def);
     for (i = 0; i < n; i++)
     {
         if (!(mask[i] & 0x800))
             continue;
-        bug("[memtype]   mtrr%u base %013llx type %llu mask %013llx%s\n", i,
+        amdgpu_compat_log("[memtype]   mtrr%u base %013llx type %llu mask %013llx%s\n", i,
             base[i] & ~0xfffULL, base[i] & 0xff, mask[i] & ~0xfffULL,
             ((a & mask[i] & ~0xfffULL) == (base[i] & mask[i] & ~0xfffULL)) ? " <- covers" : "");
     }
     Forbid();
     ForeachNode(&SysBase->MemList, mh)
         if ((IPTR)mh->mh_Lower <= a && a < (IPTR)mh->mh_Upper)
-            bug("[memtype]   inside exec memory '%s' %p-%p\n", mh->mh_Node.ln_Name, mh->mh_Lower, mh->mh_Upper);
+            amdgpu_compat_log("[memtype]   inside exec memory '%s' %p-%p\n", mh->mh_Node.ln_Name, mh->mh_Lower, mh->mh_Upper);
     Permit();
 }
 #endif
