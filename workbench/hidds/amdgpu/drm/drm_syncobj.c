@@ -1033,7 +1033,6 @@ static void syncobj_wait_fence_func(struct dma_fence *fence,
 	struct syncobj_wait_entry *wait =
 		container_of(cb, struct syncobj_wait_entry, fence_cb);
 
-	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[16]++; }
 	wake_up_process(wait->task);
 }
 
@@ -1102,7 +1101,6 @@ static signed long drm_syncobj_array_wait_timeout(struct drm_syncobj **syncobjs,
 	 * returning -EINVAL again.
 	 */
 	signaled_count = 0;
-	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[14]++; }
 	for (i = 0; i < count; ++i) {
 		struct dma_fence *fence;
 
@@ -1190,21 +1188,6 @@ static signed long drm_syncobj_array_wait_timeout(struct drm_syncobj **syncobjs,
 			goto done_waiting;
 
 		if (timeout == 0) {
-			extern unsigned long amdgpu_diag_counters[24];
-			extern unsigned long amdgpu_diag_last[8];
-			struct dma_fence *f0 = entries[0].fence;
-			struct drm_sched_fence *sf = f0 ? to_drm_sched_fence(f0) : NULL;
-			struct dma_fence *parent = sf ? sf->parent : NULL;
-
-			amdgpu_diag_counters[15]++;
-			amdgpu_diag_last[0] = (unsigned long)f0;
-			amdgpu_diag_last[1] = f0 ? f0->flags : 0;
-			amdgpu_diag_last[2] = f0 ? (unsigned long)f0->seqno : 0;
-			amdgpu_diag_last[3] = f0 ? (unsigned long)f0->context : 0;
-			amdgpu_diag_last[4] = (unsigned long)parent;
-			amdgpu_diag_last[5] = parent ? parent->flags : 0;
-			amdgpu_diag_last[6] = parent ? (unsigned long)parent->seqno : 0;
-			amdgpu_diag_last[7] = (unsigned long)(sf ? sf->scheduled.flags : 0UL);
 			timeout = -ETIME;
 			goto done_waiting;
 		}

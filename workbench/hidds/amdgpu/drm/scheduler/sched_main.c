@@ -372,7 +372,6 @@ static void drm_sched_job_done(struct drm_sched_job *s_job, int result)
 
 	atomic_sub(s_job->credits, &sched->credit_count);
 	atomic_dec(sched->score);
-	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[11]++; }
 
 	trace_drm_sched_job_done(s_fence);
 
@@ -1260,7 +1259,6 @@ static void drm_sched_run_job_work(struct work_struct *w)
 	 * refcount has been incremented for the scheduler already.
 	 */
 	fence = sched->ops->run_job(sched_job);
-	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[10]++; }
 	complete_all(&entity->entity_idle);
 	drm_sched_fence_scheduled(s_fence, fence);
 
