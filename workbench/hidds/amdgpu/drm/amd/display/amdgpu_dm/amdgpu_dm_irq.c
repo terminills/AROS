@@ -710,7 +710,9 @@ static inline int dm_irq_state(struct amdgpu_device *adev,
 	enum dc_irq_source irq_source;
 	struct dc *dc = adev->dm.dc;
 	struct amdgpu_crtc *acrtc = adev->mode_info.crtcs[crtc_id];
+	extern unsigned long amdgpu_diag_vbl[16];
 
+	amdgpu_diag_vbl[8]++;
 	if (!acrtc) {
 		DRM_ERROR(
 			"%s: crtc is NULL at id :%d\n",
@@ -719,6 +721,7 @@ static inline int dm_irq_state(struct amdgpu_device *adev,
 		return 0;
 	}
 
+	amdgpu_diag_vbl[9] = (unsigned long)(long)acrtc->otg_inst;
 	if (acrtc->otg_inst == -1)
 		return 0;
 
@@ -772,6 +775,14 @@ void amdgpu_diag_dm_snapshot(void)
 	amdgpu_compat_log("[diag] dm irq_state calls %lu enables %lu last src %lu type/ok/en %lx | handlers pflip %lu crtc %lu vupdate %lu |%s\n",
 		amdgpu_diag_counters[19], amdgpu_diag_counters[20], amdgpu_diag_last[12], amdgpu_diag_last[13],
 		amdgpu_diag_counters[21], amdgpu_diag_counters[22], amdgpu_diag_counters[23], line);
+	{
+		extern unsigned long amdgpu_diag_vbl[16];
+		amdgpu_compat_log("[diag] vbl get %lu fail %lu ref %lu enable %lu enret %ld | setvbl %lu rej %lu vupget %ld crtcget %ld | dmstate %lu otg %ld | armed pflip %lu cursor %lu sent %lu events %lu | ncrtc %lu\n",
+			amdgpu_diag_vbl[0], amdgpu_diag_vbl[1], amdgpu_diag_vbl[2], amdgpu_diag_vbl[3], (long)amdgpu_diag_vbl[4],
+			amdgpu_diag_vbl[5], amdgpu_diag_vbl[6], (long)amdgpu_diag_vbl[7], (long)amdgpu_diag_vbl[15],
+			amdgpu_diag_vbl[8], (long)amdgpu_diag_vbl[9], amdgpu_diag_vbl[10], amdgpu_diag_vbl[11],
+			amdgpu_diag_vbl[12], amdgpu_diag_vbl[13], amdgpu_diag_vbl[14]);
+	}
 	n = 0;
 	for (i = 0; i < 32 && n < (int)sizeof(line) - 16; i++)
 		if (amdgpu_diag_ih_client[i])

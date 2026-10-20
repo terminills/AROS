@@ -112,6 +112,11 @@ unsigned long amdgpu_diag_last[16]; /* 0-7 last syncobj wait timeout: fence, fla
 unsigned long amdgpu_diag_dce_src[256]; /* IH entries from client DCE by src_id */
 unsigned long amdgpu_diag_ih_client[32]; /* IH entries by client_id */
 int amdgpu_dcn_vline; /* ENV:AMDGPU_DCN_VLINE - vblank from the OTG vertical interrupt on DCN, as Linux does */
+/* laptop diag F: the vblank enable chain. 0 drm_vblank_get calls, 1 get failures, 2 last refcount, 3 drm_vblank_enable calls,
+ * 4 last __enable_vblank ret, 5 set_vblank(enable) calls, 6 rejects (crtc not enabled), 7 last amdgpu_irq_get(vupdate) ret,
+ * 8 dm_irq_state entries, 9 last otg_inst, 10 events armed pflip, 11 armed cursor, 12 events sent by commit tail,
+ * 13 drm_send_event calls, 14 num_crtcs, 15 last amdgpu_irq_get(crtc) ret */
+unsigned long amdgpu_diag_vbl[16];
 void compat_irq_counts(ULONG *raw, ULONG *handled)
 {
     *raw = irq_raw_count;

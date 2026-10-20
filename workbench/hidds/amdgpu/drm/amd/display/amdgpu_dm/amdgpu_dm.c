@@ -9710,9 +9710,11 @@ static void dm_arm_vblank_event(struct amdgpu_crtc *acrtc,
 		return;
 
 	if (pflip_update) {
+		extern unsigned long amdgpu_diag_vbl[16];
 		WARN_ON(acrtc->pflip_status != AMDGPU_FLIP_NONE);
 		WARN_ON(acrtc->event);
 
+		amdgpu_diag_vbl[10]++;
 		acrtc->pflip_status = AMDGPU_FLIP_SUBMITTED;
 		acrtc->event = acrtc->base.state->event;
 		acrtc->base.state->event = NULL;
@@ -9721,6 +9723,8 @@ static void dm_arm_vblank_event(struct amdgpu_crtc *acrtc,
 			      "crtc:%d, pflip_stat:AMDGPU_FLIP_SUBMITTED\n",
 			      acrtc->crtc_id);
 	} else if (cursor_update) {
+		extern unsigned long amdgpu_diag_vbl[16];
+		amdgpu_diag_vbl[11]++;
 		acrtc->event = acrtc->base.state->event;
 		acrtc->base.state->event = NULL;
 	}
@@ -11062,9 +11066,12 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
 	 */
 	spin_lock_irqsave(&adev_to_drm(adev)->event_lock, flags);
 	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
+		extern unsigned long amdgpu_diag_vbl[16];
 
-		if (new_crtc_state->event)
+		if (new_crtc_state->event) {
+			amdgpu_diag_vbl[12]++;
 			drm_send_event_locked(dev, &new_crtc_state->event->base);
+		}
 
 		new_crtc_state->event = NULL;
 	}

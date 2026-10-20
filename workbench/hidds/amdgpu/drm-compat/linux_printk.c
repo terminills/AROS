@@ -443,7 +443,9 @@ static void nlog_flusher(void)
             char suffix[32];
 
             DateStamp(&ds);
-            snprintf(suffix, sizeof(suffix), "%ld-%ld-%ld", (long)ds.ds_Days, (long)ds.ds_Minute, (long)ds.ds_Tick);
+            /* the laptop clock reads the same time at every boot; the TSC does not */
+            snprintf(suffix, sizeof(suffix), "%ld-%ld-%04lx", (long)ds.ds_Days, (long)ds.ds_Minute,
+                     (unsigned long)(__builtin_ia32_rdtsc() & 0xffff));
             snprintf(name, sizeof(name), "Efi:amdgpu-%s.log", suffix);
             fh = Open(name, MODE_NEWFILE);
             if (!fh)
@@ -534,8 +536,21 @@ BOOL amdgpu_log_init(void)
 int compat_env_flag(const char *name)
 {
     char var[16];
+    char path[64];
+    BPTR fh;
+    LONG n = 0;
 
     if (GetVar((CONST_STRPTR)name, var, sizeof(var), GVF_GLOBAL_ONLY) > 0)
+        return var[0] == '1' || var[0] == 'y' || var[0] == 'Y';
+    /* the driver starts before ENV:/ENVARC: are assigned; read the archive by path */
+    snprintf(path, sizeof(path), "SYS:Prefs/Env-Archive/%s", name);
+    fh = Open(path, MODE_OLDFILE);
+    if (fh)
+    {
+        n = Read(fh, var, sizeof(var) - 1);
+        Close(fh);
+    }
+    if (n > 0)
         return var[0] == '1' || var[0] == 'y' || var[0] == 'Y';
     return 0;
 }
