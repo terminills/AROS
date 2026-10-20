@@ -458,7 +458,7 @@ void amdgpu_irq_dispatch(struct amdgpu_device *adev,
 
 	client_id = entry.client_id;
 	src_id = entry.src_id;
-	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[0]++; amdgpu_diag_counters[6] = client_id; amdgpu_diag_counters[7] = src_id; }
+	{ extern unsigned long amdgpu_diag_counters[24]; extern unsigned long amdgpu_diag_dce_src[256]; amdgpu_diag_counters[0]++; amdgpu_diag_counters[6] = client_id; amdgpu_diag_counters[7] = src_id; if (client_id == 4 && src_id < 256) amdgpu_diag_dce_src[src_id]++; }
 
 	if (client_id >= AMDGPU_IRQ_CLIENTID_MAX) {
 		dev_dbg(adev->dev, "Invalid client_id in IV: %d\n", client_id);

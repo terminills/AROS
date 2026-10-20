@@ -176,7 +176,8 @@ static void amdgpu_2d_flush(ULONG done)
         if (!gpu2d.screen->fence_finish(gpu2d.screen, NULL, fence, 10000000000ULL))
         {
             amdgpu_2d_diag[7]++;
-            amdgpu_compat_log("[2d] fence_finish TIMEOUT after 10 s (flush %lu, ops %lu/%lu, last op %lu)\n",
+            amdgpu_compat_log("[2d] t=%lu ms fence_finish TIMEOUT (flush %lu, ops %lu/%lu, last op %lu)\n",
+                ({ extern unsigned long amdgpu_compat_ms(void); amdgpu_compat_ms(); }),
                 (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[2],
                 (unsigned long)amdgpu_2d_diag[3], (unsigned long)amdgpu_2d_diag[6]);
             gpu2d.screen->fence_finish(gpu2d.screen, NULL, fence, OS_TIMEOUT_INFINITE);

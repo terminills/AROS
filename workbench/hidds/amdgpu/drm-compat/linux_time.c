@@ -375,6 +375,11 @@ static int timer_send_cmd(int op, struct timer_list *t, unsigned long expires)
     return cmd.result;
 }
 
+unsigned long amdgpu_compat_ms(void)
+{
+    return (unsigned long)(ktime_get() / 1000000);
+}
+
 void timer_setup(struct timer_list *t, void (*func)(struct timer_list *), unsigned int flags)
 {
     memset(t, 0, sizeof(*t));

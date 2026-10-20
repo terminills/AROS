@@ -6496,17 +6496,26 @@ void amdgpu_diag_snapshot(void)
 		ih->rptr, ihw0, ihw1, ihreg,
 		amdgpu_diag_counters[0], amdgpu_diag_counters[6], amdgpu_diag_counters[7], amdgpu_diag_counters[1],
 		amdgpu_diag_counters[2], amdgpu_diag_counters[3], amdgpu_diag_counters[4], amdgpu_diag_counters[5]);
-	amdgpu_compat_log("[diag] waits: wait_cs %lu timeouts %lu libdrm query %lu wait_fences %lu syncobj waits %lu timeouts %lu cbs %lu | sched run %lu done %lu\n",
-		amdgpu_diag_counters[8], amdgpu_diag_counters[9], amdgpu_diag_counters[12], amdgpu_diag_counters[13],
-		amdgpu_diag_counters[14], amdgpu_diag_counters[15], amdgpu_diag_counters[16],
-		amdgpu_diag_counters[10], amdgpu_diag_counters[11]);
 	{
-		extern unsigned long amdgpu_diag_last[8];
+		extern unsigned long amdgpu_diag_last[16];
+		extern unsigned long amdgpu_diag_dce_src[256];
+		extern unsigned long amdgpu_compat_ms(void);
+		char hist[200]; int n = 0, i;
+
+		amdgpu_compat_log("[diag] t=%lu ms waits: wait_cs %lu libdrm %lu syncobj waits %lu timeouts %lu cbs %lu (last count %lu flags %lx) | sched run %lu done %lu | cs post-deps replace %lu point %lu last fence %lx seq %lu ctx %lu ndeps %lu\n",
+			amdgpu_compat_ms(), amdgpu_diag_counters[8], amdgpu_diag_counters[12],
+			amdgpu_diag_counters[14], amdgpu_diag_counters[15], amdgpu_diag_counters[16], amdgpu_diag_last[5], amdgpu_diag_last[6],
+			amdgpu_diag_counters[10], amdgpu_diag_counters[11],
+			amdgpu_diag_counters[17], amdgpu_diag_counters[18], amdgpu_diag_last[8], amdgpu_diag_last[9], amdgpu_diag_last[10], amdgpu_diag_last[11]);
 		if (amdgpu_diag_last[0])
-			amdgpu_compat_log("[diag] last syncobj timeout: fence %lx flags %lx seqno %lu ctx %lu | parent %lx flags %lx seqno %lu | scheduled flags %lx\n",
-				amdgpu_diag_last[0], amdgpu_diag_last[1], amdgpu_diag_last[2], amdgpu_diag_last[3],
-				amdgpu_diag_last[4], amdgpu_diag_last[5], amdgpu_diag_last[6], amdgpu_diag_last[7]);
+			amdgpu_compat_log("[diag] last syncobj timeout: fence %lx flags %lx seqno %lu ctx %lu parent %lx scheduled flags %lx\n",
+				amdgpu_diag_last[0], amdgpu_diag_last[1], amdgpu_diag_last[2], amdgpu_diag_last[3], amdgpu_diag_last[4], amdgpu_diag_last[7]);
+		for (i = 0; i < 256 && n < (int)sizeof(hist) - 16; i++)
+			if (amdgpu_diag_dce_src[i])
+				n += snprintf(hist + n, sizeof(hist) - n, " %d:%lu", i, amdgpu_diag_dce_src[i]);
+		amdgpu_compat_log("[diag] dce irq by src:%s\n", n ? hist : " none");
 	}
+
 }
 
 static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,

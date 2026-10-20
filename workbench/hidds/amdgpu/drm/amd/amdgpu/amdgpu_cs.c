@@ -1251,9 +1251,16 @@ static int amdgpu_cs_sync_rings(struct amdgpu_cs_parser *p)
 
 static void amdgpu_cs_post_dependencies(struct amdgpu_cs_parser *p)
 {
+	extern unsigned long amdgpu_diag_counters[24];
+	extern unsigned long amdgpu_diag_last[16];
 	int i;
 
+	amdgpu_diag_last[8] = (unsigned long)p->fence;
+	amdgpu_diag_last[9] = p->fence ? (unsigned long)p->fence->seqno : 0;
+	amdgpu_diag_last[10] = p->fence ? (unsigned long)p->fence->context : 0;
+	amdgpu_diag_last[11] = p->num_post_deps;
 	for (i = 0; i < p->num_post_deps; ++i) {
+		amdgpu_diag_counters[p->post_deps[i].chain && p->post_deps[i].point ? 18 : 17]++;
 		if (p->post_deps[i].chain && p->post_deps[i].point) {
 			drm_syncobj_add_point(p->post_deps[i].syncobj,
 					      p->post_deps[i].chain,

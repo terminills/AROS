@@ -108,7 +108,8 @@ static void irq_task_main(void)
 static ULONG irq_raw_count;
 unsigned long amdgpu_diag_counters[24]; /* 8 wait_cs calls, 9 wait_cs timeouts, 10 sched run_job, 11 sched job_done, 12 libdrm fence queries, 13 wait_fences calls */ /* 0 ih entries, 1 eop irqs, 2 fence_process calls, 3 advanced, 4 fallback fired, 5 timers fired, 6 last client, 7 last src */
 void *amdgpu_diag_adev;
-unsigned long amdgpu_diag_last[8]; /* last syncobj wait timeout: fence, flags, seqno, ctx, parent, flags, seqno, scheduled flags */
+unsigned long amdgpu_diag_last[16]; /* 0-7 last syncobj wait timeout: fence, flags, seqno, ctx, parent, count, wait flags, scheduled flags; 8-11 last CS post-dep: fence, seqno, ctx, ndeps */
+unsigned long amdgpu_diag_dce_src[256]; /* IH entries from client DCE by src_id */
 void compat_irq_counts(ULONG *raw, ULONG *handled)
 {
     *raw = irq_raw_count;
