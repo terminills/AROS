@@ -52,6 +52,63 @@ int compat_map_write_combining(void *va, unsigned long size)
     return 0;
 }
 
+/* laptop PSP diagnosis (not for commit): effective memory type of one address */
+#if defined(__x86_64__)
+#include <asm/cpu.h>
+#include <exec/execbase.h>
+#include <exec/memory.h>
+
+void compat_dump_memtype(const char *tag, void *va)
+{
+    IPTR a = (IPTR)va, tmask = 0x000ffffffffff000UL;
+    UQUAD cr3, l4, l3, l2 = 0, l1 = 0, cap, def, pat, base[8], mask[8];
+    unsigned int i, n;
+    struct MemHeader *mh;
+    APTR ssp;
+
+    asm volatile("cli" ::: "memory");
+    ssp = SuperState();
+    cr3 = rdcr(cr3);
+    l4 = ((UQUAD *)(cr3 & tmask))[(a >> 39) & 0x1ff];
+    l3 = (l4 & 1) ? ((UQUAD *)(l4 & tmask))[(a >> 30) & 0x1ff] : 0;
+    if ((l3 & 1) && !(l3 & 0x80))
+        l2 = ((UQUAD *)(l3 & tmask))[(a >> 21) & 0x1ff];
+    if ((l2 & 1) && !(l2 & 0x80))
+        l1 = ((UQUAD *)(l2 & tmask))[(a >> 12) & 0x1ff];
+    cap = rdmsrq(0xFE);
+    def = rdmsrq(0x2FF);
+    pat = rdmsrq(0x277);
+    n = cap & 0xff;
+    if (n > 8)
+        n = 8;
+    for (i = 0; i < n; i++)
+    {
+        base[i] = rdmsrq(0x200 + 2 * i);
+        mask[i] = rdmsrq(0x201 + 2 * i);
+    }
+    if (ssp)
+        UserState(ssp);
+    asm volatile("sti" ::: "memory");
+
+    bug("[memtype] %s %p: pdpe %016llx pde %016llx pte %016llx (pde pwt %d pcd %d pat %d) PAT %016llx MTRRdef %llx\n",
+        tag, va, l3, l2, l1, (int)((l2 >> 3) & 1), (int)((l2 >> 4) & 1),
+        (int)((l2 >> 12) & 1), pat, def);
+    for (i = 0; i < n; i++)
+    {
+        if (!(mask[i] & 0x800))
+            continue;
+        bug("[memtype]   mtrr%u base %013llx type %llu mask %013llx%s\n", i,
+            base[i] & ~0xfffULL, base[i] & 0xff, mask[i] & ~0xfffULL,
+            ((a & mask[i] & ~0xfffULL) == (base[i] & mask[i] & ~0xfffULL)) ? " <- covers" : "");
+    }
+    Forbid();
+    ForeachNode(&SysBase->MemList, mh)
+        if ((IPTR)mh->mh_Lower <= a && a < (IPTR)mh->mh_Upper)
+            bug("[memtype]   inside exec memory '%s' %p-%p\n", mh->mh_Node.ln_Name, mh->mh_Lower, mh->mh_Upper);
+    Permit();
+}
+#endif
+
 #include <proto/dos.h>
 #include <dos/dos.h>
 #include <stdio.h>

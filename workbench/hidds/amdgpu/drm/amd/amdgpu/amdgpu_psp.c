@@ -2600,6 +2600,16 @@ static int psp_hw_start(struct psp_context *psp)
 		 adev->gmc.fb_start, adev->gmc.fb_end, adev->gmc.vram_start, adev->gmc.vram_end,
 		 adev->gmc.real_vram_size >> 20, adev->gmc.gart_start, adev->gmc.gart_end,
 		 adev->gmc.agp_start, adev->gmc.agp_end);
+	dev_warn(adev->dev, "[psp-probe] aper_base %llx size %llu MB kaddr %p fence_buf %p ring_mem %p\n",
+		 adev->gmc.aper_base, adev->gmc.aper_size >> 20, adev->mman.aper_base_kaddr,
+		 psp->fence_buf, psp->km_ring.ring_mem);
+#if defined(__x86_64__)
+	{
+		extern void compat_dump_memtype(const char *tag, void *va);
+		if (psp->fence_buf)
+			compat_dump_memtype("fence_buf", psp->fence_buf);
+	}
+#endif
 
 	ret = psp_ring_create(psp, PSP_RING_TYPE__KM);
 	dev_warn(adev->dev, "[psp-probe] ring create ret %d wptr %u\n", ret,
