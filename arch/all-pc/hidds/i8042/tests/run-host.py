@@ -33,3 +33,23 @@ code=code.replace('@DEFS@',defs).replace('@RESET@',function('i8042_kbdclass.c','
 (out/'reset-host.c').write_text(code)
 subprocess.run(['cc','-std=c11','-g','-O1','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(out/'reset-host.c'),'-o',str(out/'reset-host')],check=True)
 subprocess.run([str(out/'reset-host')],check=True,timeout=10)
+code=(here/'acpi-host.c.in').read_text()
+for key,name in [('ACPI','i8042_acpi.c'),('CLASSINIT','i8042_classinit.c')]:
+    text=(src/name).read_text()
+    text=re.sub(r'^#include[^\n]*','',text,flags=re.M)
+    code=code.replace('@'+key+'@',text)
+(out/'acpi-host.c').write_text(code)
+subprocess.run(['cc','-std=c11','-g','-O1','-fsanitize=address,undefined',str(out/'acpi-host.c'),'-o',str(out/'acpi-host')],check=True)
+subprocess.run([str(out/'acpi-host')],check=True,timeout=10)
+code=(here/'key-host.c.in').read_text()
+root=src.parents[3]
+raw=(root/'compiler/include/devices/rawkeycodes.h').read_text(errors='replace')
+defs='\n'.join(line for name in ['i8042_common.h','keys.h','i8042_kbdclass.c']
+    for line in (src/name).read_text(errors='replace').splitlines()
+    if re.match(r'#define\s+(K_|KBD_REPLY_|FLAG_)',line))
+code=code.replace('@DEFS@',raw+'\n'+defs)
+code=code.replace('@TABLES@','\n'.join((src/name).read_text(errors='replace').replace('__attribute__((section(".text")))','') for name in ['stdkeytable.h','e0keytable.h']))
+code=code.replace('@KEY@',function('i8042_kbdclass.c','static void i8042_kbd_process_irq_key(struct kbd_data *data'))
+(out/'key-host.c').write_text(code)
+subprocess.run(['cc','-std=c11','-g','-O1','-fsanitize=address,undefined',str(out/'key-host.c'),'-o',str(out/'key-host')],check=True)
+subprocess.run([str(out/'key-host')],check=True,timeout=10)
