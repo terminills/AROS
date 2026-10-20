@@ -1191,19 +1191,20 @@ static signed long drm_syncobj_array_wait_timeout(struct drm_syncobj **syncobjs,
 
 		if (timeout == 0) {
 			extern unsigned long amdgpu_diag_counters[24];
-			extern void amdgpu_compat_log(const char *fmt, ...);
+			extern unsigned long amdgpu_diag_last[8];
 			struct dma_fence *f0 = entries[0].fence;
 			struct drm_sched_fence *sf = f0 ? to_drm_sched_fence(f0) : NULL;
 			struct dma_fence *parent = sf ? sf->parent : NULL;
 
 			amdgpu_diag_counters[15]++;
-			amdgpu_compat_log("[syncobj] TIMEOUT count %u flags %x fence %p flags %lx seqno %llu ctx %llu ops %s cb %p | parent %p flags %lx seqno %llu | cbs fired %lu waits %lu sched run %lu done %lu\n",
-				count, flags, f0, f0 ? f0->flags : 0UL, f0 ? (unsigned long long)f0->seqno : 0ULL,
-				f0 ? (unsigned long long)f0->context : 0ULL,
-				f0 && f0->ops && f0->ops->get_driver_name ? f0->ops->get_driver_name(f0) : "?",
-				(void *)entries[0].fence_cb.func,
-				parent, parent ? parent->flags : 0UL, parent ? (unsigned long long)parent->seqno : 0ULL,
-				amdgpu_diag_counters[16], amdgpu_diag_counters[14], amdgpu_diag_counters[10], amdgpu_diag_counters[11]);
+			amdgpu_diag_last[0] = (unsigned long)f0;
+			amdgpu_diag_last[1] = f0 ? f0->flags : 0;
+			amdgpu_diag_last[2] = f0 ? (unsigned long)f0->seqno : 0;
+			amdgpu_diag_last[3] = f0 ? (unsigned long)f0->context : 0;
+			amdgpu_diag_last[4] = (unsigned long)parent;
+			amdgpu_diag_last[5] = parent ? parent->flags : 0;
+			amdgpu_diag_last[6] = parent ? (unsigned long)parent->seqno : 0;
+			amdgpu_diag_last[7] = (unsigned long)(sf ? sf->scheduled.flags : 0UL);
 			timeout = -ETIME;
 			goto done_waiting;
 		}

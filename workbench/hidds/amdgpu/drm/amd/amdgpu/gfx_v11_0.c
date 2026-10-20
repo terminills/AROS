@@ -6500,6 +6500,13 @@ void amdgpu_diag_snapshot(void)
 		amdgpu_diag_counters[8], amdgpu_diag_counters[9], amdgpu_diag_counters[12], amdgpu_diag_counters[13],
 		amdgpu_diag_counters[14], amdgpu_diag_counters[15], amdgpu_diag_counters[16],
 		amdgpu_diag_counters[10], amdgpu_diag_counters[11]);
+	{
+		extern unsigned long amdgpu_diag_last[8];
+		if (amdgpu_diag_last[0])
+			amdgpu_compat_log("[diag] last syncobj timeout: fence %lx flags %lx seqno %lu ctx %lu | parent %lx flags %lx seqno %lu | scheduled flags %lx\n",
+				amdgpu_diag_last[0], amdgpu_diag_last[1], amdgpu_diag_last[2], amdgpu_diag_last[3],
+				amdgpu_diag_last[4], amdgpu_diag_last[5], amdgpu_diag_last[6], amdgpu_diag_last[7]);
+	}
 }
 
 static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,

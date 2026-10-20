@@ -147,12 +147,12 @@ static void Amdgpu_KMS_SetClone(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, dr
     }
     if (!best)
     {
-        amdgpu_compat_log("[Amdgpu:KMS] clone: connector %u has no %ux%u mode, left off\n", connector_id, mode->hdisplay, mode->vdisplay);
+        bug("[Amdgpu:KMS] clone: connector %u has no %ux%u mode, left off\n", connector_id, mode->hdisplay, mode->vdisplay);
         drmModeSetCrtc(kms->fd, kms->clone_crtc_id, 0, 0, 0, NULL, 0, NULL);
         return;
     }
     ret = drmModeSetCrtc(kms->fd, kms->clone_crtc_id, fb->fbid, 0, 0, &connector_id, 1, best);
-    amdgpu_compat_log("[Amdgpu:KMS] clone: crtc %u connector %u fb %u mode %s: %d\n", kms->clone_crtc_id, connector_id, fb->fbid, best->name, ret);
+    bug("[Amdgpu:KMS] clone: crtc %u connector %u fb %u mode %s: %d\n", kms->clone_crtc_id, connector_id, fb->fbid, best->name, ret);
 }
 
 BOOL Amdgpu_KMS_SetMode(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, drmModeModeInfoPtr mode)
@@ -490,7 +490,7 @@ static BOOL Amdgpu_KMS_SelectDisplay(struct Amdgpu_KMS *kms)
             }
             drmModeFreeEncoder(encoder);
         }
-        amdgpu_compat_log("[Amdgpu:KMS] clone output: connector %u type %u encoder %u crtc %u (%d modes)\n",
+        bug("[Amdgpu:KMS] clone output: connector %u type %u encoder %u crtc %u (%d modes)\n",
             kms->clone_connector->connector_id, kms->clone_connector->connector_type, encoder_id,
             kms->clone_crtc_id, kms->clone_connector->count_modes);
         if (!kms->clone_crtc_id)
