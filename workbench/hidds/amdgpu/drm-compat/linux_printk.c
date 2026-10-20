@@ -391,6 +391,8 @@ static void nlog_append(const char *s, size_t n)
         Signal(nlog.flusher, 1UL << nlog.sigbit);
 }
 
+int amdgpu_diag_level;
+
 static void nlog_flusher(void)
 {
     struct Task *self = FindTask(NULL);
@@ -402,6 +404,10 @@ static void nlog_flusher(void)
     nlog.sigbit = AllocSignal(-1);
     if (nlog.sigbit == (ULONG)-1)
         return;
+    /* level 5: the buffer exists from the start, the flusher stays out of the
+     * first screen; nothing signals it until it announces itself here */
+    if (amdgpu_diag_level == 5)
+        Delay(1500);
     nlog.flusher = self;
 
     if (GetVar("AMDGPU_LOGFILE", name, sizeof(name), GVF_GLOBAL_ONLY) <= 0)
@@ -425,7 +431,8 @@ static void nlog_flusher(void)
         BPTR fh;
         ULONG head, tail;
 
-        Wait((1UL << nlog.sigbit) | SIGBREAKF_CTRL_C);
+        if (nlog.head == nlog.tail)
+            Wait((1UL << nlog.sigbit) | SIGBREAKF_CTRL_C);
         /* let a burst of lines accumulate */
         Delay(2);
 
@@ -523,17 +530,16 @@ int compat_env_digit(const char *name);
 /*
  * SYS:Prefs/Env-Archive/AMDGPU_DIAG: 0/absent nothing, 1 log file + heartbeat
  * with the register/cache probes, 2 log file + heartbeat without the probes,
- * 3 log file only, 4 a silent heartbeat (a timer request every 2 s, nothing else).
+ * 3 log file only, 4 a silent heartbeat (a timer request every 2 s, nothing else),
+ * 5 log file whose flusher starts 30 s late (the buffer alone during the first screen).
  */
-int amdgpu_diag_level;
-
 BOOL amdgpu_log_init(void)
 {
     if (nlog.started)
         return TRUE;
     nlog.started = TRUE;
     amdgpu_diag_level = compat_env_digit("AMDGPU_DIAG");
-    if (!amdgpu_diag_level || amdgpu_diag_level == 4)
+    if (!amdgpu_diag_level || amdgpu_diag_level == 4 || amdgpu_diag_level > 5)
         return TRUE;
     nlog.sigbit = (ULONG)-1;
     nlog.buf = AllocMem(NLOG_SIZE, MEMF_ANY);
