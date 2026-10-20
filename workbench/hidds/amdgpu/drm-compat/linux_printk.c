@@ -523,7 +523,7 @@ int compat_env_digit(const char *name);
 /*
  * SYS:Prefs/Env-Archive/AMDGPU_DIAG: 0/absent nothing, 1 log file + heartbeat
  * with the register/cache probes, 2 log file + heartbeat without the probes,
- * 3 log file only.
+ * 3 log file only, 4 a silent heartbeat (a timer request every 2 s, nothing else).
  */
 int amdgpu_diag_level;
 
@@ -533,7 +533,7 @@ BOOL amdgpu_log_init(void)
         return TRUE;
     nlog.started = TRUE;
     amdgpu_diag_level = compat_env_digit("AMDGPU_DIAG");
-    if (!amdgpu_diag_level)
+    if (!amdgpu_diag_level || amdgpu_diag_level == 4)
         return TRUE;
     nlog.sigbit = (ULONG)-1;
     nlog.buf = AllocMem(NLOG_SIZE, MEMF_ANY);
@@ -577,6 +577,12 @@ int compat_env_digit(const char *name)
 
     snprintf(path, sizeof(path), "SYS:Prefs/Env-Archive/%s", name);
     fh = Open(path, MODE_OLDFILE);
+    if (!fh)
+    {
+        /* or on the boot stick's EFI partition, writable from any host */
+        snprintf(path, sizeof(path), "Efi:%s", name);
+        fh = Open(path, MODE_OLDFILE);
+    }
     if (fh)
     {
         n = Read(fh, var, sizeof(var) - 1);
@@ -642,6 +648,8 @@ static void nlog_alive(void)
         ULONG raw = 0, handled = 0;
 
         Delay(100);
+        if (amdgpu_diag_level == 4)
+            continue;
         nlog_ready_tasks();
         compat_irq_counts(&raw, &handled);
         amdgpu_compat_log("[alive] %lu: 2d calls %lu posted %lu ops %lu/%lu flush %lu/%lu last op %lu fence timeouts %lu, irq raw %lu handled %lu\n",

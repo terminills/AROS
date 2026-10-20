@@ -2619,7 +2619,7 @@ static int psp_hw_start(struct psp_context *psp)
 		extern int amdgpu_diag_level;
 		extern void *amdgpu_diag_adev;
 		amdgpu_diag_adev = adev;
-		if (amdgpu_diag_level == 1 || amdgpu_diag_level == 2)
+		if (amdgpu_diag_level == 1 || amdgpu_diag_level == 2 || amdgpu_diag_level == 4)
 			amdgpu_log_alive_start();
 		if (amdgpu_diag_level == 1) {
 			if (psp->fence_buf) {
