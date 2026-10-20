@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 typedef uintptr_t IPTR;
+typedef int BOOL;
 typedef uint32_t ULONG;
 typedef uint32_t ACPI_STATUS;
 typedef void *ACPI_HANDLE;
@@ -27,6 +28,7 @@ struct i8042base {
 #define FALSE 0
 #define AE_OK 0
 #define ACPI_FAILURE(status) ((status)!=0)
+#define ACPI_SUCCESS(status) ((status)==0)
 #define USE_FAST_PUSHEVENT 1
 #define PS2F_DISABLEKEYB 1
 #define PS2F_DISABLEMOUSE 2
@@ -38,11 +40,12 @@ static struct Library acpi;
 static OOP_Object keyboard,mouse;
 static OOP_Class kbdclass,mouseclass;
 static int devices,acpi_present,added_kbd,added_mouse;
+static const char *keyboard_id="PNP0303", *mouse_id="PNP0F03";
 static struct Library *OpenLibrary(const char *name,int v) {return acpi_present ? &acpi : NULL;}
 static void CloseLibrary(struct Library *l) {assert(l==&acpi);}
 static ACPI_STATUS AcpiGetDevices(const char *id,
     ACPI_STATUS (*cb)(ACPI_HANDLE,ULONG,void *,void **),void *ctx,void **result) {
-    int flag=!strcmp(id,"PNP0303") ? 1 : 2;
+    int flag=!strcmp(id,keyboard_id) ? 1 : (!strcmp(id,mouse_id) ? 2 : 0);
     return (devices & flag) ? cb(NULL,0,ctx,result) : AE_OK;
 }
 static OOP_Object *OOP_NewObject(void *cl,const char *id,void *tags) {
@@ -66,6 +69,10 @@ static int init(struct i8042base *b) {
     return i8042_Init(b) && i8042_acpi_probe(b);
 }
 int main(void) {
+    const char *keyboard_ids[]={"PNP0303","PNP030B"};
+    const char *mouse_ids[]={"PNP0F03","PNP0F12","PNP0F13","PNP0F19"};
+    for(unsigned k=0;k<2;k++) for(unsigned m=0;m<4;m++) {
+    keyboard_id=keyboard_ids[k]; mouse_id=mouse_ids[m];
     for(int scenario=0;scenario<5;scenario++) {
         struct i8042base b={0};
         added_kbd=added_mouse=0;
@@ -79,5 +86,6 @@ int main(void) {
             assert(added_mouse==((devices&2)!=0 || !acpi_present));
         }
     }
-    puts("PASS ACPI no-device failure before driver registration, keyboard-only, mouse-only, both and absent ACPI");
+    }
+    puts("PASS 40 ACPI identifier scenarios: no-device failure before driver registration, keyboard-only, mouse-only, both and absent ACPI");
 }
