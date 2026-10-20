@@ -106,6 +106,8 @@ static void irq_task_main(void)
 
 /* laptop diag (not for commit): interrupt counters for the alive line */
 static ULONG irq_raw_count;
+unsigned long amdgpu_diag_counters[8]; /* 0 ih entries, 1 eop irqs, 2 fence_process calls, 3 advanced, 4 fallback fired, 5 timers fired, 6 last client, 7 last src */
+void *amdgpu_diag_adev;
 void compat_irq_counts(ULONG *raw, ULONG *handled)
 {
     *raw = irq_raw_count;

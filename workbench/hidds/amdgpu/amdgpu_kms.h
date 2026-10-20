@@ -40,6 +40,8 @@ struct Amdgpu_KMS
 
     drmModeConnectorPtr         connector;      /* the display we drive */
     ULONG                       crtc_id;
+    drmModeConnectorPtr         clone_connector; /* a second connected output showing the same buffer, or NULL */
+    ULONG                       clone_crtc_id;
     drmModeModeInfoPtr          curmode;        /* mode set on the crtc, or NULL */
     struct Amdgpu_FB        *curfb;         /* framebuffer shown, or NULL */
 

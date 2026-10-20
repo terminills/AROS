@@ -585,6 +585,10 @@ static void nlog_alive(void)
             (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[5],
             (unsigned long)amdgpu_2d_diag[6], (unsigned long)amdgpu_2d_diag[7],
             (unsigned long)raw, (unsigned long)handled);
+        {
+            extern void amdgpu_diag_snapshot(void);
+            amdgpu_diag_snapshot();
+        }
     }
 }
 

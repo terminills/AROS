@@ -6456,6 +6456,48 @@ static int gfx_v11_0_set_eop_interrupt_state(struct amdgpu_device *adev,
 	return 0;
 }
 
+
+/* laptop diag (not for commit): ring, fence and IH state as the CPU sees it, before and after a cache line flush */
+static u32 amdgpu_diag_rd(u32 *p, u32 *after)
+{
+	u32 v = p ? *(volatile u32 *)p : 0;
+
+	if (p) {
+		__asm__ __volatile__("mfence; clflush (%0); mfence" : : "r"(p) : "memory");
+		*after = *(volatile u32 *)p;
+	} else
+		*after = 0;
+	return v;
+}
+
+void amdgpu_diag_snapshot(void)
+{
+	extern void *amdgpu_diag_adev;
+	extern unsigned long amdgpu_diag_counters[8];
+	extern void amdgpu_compat_log(const char *fmt, ...);
+	struct amdgpu_device *adev = amdgpu_diag_adev;
+	struct amdgpu_ring *ring;
+	struct amdgpu_ih_ring *ih;
+	u32 seq0, seq1, rp0, rp1, ihw0, ihw1, regrptr, regwptr, ihreg;
+
+	if (!adev)
+		return;
+	ring = &adev->gfx.gfx_ring[0];
+	ih = &adev->irq.ih;
+	seq0 = amdgpu_diag_rd(ring->fence_drv.cpu_addr, &seq1);
+	rp0 = amdgpu_diag_rd(ring->rptr_cpu_addr, &rp1);
+	ihw0 = amdgpu_diag_rd((u32 *)ih->wptr_cpu, &ihw1);
+	regrptr = RREG32_SOC15(GC, 0, regCP_RB0_RPTR);
+	regwptr = RREG32_SOC15(GC, 0, regCP_RB0_WPTR);
+	ihreg = RREG32_NO_KIQ(ih->ih_regs.ih_rb_wptr);
+	amdgpu_compat_log("[diag] gfx0 sw wptr %llx reg rptr %x wptr %x wb rptr %x/%x fence sync %x last %x mem %x/%x | ih rptr %x wptr mem %x/%x reg %x | ih entries %lu last %lu:%lu eop %lu fproc %lu/%lu fallback %lu timers %lu\n",
+		(unsigned long long)ring->wptr, regrptr, regwptr, rp0, rp1,
+		ring->fence_drv.sync_seq, (u32)atomic_read(&ring->fence_drv.last_seq), seq0, seq1,
+		ih->rptr, ihw0, ihw1, ihreg,
+		amdgpu_diag_counters[0], amdgpu_diag_counters[6], amdgpu_diag_counters[7], amdgpu_diag_counters[1],
+		amdgpu_diag_counters[2], amdgpu_diag_counters[3], amdgpu_diag_counters[4], amdgpu_diag_counters[5]);
+}
+
 static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,
 			     struct amdgpu_irq_src *source,
 			     struct amdgpu_iv_entry *entry)
@@ -6466,6 +6508,7 @@ static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,
 	int i;
 
 	DRM_DEBUG("IH: CP EOP\n");
+	{ extern unsigned long amdgpu_diag_counters[8]; amdgpu_diag_counters[1]++; }
 
 	if (adev->enable_mes && doorbell_offset) {
 		struct amdgpu_userq_fence_driver *fence_drv = NULL;

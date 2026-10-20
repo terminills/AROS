@@ -297,6 +297,8 @@ static void timer_proc_main(void)
             struct timer_list *t = container_of(treq, struct timer_list, req);
 
             if (t->pending) {
+                extern unsigned long amdgpu_diag_counters[8];
+                amdgpu_diag_counters[5]++;
                 t->pending = FALSE;
                 if (t->function)
                     t->function(t);

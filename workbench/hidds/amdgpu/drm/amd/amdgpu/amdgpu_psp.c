@@ -2616,6 +2616,8 @@ static int psp_hw_start(struct psp_context *psp)
 		extern void compat_dump_memtype(const char *tag, void *va);
 		extern void compat_probe_rw(const char *tag, void *va);
 		extern void amdgpu_log_alive_start(void);
+		extern void *amdgpu_diag_adev;
+		amdgpu_diag_adev = adev;
 		amdgpu_log_alive_start();
 		if (psp->fence_buf) {
 			compat_dump_memtype("fence_buf", psp->fence_buf);
