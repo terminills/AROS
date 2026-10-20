@@ -2606,8 +2606,15 @@ static int psp_hw_start(struct psp_context *psp)
 #if defined(__x86_64__)
 	{
 		extern void compat_dump_memtype(const char *tag, void *va);
-		if (psp->fence_buf)
+		extern void compat_probe_rw(const char *tag, void *va);
+		if (psp->fence_buf) {
 			compat_dump_memtype("fence_buf", psp->fence_buf);
+			compat_probe_rw("fence_buf", psp->fence_buf);
+		}
+		if (psp->km_ring.ring_mem) {
+			compat_dump_memtype("ring_mem", psp->km_ring.ring_mem);
+			compat_probe_rw("ring_mem", psp->km_ring.ring_mem);
+		}
 	}
 #endif
 

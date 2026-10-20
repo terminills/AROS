@@ -57,6 +57,7 @@ int compat_map_write_combining(void *va, unsigned long size)
 #include <asm/cpu.h>
 #include <exec/execbase.h>
 #include <exec/memory.h>
+#include <proto/dos.h>
 
 void amdgpu_compat_log(const char *fmt, ...);
 
@@ -105,9 +106,30 @@ void compat_dump_memtype(const char *tag, void *va)
     }
     Forbid();
     ForeachNode(&SysBase->MemList, mh)
-        if ((IPTR)mh->mh_Lower <= a && a < (IPTR)mh->mh_Upper)
-            amdgpu_compat_log("[memtype]   inside exec memory '%s' %p-%p\n", mh->mh_Node.ln_Name, mh->mh_Lower, mh->mh_Upper);
+        amdgpu_compat_log("[memtype]   exec memory '%s' %p-%p attr %04lx free %lu%s\n", mh->mh_Node.ln_Name,
+            mh->mh_Lower, mh->mh_Upper, (unsigned long)mh->mh_Attributes, (unsigned long)mh->mh_Free,
+            ((IPTR)mh->mh_Lower <= a && a < (IPTR)mh->mh_Upper) ? " <- CONTAINS the address" : "");
     Permit();
+}
+
+/* write a pattern through the mapping, read it back at once and again later */
+void compat_probe_rw(const char *tag, void *va)
+{
+    volatile UQUAD *p = va;
+    UQUAD before = p[0], before1 = p[1], r0, r1, l0, l1;
+
+    p[0] = 0x8000000012345678ULL;
+    p[1] = 0x00000080deadbeefULL;
+    asm volatile("mfence" ::: "memory");
+    r0 = p[0];
+    r1 = p[1];
+    Delay(5);
+    l0 = p[0];
+    l1 = p[1];
+    amdgpu_compat_log("[memtype] rw %s %p: was %016llx %016llx, wrote 8000000012345678 00000080deadbeef, read %016llx %016llx, 100ms later %016llx %016llx\n",
+        tag, va, before, before1, r0, r1, l0, l1);
+    p[0] = before;
+    p[1] = before1;
 }
 #endif
 
