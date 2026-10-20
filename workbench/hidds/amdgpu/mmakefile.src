@@ -127,7 +127,7 @@ AMD_INCLUDES := \
 
 # Kbuild forces kconfig.h and compiler_types.h into every file and passes the
 # configuration as CONFIG_ symbols; the default x86_64 configuration is used.
-DRM_CPPFLAGS := -D__KERNEL__ -DCONFIG_X86 -DCONFIG_X86_64 -DDRM_COMPAT_NAME=\"amdgpu\" \
+DRM_CPPFLAGS := -D__KERNEL__ -DCONFIG_X86 -DCONFIG_X86_64 -DCONFIG_64BIT -DDRM_COMPAT_NAME=\"amdgpu\" \
                 -DCONFIG_DRM_AMDGPU -DCONFIG_DRM_AMD_DC -DCONFIG_DRM_AMD_DC_FP \
                 -DCONFIG_DRM_AMDGPU_SI -DCONFIG_DRM_AMDGPU_CIK -DCONFIG_DRM_AMD_DC_SI \
                 -DBUILD_FEATURE_TIMING_SYNC=0 \
