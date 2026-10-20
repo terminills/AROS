@@ -518,11 +518,16 @@ static void nlog_flusher(void)
     }
 }
 
+int compat_env_flag(const char *name);
+
 BOOL amdgpu_log_init(void)
 {
     if (nlog.started)
         return TRUE;
     nlog.started = TRUE;
+    /* the file log and the heartbeat only when SYS:Prefs/Env-Archive/AMDGPU_DIAG says so */
+    if (!compat_env_flag("AMDGPU_DIAG"))
+        return TRUE;
     nlog.sigbit = (ULONG)-1;
     nlog.buf = AllocMem(NLOG_SIZE, MEMF_ANY);
     if (!nlog.buf)

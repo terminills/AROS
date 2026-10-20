@@ -2616,16 +2616,19 @@ static int psp_hw_start(struct psp_context *psp)
 		extern void compat_dump_memtype(const char *tag, void *va);
 		extern void compat_probe_rw(const char *tag, void *va);
 		extern void amdgpu_log_alive_start(void);
+		extern int compat_env_flag(const char *name);
 		extern void *amdgpu_diag_adev;
 		amdgpu_diag_adev = adev;
-		amdgpu_log_alive_start();
-		if (psp->fence_buf) {
-			compat_dump_memtype("fence_buf", psp->fence_buf);
-			compat_probe_rw("fence_buf", psp->fence_buf);
-		}
-		if (psp->km_ring.ring_mem) {
-			compat_dump_memtype("ring_mem", psp->km_ring.ring_mem);
-			compat_probe_rw("ring_mem", psp->km_ring.ring_mem);
+		if (compat_env_flag("AMDGPU_DIAG")) {
+			amdgpu_log_alive_start();
+			if (psp->fence_buf) {
+				compat_dump_memtype("fence_buf", psp->fence_buf);
+				compat_probe_rw("fence_buf", psp->fence_buf);
+			}
+			if (psp->km_ring.ring_mem) {
+				compat_dump_memtype("ring_mem", psp->km_ring.ring_mem);
+				compat_probe_rw("ring_mem", psp->km_ring.ring_mem);
+			}
 		}
 	}
 #endif
