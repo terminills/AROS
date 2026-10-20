@@ -2616,11 +2616,12 @@ static int psp_hw_start(struct psp_context *psp)
 		extern void compat_dump_memtype(const char *tag, void *va);
 		extern void compat_probe_rw(const char *tag, void *va);
 		extern void amdgpu_log_alive_start(void);
-		extern int compat_env_flag(const char *name);
+		extern int amdgpu_diag_level;
 		extern void *amdgpu_diag_adev;
 		amdgpu_diag_adev = adev;
-		if (compat_env_flag("AMDGPU_DIAG")) {
+		if (amdgpu_diag_level == 1 || amdgpu_diag_level == 2)
 			amdgpu_log_alive_start();
+		if (amdgpu_diag_level == 1) {
 			if (psp->fence_buf) {
 				compat_dump_memtype("fence_buf", psp->fence_buf);
 				compat_probe_rw("fence_buf", psp->fence_buf);

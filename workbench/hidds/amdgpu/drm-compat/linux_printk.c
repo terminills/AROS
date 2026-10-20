@@ -518,15 +518,22 @@ static void nlog_flusher(void)
     }
 }
 
-int compat_env_flag(const char *name);
+int compat_env_digit(const char *name);
+
+/*
+ * SYS:Prefs/Env-Archive/AMDGPU_DIAG: 0/absent nothing, 1 log file + heartbeat
+ * with the register/cache probes, 2 log file + heartbeat without the probes,
+ * 3 log file only.
+ */
+int amdgpu_diag_level;
 
 BOOL amdgpu_log_init(void)
 {
     if (nlog.started)
         return TRUE;
     nlog.started = TRUE;
-    /* the file log and the heartbeat only when SYS:Prefs/Env-Archive/AMDGPU_DIAG says so */
-    if (!compat_env_flag("AMDGPU_DIAG"))
+    amdgpu_diag_level = compat_env_digit("AMDGPU_DIAG");
+    if (!amdgpu_diag_level)
         return TRUE;
     nlog.sigbit = (ULONG)-1;
     nlog.buf = AllocMem(NLOG_SIZE, MEMF_ANY);
@@ -557,6 +564,28 @@ int compat_env_flag(const char *name)
     }
     if (n > 0)
         return var[0] == '1' || var[0] == 'y' || var[0] == 'Y';
+    return 0;
+}
+
+/* the same switch as a small number */
+int compat_env_digit(const char *name)
+{
+    char var[16];
+    char path[64];
+    BPTR fh;
+    LONG n = 0;
+
+    snprintf(path, sizeof(path), "SYS:Prefs/Env-Archive/%s", name);
+    fh = Open(path, MODE_OLDFILE);
+    if (fh)
+    {
+        n = Read(fh, var, sizeof(var) - 1);
+        Close(fh);
+    }
+    if (n > 0 && var[0] >= '0' && var[0] <= '9')
+        return var[0] - '0';
+    if (n > 0 && (var[0] == 'y' || var[0] == 'Y'))
+        return 1;
     return 0;
 }
 
@@ -621,6 +650,7 @@ static void nlog_alive(void)
             (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[5],
             (unsigned long)amdgpu_2d_diag[6], (unsigned long)amdgpu_2d_diag[7],
             (unsigned long)raw, (unsigned long)handled);
+        if (amdgpu_diag_level == 1)
         {
             extern void amdgpu_diag_snapshot(void);
             amdgpu_diag_snapshot();
@@ -678,7 +708,7 @@ static void nlog_emit(char *buf, size_t n)
     }
     nlog_append(buf, n);
 #if DEBUG || AMDGPU_FILELOG
-    if (level <= 5 || nlog.serial_all || !nlog.buf)
+    if (level <= 5 || (nlog.buf && nlog.serial_all))
 #else
     if (level <= 5 || NLOG_SERIAL_ALL)
 #endif

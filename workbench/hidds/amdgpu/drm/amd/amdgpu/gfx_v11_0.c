@@ -6516,7 +6516,18 @@ void amdgpu_diag_snapshot(void)
 		amdgpu_compat_log("[diag] dce irq by src:%s\n", n ? hist : " none");
 		{ extern void amdgpu_diag_dm_snapshot(void); amdgpu_diag_dm_snapshot(); }
 	}
-
+	/* the GART entries the GPU uses to write the fence and the ring read pointer */
+	if (adev->gart.ptr && ring->fence_drv.gpu_addr >= adev->gmc.gart_start &&
+	    ring->fence_drv.gpu_addr < adev->gmc.gart_end) {
+		u64 idx = (ring->fence_drv.gpu_addr - adev->gmc.gart_start) >> PAGE_SHIFT;
+		u64 pte = ((volatile u64 *)adev->gart.ptr)[idx];
+		u64 idx2 = (ring->rptr_gpu_addr - adev->gmc.gart_start) >> PAGE_SHIFT;
+		u64 pte2 = ((volatile u64 *)adev->gart.ptr)[idx2];
+		amdgpu_compat_log("[diag] gart: fence gpu %llx pte[%llu] %016llx rptr pte[%llu] %016llx (snooped bit2 valid bit0) default %016llx ih ring %llx wptr %llx\n",
+			(unsigned long long)ring->fence_drv.gpu_addr, (unsigned long long)idx, (unsigned long long)pte,
+			(unsigned long long)idx2, (unsigned long long)pte2, (unsigned long long)adev->gart.gart_pte_flags,
+			(unsigned long long)ih->gpu_addr, (unsigned long long)ih->wptr_addr);
+	}
 }
 
 static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,
