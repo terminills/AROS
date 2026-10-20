@@ -161,16 +161,29 @@ static struct pipe_resource *amdgpu_2d_texture(ULONG width, ULONG height, enum p
     return gpu2d.screen->resource_create(gpu2d.screen, &templ);
 }
 
+/* laptop diag (not for commit): where the 2D path is, for the alive line */
+ULONG amdgpu_2d_diag[8];    /* 0 calls 1 posted 2 worker ops started 3 finished 4 flushes started 5 finished 6 last op 7 fence timeouts */
+void amdgpu_compat_log(const char *fmt, ...);
+
 static void amdgpu_2d_flush(ULONG done)
 {
     struct pipe_fence_handle *fence = NULL;
 
+    amdgpu_2d_diag[4]++;
     gpu2d.pipe->flush(gpu2d.pipe, &fence, 0);
     if (fence)
     {
-        gpu2d.screen->fence_finish(gpu2d.screen, NULL, fence, OS_TIMEOUT_INFINITE);
+        if (!gpu2d.screen->fence_finish(gpu2d.screen, NULL, fence, 10000000000ULL))
+        {
+            amdgpu_2d_diag[7]++;
+            amdgpu_compat_log("[2d] fence_finish TIMEOUT after 10 s (flush %lu, ops %lu/%lu, last op %lu)\n",
+                (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[2],
+                (unsigned long)amdgpu_2d_diag[3], (unsigned long)amdgpu_2d_diag[6]);
+            gpu2d.screen->fence_finish(gpu2d.screen, NULL, fence, OS_TIMEOUT_INFINITE);
+        }
         gpu2d.screen->fence_reference(gpu2d.screen, &fence, NULL);
     }
+    amdgpu_2d_diag[5]++;
     gpu2d.completed = done;
 }
 
@@ -292,6 +305,9 @@ static void gpu2d_worker(void)
         {
             if (m->async)
             {
+                amdgpu_2d_diag[2]++;
+                amdgpu_2d_diag[3]++;
+                amdgpu_2d_diag[6] = m->op;
                 if (m->op == GPU2D_COPY)
                     gpu2d_copy(m->kms, m->bm, m->sx, m->sy, m->dx, m->dy, m->w, m->h);
                 else
@@ -306,6 +322,11 @@ static void gpu2d_worker(void)
                 amdgpu_2d_flush(executed);
                 dirty = FALSE;
             }
+            amdgpu_2d_diag[2]++;
+            amdgpu_2d_diag[6] = m->op;
+            if (amdgpu_2d_diag[2] <= 20)
+                amdgpu_compat_log("[2d] op %lu: %d %ldx%ld at %ld,%ld from %ld,%ld\n", (unsigned long)amdgpu_2d_diag[2],
+                    m->op, (long)m->w, (long)m->h, (long)m->dx, (long)m->dy, (long)m->sx, (long)m->sy);
             switch (m->op)
             {
                 case GPU2D_COPY:
@@ -325,6 +346,7 @@ static void gpu2d_worker(void)
             }
             if (m->op == GPU2D_COPY || m->op == GPU2D_FILL)
                 amdgpu_2d_flush(executed);
+            amdgpu_2d_diag[3]++;
             ReplyMsg(&m->msg);
         }
         if (dirty)
@@ -381,6 +403,7 @@ static BOOL gpu2d_call(struct gpu2d_msg *m)
     m->msg.mn_Node.ln_Type = NT_MESSAGE;
     m->msg.mn_ReplyPort = &port;
     m->msg.mn_Length = sizeof(*m);
+    amdgpu_2d_diag[0]++;
     PutMsg(gpu2d.port, &m->msg);
     WaitPort(&port);
     GetMsg(&port);
@@ -405,6 +428,7 @@ static BOOL gpu2d_post(struct gpu2d_msg *src)
     m->msg.mn_ReplyPort = NULL;
     m->msg.mn_Length = sizeof(*m);
     __atomic_add_fetch(&gpu2d.posted, 1, __ATOMIC_SEQ_CST);
+    amdgpu_2d_diag[1]++;
     PutMsg(gpu2d.port, &m->msg);
     return TRUE;
 }

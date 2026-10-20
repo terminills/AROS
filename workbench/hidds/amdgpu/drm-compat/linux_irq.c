@@ -104,12 +104,21 @@ static void irq_task_main(void)
     Signal(entry->irq_parent, entry->irq_ack);
 }
 
+/* laptop diag (not for commit): interrupt counters for the alive line */
+static ULONG irq_raw_count;
+void compat_irq_counts(ULONG *raw, ULONG *handled)
+{
+    *raw = irq_raw_count;
+    *handled = irq_count;
+}
+
 static AROS_INTH1(irq_dispatcher, struct irq_handler_entry *, entry)
 {
     AROS_INTFUNC_INIT
 
     irqreturn_t ret;
 
+    irq_raw_count++;
     if (entry->irq_task)
     {
         __atomic_add_fetch(&entry->irq_pending, 1, __ATOMIC_ACQ_REL);

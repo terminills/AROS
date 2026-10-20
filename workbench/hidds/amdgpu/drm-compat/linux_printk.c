@@ -524,6 +524,36 @@ BOOL amdgpu_log_init(void)
     return TRUE;
 }
 
+/* laptop diag (not for commit): a high-priority heartbeat with the 2D and IRQ counters */
+extern ULONG amdgpu_2d_diag[8];
+void compat_irq_counts(ULONG *raw, ULONG *handled);
+void amdgpu_compat_log(const char *fmt, ...);
+
+static void nlog_alive(void)
+{
+    ULONG n = 0;
+
+    for (;;)
+    {
+        ULONG raw = 0, handled = 0;
+
+        Delay(100);
+        compat_irq_counts(&raw, &handled);
+        amdgpu_compat_log("[alive] %lu: 2d calls %lu posted %lu ops %lu/%lu flush %lu/%lu last op %lu fence timeouts %lu, irq raw %lu handled %lu\n",
+            (unsigned long)++n, (unsigned long)amdgpu_2d_diag[0], (unsigned long)amdgpu_2d_diag[1],
+            (unsigned long)amdgpu_2d_diag[2], (unsigned long)amdgpu_2d_diag[3],
+            (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[5],
+            (unsigned long)amdgpu_2d_diag[6], (unsigned long)amdgpu_2d_diag[7],
+            (unsigned long)raw, (unsigned long)handled);
+    }
+}
+
+void amdgpu_log_alive_start(void)
+{
+    CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Alive", NP_Priority, 60,
+                      NP_Affinity, TASKAFFINITY_ANY, NP_Entry, (IPTR)nlog_alive, NP_StackSize, 32 * 1024, TAG_DONE);
+}
+
 /* laptop diag (not for commit): wait until the flusher has written everything so far */
 void amdgpu_log_sync(void)
 {
