@@ -2610,6 +2610,7 @@ enum dc_irq_source dc_interrupt_to_irq_source(
 		uint32_t src_id,
 		uint32_t ext_id);
 bool dc_interrupt_set(struct dc *dc, enum dc_irq_source src, bool enable);
+bool dc_interrupt_diag(struct dc *dc, enum dc_irq_source src, uint32_t *reg, uint32_t *val, uint32_t *mask, uint32_t *status);
 void dc_interrupt_ack(struct dc *dc, enum dc_irq_source src);
 bool dc_get_flip_pending_on_otg(struct dc *dc, int otg_inst);
 enum dc_irq_source dc_get_hpd_irq_source_at_index(

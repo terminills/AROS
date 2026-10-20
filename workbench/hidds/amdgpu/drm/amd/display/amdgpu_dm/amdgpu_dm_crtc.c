@@ -332,7 +332,7 @@ static inline int amdgpu_dm_crtc_set_vblank(struct drm_crtc *crtc, bool enable)
 	 * vblank and pageflip completion events, so enable it whenever vblank
 	 * is enabled. On DCE, vupdate is only needed in VRR mode.
 	 */
-	if (amdgpu_ip_version(adev, DCE_HWIP, 0) != 0) {
+	if (amdgpu_ip_version(adev, DCE_HWIP, 0) != 0 && !({ extern int amdgpu_dcn_vline; amdgpu_dcn_vline; })) {
 		if (enable) {
 			rc = amdgpu_irq_get(adev, &adev->vupdate_irq, irq_type);
 			drm_dbg_vbl(crtc->dev, "Get vupdate_irq ret=%d\n", rc);
@@ -362,7 +362,7 @@ static inline int amdgpu_dm_crtc_set_vblank(struct drm_crtc *crtc, bool enable)
 	 * DCE. On DCN, vblank and pageflip completion are delivered from
 	 * VUPDATE_NO_LOCK (enabled above), so don't touch them here.
 	 */
-	if (amdgpu_ip_version(adev, DCE_HWIP, 0) == 0) {
+	if (amdgpu_ip_version(adev, DCE_HWIP, 0) == 0 || ({ extern int amdgpu_dcn_vline; amdgpu_dcn_vline; })) {
 		/* crtc vblank or vstartup interrupt */
 		if (enable) {
 			rc = amdgpu_irq_get(adev, &adev->crtc_irq, irq_type);
@@ -374,6 +374,8 @@ static inline int amdgpu_dm_crtc_set_vblank(struct drm_crtc *crtc, bool enable)
 
 		if (rc)
 			return rc;
+	}
+	if (amdgpu_ip_version(adev, DCE_HWIP, 0) == 0) {
 
 		/*
 		 * hubp surface flip interrupt

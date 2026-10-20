@@ -6514,6 +6514,7 @@ void amdgpu_diag_snapshot(void)
 			if (amdgpu_diag_dce_src[i])
 				n += snprintf(hist + n, sizeof(hist) - n, " %d:%lu", i, amdgpu_diag_dce_src[i]);
 		amdgpu_compat_log("[diag] dce irq by src:%s\n", n ? hist : " none");
+		{ extern void amdgpu_diag_dm_snapshot(void); amdgpu_diag_dm_snapshot(); }
 	}
 
 }

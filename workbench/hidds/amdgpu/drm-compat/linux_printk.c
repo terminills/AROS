@@ -530,6 +530,16 @@ BOOL amdgpu_log_init(void)
     return TRUE;
 }
 
+/* laptop diag (not for commit): read a yes/no switch from ENV: */
+int compat_env_flag(const char *name)
+{
+    char var[16];
+
+    if (GetVar((CONST_STRPTR)name, var, sizeof(var), GVF_GLOBAL_ONLY) > 0)
+        return var[0] == '1' || var[0] == 'y' || var[0] == 'Y';
+    return 0;
+}
+
 /* laptop diag (not for commit): a high-priority heartbeat with the 2D and IRQ counters */
 extern ULONG amdgpu_2d_diag[8];
 void compat_irq_counts(ULONG *raw, ULONG *handled);

@@ -92,6 +92,20 @@ static const struct irq_source_info *find_irq_source_info(
 	return &irq_service->info[source];
 }
 
+bool dal_irq_service_diag(struct irq_service *irq_service, enum dc_irq_source source,
+			  uint32_t *reg, uint32_t *val, uint32_t *mask, uint32_t *status)
+{
+	const struct irq_source_info *info = find_irq_source_info(irq_service, source);
+
+	if (!info || !info->enable_reg)
+		return false;
+	*reg = info->enable_reg;
+	*mask = info->enable_mask;
+	*val = dm_read_reg(irq_service->ctx, info->enable_reg);
+	*status = info->status_reg ? dm_read_reg(irq_service->ctx, info->status_reg) : 0;
+	return true;
+}
+
 void dal_irq_service_set_generic(
 	struct irq_service *irq_service,
 	const struct irq_source_info *info,

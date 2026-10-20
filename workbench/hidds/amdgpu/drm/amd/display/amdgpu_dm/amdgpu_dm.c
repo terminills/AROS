@@ -445,6 +445,7 @@ static void dm_pflip_high_irq(void *interrupt_params)
 	u32 vpos, hpos, v_blank_start, v_blank_end;
 	bool vrr_active;
 
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[21]++; }
 	amdgpu_crtc = get_crtc_by_otg_inst(adev, irq_params->irq_src - IRQ_TYPE_PFLIP);
 
 	/* IRQ could occur when in initial stage */
@@ -595,6 +596,7 @@ static void dm_crtc_high_irq_handler(struct amdgpu_device *adev,
 	int vrr_active;
 	bool is_dcn = amdgpu_ip_version(adev, DCE_HWIP, 0) != 0;
 
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[22]++; }
 	if (acrtc->wb_conn) {
 		spin_lock_irqsave(&acrtc->wb_conn->job_lock, flags);
 
@@ -748,8 +750,11 @@ static void dm_vupdate_high_irq(void *interrupt_params)
 	 * vblank and pageflip completion events; VSTARTUP and GRPH_PFLIP are
 	 * not used. Run the full handler here.
 	 */
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[23]++; }
 	if (amdgpu_ip_version(adev, DCE_HWIP, 0) != 0) {
-		dm_crtc_high_irq_handler(adev, acrtc);
+		extern int amdgpu_dcn_vline;
+		if (!amdgpu_dcn_vline)
+			dm_crtc_high_irq_handler(adev, acrtc);
 		return;
 	}
 
@@ -4663,6 +4668,38 @@ static int dcn10_register_irq_handlers(struct amdgpu_device *adev)
 	 * to trigger at end of each vblank, regardless of state of the lock,
 	 * matching DCE behaviour.
 	 */
+	{
+		extern int amdgpu_dcn_vline;
+		extern int compat_env_flag(const char *name);
+
+		amdgpu_dcn_vline = compat_env_flag("AMDGPU_DCN_VLINE");
+		drm_info(adev_to_drm(adev), "AMDGPU_DCN_VLINE=%d\n", amdgpu_dcn_vline);
+	}
+	if (({ extern int amdgpu_dcn_vline; amdgpu_dcn_vline; })) {
+		for (i = DCN_1_0__SRCID__DC_D1_OTG_VSTARTUP;
+		     i <= DCN_1_0__SRCID__DC_D1_OTG_VSTARTUP + adev->mode_info.num_crtc - 1;
+		     i++) {
+			r = amdgpu_irq_add_id(adev, SOC15_IH_CLIENTID_DCE, i, &adev->crtc_irq);
+			if (r) {
+				drm_err(adev_to_drm(adev), "Failed to add crtc irq id!\n");
+				return r;
+			}
+			int_params.int_context = INTERRUPT_HIGH_IRQ_CONTEXT;
+			int_params.irq_source = dc_interrupt_to_irq_source(dc, i, 0);
+			if (int_params.irq_source == DC_IRQ_SOURCE_INVALID ||
+			    int_params.irq_source < DC_IRQ_SOURCE_VBLANK1 ||
+			    int_params.irq_source > DC_IRQ_SOURCE_VBLANK6) {
+				drm_err(adev_to_drm(adev), "Failed to register vblank irq!\n");
+				return -EINVAL;
+			}
+			c_irq_params = &adev->dm.vblank_params[int_params.irq_source - DC_IRQ_SOURCE_VBLANK1];
+			c_irq_params->adev = adev;
+			c_irq_params->irq_src = int_params.irq_source;
+			if (!amdgpu_dm_irq_register_interrupt(adev, &int_params, dm_crtc_high_irq, c_irq_params))
+				return -ENOMEM;
+		}
+	}
+
 	for (i = DCN_1_0__SRCID__OTG0_IHC_V_UPDATE_NO_LOCK_INTERRUPT;
 	     i <= DCN_1_0__SRCID__OTG0_IHC_V_UPDATE_NO_LOCK_INTERRUPT + adev->mode_info.num_crtc - 1;
 	     i++) {

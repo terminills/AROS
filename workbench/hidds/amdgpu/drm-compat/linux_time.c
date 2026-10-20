@@ -85,7 +85,7 @@ ktime_t ktime_get(void)
 
     if (!TimerBase)
         return 0;
-    GetSysTime(&tv);
+    GetUpTime(&tv);
     return (ktime_t)tv.tv_secs * NSEC_PER_SEC + (ktime_t)tv.tv_micro * NSEC_PER_USEC;
 }
 

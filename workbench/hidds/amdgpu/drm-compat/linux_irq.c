@@ -110,6 +110,8 @@ unsigned long amdgpu_diag_counters[24]; /* 8 wait_cs calls, 9 wait_cs timeouts, 
 void *amdgpu_diag_adev;
 unsigned long amdgpu_diag_last[16]; /* 0-7 last syncobj wait timeout: fence, flags, seqno, ctx, parent, count, wait flags, scheduled flags; 8-11 last CS post-dep: fence, seqno, ctx, ndeps */
 unsigned long amdgpu_diag_dce_src[256]; /* IH entries from client DCE by src_id */
+unsigned long amdgpu_diag_ih_client[32]; /* IH entries by client_id */
+int amdgpu_dcn_vline; /* ENV:AMDGPU_DCN_VLINE - vblank from the OTG vertical interrupt on DCN, as Linux does */
 void compat_irq_counts(ULONG *raw, ULONG *handled)
 {
     *raw = irq_raw_count;
