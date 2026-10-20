@@ -438,11 +438,17 @@ static void nlog_flusher(void)
          */
         if (!created && name[0] == '\0')
         {
-            strcpy(name, "Efi:amdgpu.log");
+            /* one file per boot, so the log of a failed boot survives the next one */
+            struct DateStamp ds;
+            char suffix[32];
+
+            DateStamp(&ds);
+            snprintf(suffix, sizeof(suffix), "%ld-%ld-%ld", (long)ds.ds_Days, (long)ds.ds_Minute, (long)ds.ds_Tick);
+            snprintf(name, sizeof(name), "Efi:amdgpu-%s.log", suffix);
             fh = Open(name, MODE_NEWFILE);
             if (!fh)
             {
-                strcpy(name, "SYS:amdgpu.log");
+                snprintf(name, sizeof(name), "SYS:amdgpu-%s.log", suffix);
                 fh = Open(name, MODE_NEWFILE);
             }
             if (!fh)
