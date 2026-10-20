@@ -25,3 +25,11 @@ for key,file,signature in [
 cmd=['cc','-std=c11','-g','-O1','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(out/'startup-host.c'),'-o',str(out/'startup-host')]
 subprocess.run(cmd,check=True)
 subprocess.run([str(out/'startup-host')],check=True,timeout=10)
+code = (here/'reset-host.c.in').read_text()
+defs = '\n'.join(line for name in ['i8042_common.h','i8042_kbd.h']
+    for line in (src/name).read_text(errors='replace').splitlines()
+    if re.match(r'#define KBD_(OUTCMD|REPLY|MODE|CTRLCMD)_',line))
+code=code.replace('@DEFS@',defs).replace('@RESET@',function('i8042_kbdclass.c','static int i8042_kbd_reset(struct i8042base *i8042Base'))
+(out/'reset-host.c').write_text(code)
+subprocess.run(['cc','-std=c11','-g','-O1','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(out/'reset-host.c'),'-o',str(out/'reset-host')],check=True)
+subprocess.run([str(out/'reset-host')],check=True,timeout=10)
