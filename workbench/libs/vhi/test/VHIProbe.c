@@ -203,7 +203,11 @@ int main(int argc, char **argv)
         vhi_api(VHI_METHOD_SET, VHI_OPTIONS, &option, &err, handle);
         PROBE_LOG("  selected input: %lu%s\n", (unsigned long)option.value,
                   option.value ? " (camera)" : " (SYNTHETIC)");
-        if (err) goto out_close_drv;
+        if (err) {
+            PROBE_LOG("  input selection failed: %lu (%s)\n",
+                      (unsigned long)err, vhi_errstr(err));
+            goto out_close_drv;
+        }
     }
     memset(&sz, 0, sizeof(sz));
     err = 0;

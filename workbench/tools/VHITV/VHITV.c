@@ -361,8 +361,12 @@ int main(int argc, char **argv)
              app.vhi_handle);
     app.input_count = (ULONG)call_vhi(VHI_METHOD_GET, VHI_NUMBER_OF_INPUTS,
                                      NULL, &error, app.vhi_handle);
-    if (!app.input_count)
-        app.input_count = 1;
+    if (error || initial_input >= app.input_count)
+    {
+        printf("VHITV: requested input %lu is unavailable (%lu inputs)\n",
+               (unsigned long)initial_input, (unsigned long)app.input_count);
+        goto cleanup;
+    }
 
     app.window = OpenWindowTags(NULL,
         WA_Title,        (IPTR)"VHITV",
