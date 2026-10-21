@@ -62,3 +62,24 @@ The first command is a synthetic ABI check, never camera evidence. The camera
 probe must return a complete frame and the viewer must show scene changes to
 establish real capture. Build or host regression success alone does not prove
 USB transport, hot-unplug behavior, or a usable camera feed.
+
+## Retained hardware validation
+
+UGREEN Camera 2K (0c45:636f), USB high speed, YUY2 640x480 was exercised
+through QEMU 10.2.1 xHCI passthrough on ADT x86-64 SMP. Two fresh VHIProbe
+captures returned 921600-byte RGB24 images with different checksums, and
+VHITV displayed the physical scene. Input zero's synthetic regression also
+passed. This is camera-through-QEMU evidence, not bare-metal controller proof.
+
+For this host, QEMU's default ISO buffering produced incomplete frames.
+The successful usb-host settings were `guest-reset=false,isobufs=32,isobsize=128`.
+Use only an explicitly selected camera and a currently verified host address.
+The larger queue must be drained on shutdown; allow QEMU to exit before
+starting another instance. The camera's Linux video/audio bindings recovered
+between tests. No permanent permission rule is required.
+
+The class captures one complete frame per call and stops the stream afterward.
+The selected advertised camera rate is not the viewer's achieved frame rate;
+persistent streaming and asynchronous viewer input handling remain future work.
+Chromium camera enumeration and getUserMedia integration are not implemented
+by this driver or viewer.
