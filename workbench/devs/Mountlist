@@ -195,7 +195,7 @@ CD0:
 CONNG:
         EHandler       = L:aux-handler
         Priority       = 5
-        StackSize      = 4096
+        StackSize      = 65536
         GlobVec        = -1
         Device         = consoleng.device
         Unit           = 3
