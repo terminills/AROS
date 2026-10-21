@@ -536,7 +536,9 @@ static BOOL Amdgpu_KMS_SelectDisplay(struct Amdgpu_KMS *kms)
     if (kms->crtc_id)
     {
         int off = drmModeSetCrtc(kms->fd, kms->crtc_id, 0, 0, 0, NULL, 0, NULL);
+        extern int printk(const char *fmt, ...);
         bug("[Amdgpu:KMS] crtc %u released from the firmware's mode: %d\n", kms->crtc_id, off);
+        printk("amdgpu kms: crtc %u released from the firmware's mode: %d\n", kms->crtc_id, off);
     }
     return (kms->crtc_id != 0);
 }
