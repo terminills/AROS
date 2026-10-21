@@ -571,13 +571,15 @@ static const ULONG commonFreqs[] =
 struct NepAudioUnit * nGetInputUnit(struct NepAudioMode *nam)
 {
     struct NepAudioUnit *nau = NULL;
-    if(nam->nam_Sibling)
+    ULONG input = nam->nam_CurrInput;
+    nam = nam->nam_IsInput ? nam : nam->nam_Sibling;
+    if(nam)
     {
-        if(nam->nam_Sibling->nam_RootUnit->nau_SelectorUnit)
+        if(nam->nam_RootUnit->nau_SelectorUnit)
         {
-            nau = nam->nam_Sibling->nam_RootUnit->nau_SelectorUnit->nau_InputUnit[nam->nam_CurrInput]->nau_RootUnit;
+            nau = nam->nam_RootUnit->nau_SelectorUnit->nau_InputUnit[input]->nau_RootUnit;
         } else {
-            nau = nam->nam_Sibling->nam_RootUnit;
+            nau = nam->nam_RootUnit;
         }
     }
     return(nau);
@@ -1906,7 +1908,7 @@ void nExamineAudioUnits(struct NepClassAudio *nch)
                 }
                 if(!sibnam->nam_Node.ln_Succ)
                 {
-                    psdAddErrorMsg(RETURN_WARN, (STRPTR) libname, "Recording mode with %ld channel(s) and %ld bits could not be matched to an output mode.",
+                    psdAddErrorMsg(RETURN_OK, (STRPTR) libname, "Standalone recording mode with %ld channel(s) and %ld bits.",
                                    nam->nam_NumChannels,
                                    nam->nam_Resolution);
                 } else {
@@ -1936,7 +1938,8 @@ void nAddAudioModes(struct NepClassAudio *nch)
     nam = (struct NepAudioMode *) nch->nch_AudioModes.lh_Head;
     while(nam->nam_Node.ln_Succ)
     {
-        if(!nam->nam_IsInput)
+        /* Unpaired capture interfaces are valid standalone AHI modes. */
+        if(!nam->nam_IsInput || !nam->nam_Sibling)
         {
             struct TagItem *tags = nam->nam_Tags;
             ahimodename = psdCopyStrFmt("%.20s: %s%ld bit %s (%ld bpf)",
@@ -1950,7 +1953,8 @@ void nAddAudioModes(struct NepClassAudio *nch)
                          ahimodename, nam->nam_NumInputs, nam->nam_NumOutputs, nam->nam_Sibling));
 
             // AHI samples are always 16 bit, except for HiFi mode, which returns 32 bit
-            nam->nam_AHIFrameSize = nam->nam_NumChannels * ((nam->nam_Resolution > 16) ? 4 : 2);
+            nam->nam_AHIFrameSize = nam->nam_IsInput ? 4 :
+                nam->nam_NumChannels * ((nam->nam_Resolution > 16) ? 4 : 2);
 
             tags->ti_Tag = AHIDB_AudioID;
             tags->ti_Data = nam->nam_AHIModeID;
@@ -2401,6 +2405,15 @@ void nGUITaskCleanup(struct NepAudioBase *nh)
 #undef ps
 #define ps nam->nam_PsdBase
 
+static void nStopRTIso(struct NepAudioMode *nam)
+{
+    if(nam->nam_RTIsoActive && nam->nam_RTIso)
+    {
+        if(!psdStopRTIso(nam->nam_RTIso))
+            nam->nam_RTIsoActive = FALSE;
+    }
+}
+
 /* /// "subLib stuff" */
 AROS_UFH3(SUBLIBBASETYPEPTR, subLibInit,
           AROS_UFHA(SUBLIBBASETYPEPTR, nas, D0),
@@ -2688,6 +2701,7 @@ AROS_UFH3(void, nInReqHook,
 
     //KPRINTF(1, ("IR %ld\n", ubr->ubr_Length));
     ubr->ubr_Buffer = (UBYTE *) nam->nam_USBBuffer[0];
+    ubr->ubr_Length = nam->nam_MaxPktSize;
     
     AROS_USERFUNC_EXIT
 }
@@ -2755,7 +2769,7 @@ AROS_UFH3(void, nReleaseHook,
     struct NepAudioMode *nam = (struct NepAudioMode *) hook->h_Data;
     struct NepClassAudio *nch = nam->nam_Unit;
 
-    psdStopRTIso(nam->nam_RTIso);
+    nStopRTIso(nam);
     if(nam->nam_IsInput)
     {
         // we can only stop recording, we still need to call the player func until audio is done
@@ -3138,6 +3152,7 @@ BOOL nSelectAudioMode(struct NepAudioMode *nam)
     ULONG freq = nam->nam_AudioCtrl->ahiac_MixFreq;
     LONG ioerr;
     ULONG maxfreq;
+    IPTR highspeed = FALSE;
 
     KPRINTF(1, ("SelectingAltInterface\n"));
     if(!(psdSetAltInterface(nam->nam_EP0Pipe, nam->nam_Interface)))
@@ -3163,7 +3178,11 @@ BOOL nSelectAudioMode(struct NepAudioMode *nam)
                 EA_Interval, &nam->nam_Interval,
                 TAG_END);
 
-    maxfreq = (1000 * nam->nam_MaxPktSize) / (nam->nam_FrameSize * nam->nam_Interval);
+    if(nam->nam_IsInput)
+        nam->nam_EPNum |= 0x80;
+
+    psdGetAttrs(PGA_DEVICE, nch->nch_Device, DA_IsHighspeed, &highspeed, TAG_END);
+    maxfreq = ((highspeed ? 8000 : 1000) * nam->nam_MaxPktSize) / (nam->nam_FrameSize * nam->nam_Interval);
     if(maxfreq < nam->nam_MaxFreq)
     {
         psdAddErrorMsg(RETURN_WARN, (STRPTR) libname,
@@ -3445,40 +3464,40 @@ AROS_LH2(ULONG, subLibAllocAudio,
         KPRINTF(10, ("Using V6 code\n"));
         nam->nam_PlayerInt.is_Code = (VOID_FUNC) subLibPlayerIntV6;
     }
-    nam->nam_SamConvHook.h_Data = nam->nam_AHIBuffer;
+    nam->nam_SamConvHook.h_Data = nam->nam_IsInput ? (APTR) nam->nam_USBBuffer[0] : (APTR) nam->nam_AHIBuffer;
 
     switch(nam->nam_NumChannels|(nam->nam_SampleSize<<8))
     {
         case 1|(1<<8): // 8 bit mono
-            nam->nam_SamConvHook.h_Entry = (APTR) nConv8BitMono;
+            nam->nam_SamConvHook.h_Entry = nam->nam_IsInput ? (APTR) nRec8BitMono : (APTR) nConv8BitMono;
             break;
 
         case 2|(1<<8): // 8 bit stereo
-            nam->nam_SamConvHook.h_Entry = (APTR) nConv8BitStereo;
+            nam->nam_SamConvHook.h_Entry = nam->nam_IsInput ? (APTR) nRec8BitStereo : (APTR) nConv8BitStereo;
             break;
 
         case 1|(2<<8): // 16 bit mono
-            nam->nam_SamConvHook.h_Entry = (APTR) nConv16BitMono;
+            nam->nam_SamConvHook.h_Entry = nam->nam_IsInput ? (APTR) nRec16BitMono : (APTR) nConv16BitMono;
             break;
 
         case 2|(2<<8): // 16 bit stereo
-            nam->nam_SamConvHook.h_Entry = (APTR) nConv16BitStereo;
+            nam->nam_SamConvHook.h_Entry = nam->nam_IsInput ? (APTR) nRec16BitStereo : (APTR) nConv16BitStereo;
             break;
 
         case 1|(3<<8): // 24 bit mono
-            nam->nam_SamConvHook.h_Entry = (APTR) nConv24BitMono;
+            nam->nam_SamConvHook.h_Entry = nam->nam_IsInput ? (APTR) nRec24BitMono : (APTR) nConv24BitMono;
             break;
 
         case 2|(3<<8): // 24 bit stereo
-            nam->nam_SamConvHook.h_Entry = (APTR) nConv24BitStereo;
+            nam->nam_SamConvHook.h_Entry = nam->nam_IsInput ? (APTR) nRec24BitStereo : (APTR) nConv24BitStereo;
             break;
 
         case 1|(4<<8): // 32 bit mono
-            nam->nam_SamConvHook.h_Entry = (APTR) nConv32BitMono;
+            nam->nam_SamConvHook.h_Entry = nam->nam_IsInput ? (APTR) nRec32BitMono : (APTR) nConv32BitMono;
             break;
 
         case 2|(4<<8): // 32 bit stereo
-            nam->nam_SamConvHook.h_Entry = (APTR) nConv32BitStereo;
+            nam->nam_SamConvHook.h_Entry = nam->nam_IsInput ? (APTR) nRec32BitStereo : (APTR) nConv32BitStereo;
             break;
 
         default:
@@ -3551,6 +3570,9 @@ AROS_LH2(ULONG, subLibAllocAudio,
 
         flags |= AHISF_CANRECORD;
         audiomode = "Full-Duplex";
+    } else if(nam->nam_IsInput) {
+        flags |= AHISF_CANRECORD;
+        audiomode = "Input-only";
     } else {
         audiomode = "Output-only";
     }
@@ -3591,7 +3613,7 @@ AROS_LH1(void, subLibFreeAudio,
     {
         if(sibnam->nam_RTIso)
         {
-            psdStopRTIso(sibnam->nam_RTIso);
+            nStopRTIso(sibnam);
             psdFreeRTIsoHandler(sibnam->nam_RTIso);
             sibnam->nam_RTIso = NULL;
         }
@@ -3625,7 +3647,7 @@ AROS_LH1(void, subLibFreeAudio,
     }
     if(nam->nam_RTIso)
     {
-        psdStopRTIso(nam->nam_RTIso);
+        nStopRTIso(nam);
         psdFreeRTIsoHandler(nam->nam_RTIso);
         nam->nam_RTIso = NULL;
     }
@@ -3705,7 +3727,7 @@ AROS_LH2(ULONG, subLibStart,
     {
         return res;
     }
-    if(flags & AHISF_PLAY)
+    if((flags & AHISF_PLAY) && !nam->nam_IsInput)
     {
         KPRINTF(10, ("Freq=%ld, BuffSamples = %ld, BuffSize = %ld, PlayerFreq = %08lx\n",
                      audioctrl->ahiac_MixFreq, audioctrl->ahiac_BuffSamples, audioctrl->ahiac_BuffSize,
@@ -3726,18 +3748,29 @@ AROS_LH2(ULONG, subLibStart,
             nam->nam_TimerMsgPort.mp_Flags = PA_SOFTINT;
             Cause(&nam->nam_PlayerInt);
         } else {
-            psdStartRTIso(nam->nam_RTIso);
+            if(!nam->nam_RTIsoActive)
+            {
+                if(psdStartRTIso(nam->nam_RTIso))
+                    return AHIE_UNKNOWN;
+                nam->nam_RTIsoActive = TRUE;
+            }
         }
         res = AHIE_OK;
     }
     if(flags & AHISF_RECORD)
     {
-        struct NepAudioMode *sibnam = nam->nam_Sibling;
+        struct NepAudioMode *sibnam = nam->nam_IsInput ? nam : nam->nam_Sibling;
         if(sibnam)
         {
             sibnam->nam_SampleFrac = ((audioctrl->ahiac_MixFreq<<16) / 1000) * sibnam->nam_Interval;
-            psdStartRTIso(sibnam->nam_RTIso);
             res = AHIE_OK;
+            if(!sibnam->nam_RTIsoActive)
+            {
+                if(psdStartRTIso(sibnam->nam_RTIso))
+                    res = AHIE_UNKNOWN;
+                else
+                    sibnam->nam_RTIsoActive = TRUE;
+            }
         } else {
             res = AHIE_UNKNOWN;
         }
@@ -3789,19 +3822,21 @@ AROS_LH2(ULONG, subLibStop,
     {
         return AHIE_UNKNOWN;
     }
-    if(flags & AHISF_PLAY)
+    if((flags & AHISF_PLAY) && !nam->nam_IsInput)
     {
         if(nam->nam_FallbackTimer)
         {
             nam->nam_TimerMsgPort.mp_Flags = PA_IGNORE;
             AbortIO((struct IORequest *) nam->nam_TimerIOReq);
         } else {
-            psdStopRTIso(nam->nam_RTIso);
+            nStopRTIso(nam);
         }
     }
-    if((flags & AHISF_RECORD) && nam->nam_Sibling)
+    if(flags & AHISF_RECORD)
     {
-        psdStopRTIso(nam->nam_Sibling->nam_RTIso);
+        struct NepAudioMode *input = nam->nam_IsInput ? nam : nam->nam_Sibling;
+        if(input)
+            nStopRTIso(input);
     }
     return AHIE_OK;
     
@@ -4045,18 +4080,11 @@ AROS_LH5(IPTR, subLibGetAttr,
             return 0;
 
         case AHIDB_Inputs:
-            if(nam->nam_Sibling && nam->nam_Sibling->nam_RootUnit->nau_SelectorUnit)
-            {
-                return (IPTR) nam->nam_Sibling->nam_RootUnit->nau_SelectorUnit->nau_NumInputs;
-            }
-            return 0;
+            return nam->nam_NumInputs;
 
         case AHIDB_Input:
-            if(nam->nam_Sibling && nam->nam_Sibling->nam_RootUnit->nau_SelectorUnit)
-            {
-                return (IPTR) nam->nam_Sibling->nam_RootUnit->nau_SelectorUnit->nau_InputUnit[arg]->nau_RootUnit->nau_Name;
-            }
-            return (IPTR) NULL;
+            return (arg >= 0 && arg < nam->nam_NumInputs)
+                ? (IPTR) nam->nam_InputNames[arg] : (IPTR) NULL;
 
         case AHIDB_Outputs:
             if(nam->nam_RootUnit->nau_SelectorUnit)
