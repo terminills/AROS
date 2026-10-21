@@ -24,6 +24,7 @@ extern ULONG amdgpu_2d_diag[8];
 extern unsigned long amdgpu_diag_vbl[16];
 extern void compat_irq_counts(ULONG *raw, ULONG *handled);
 extern unsigned long amdgpu_compat_ms(void);
+extern volatile ULONG *amdgpu_diag_irq_pending;
 
 #define STRIP_TASKS 12
 
@@ -31,7 +32,7 @@ static struct
 {
     struct Interrupt    is;
     ULONG               ticks;          /* IRQ0 arrivals */
-    ULONG               dly0, dly25;    /* Delay(10) loops at priority 0 and 25 */
+    ULONG               dly[8];         /* Delay(10) loops, one per entry of strip_pri[] */
     ULONG               painted;
     struct Task         *task[STRIP_TASKS];
     ULONG               count[STRIP_TASKS];
@@ -149,9 +150,10 @@ static void strip_paint(void)
     }
 
     compat_irq_counts(&raw, &handled);
-    strip_fmt(line, sizeof(line), "UP %lu T%lu D0:%lu D25:%lu IRQ %lu 2D %lu/%lu FL %lu/%lu TO %lu VBL %lu/%lu",
-              amdgpu_compat_ms() / 1000, (unsigned long)strip.ticks, (unsigned long)strip.dly0, (unsigned long)strip.dly25,
-              (unsigned long)raw, (unsigned long)amdgpu_2d_diag[2], (unsigned long)amdgpu_2d_diag[3],
+    strip_fmt(line, sizeof(line), "UP %lu T%lu D0:%lu D25:%lu D29:%lu D31:%lu D35:%lu D50:%lu IRQ %lu PEND %lu 2D %lu/%lu FL %lu/%lu TO %lu VBL %lu/%lu",
+              amdgpu_compat_ms() / 1000, (unsigned long)strip.ticks, (unsigned long)strip.dly[0], (unsigned long)strip.dly[1],
+              (unsigned long)strip.dly[2], (unsigned long)strip.dly[3], (unsigned long)strip.dly[4], (unsigned long)strip.dly[5],
+              (unsigned long)raw, amdgpu_diag_irq_pending ? (unsigned long)*amdgpu_diag_irq_pending : 0UL, (unsigned long)amdgpu_2d_diag[2], (unsigned long)amdgpu_2d_diag[3],
               (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[5], (unsigned long)amdgpu_2d_diag[7],
               (unsigned long)amdgpu_diag_vbl[3], (unsigned long)amdgpu_diag_vbl[13]);
     strip_text(fb, y0 + SCALE, line);
@@ -169,8 +171,8 @@ static void strip_paint(void)
             }
         if (bi == STRIP_TASKS)
             break;
-        len += strip_fmt(line + len, sizeof(line) - len, "%.14s %lu  ",
-                         strip.task[bi]->tc_Node.ln_Name ? strip.task[bi]->tc_Node.ln_Name : "?", (unsigned long)best);
+        len += strip_fmt(line + len, sizeof(line) - len, "%.14s P%d %lu  ",
+                         strip.task[bi]->tc_Node.ln_Name ? strip.task[bi]->tc_Node.ln_Name : "?", (int)strip.task[bi]->tc_Node.ln_Pri, (unsigned long)best);
         strip.count[bi] = 0;
     }
     strip_fmt(line + len, sizeof(line) - len, "OTHER %lu NR %lu", (unsigned long)strip.other, (unsigned long)strip.notrun);
@@ -224,21 +226,16 @@ static AROS_INTH1(strip_tick, void *, data)
     AROS_INTFUNC_EXIT
 }
 
-static void strip_delay0(void)
-{
-    for (;;)
-    {
-        Delay(10);
-        strip.dly0++;
-    }
-}
+static const BYTE strip_pri[6] = { 0, 25, 29, 31, 35, 50 };
 
-static void strip_delay25(void)
+static void strip_delay(void)
 {
+    ULONG *counter = (ULONG *)FindTask(NULL)->tc_UserData;
+
     for (;;)
     {
         Delay(10);
-        strip.dly25++;
+        (*counter)++;
     }
 }
 
@@ -252,8 +249,10 @@ void amdgpu_diag_strip_start(void)
     strip.is.is_Code = (VOID_FUNC)strip_tick;
     strip.is.is_Data = &strip;
     AddIntServer(INTB_KERNEL + 0, &strip.is);
-    CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Strip D0", NP_Priority, 0, NP_Affinity, TASKAFFINITY_ANY,
-                      NP_Entry, (IPTR)strip_delay0, NP_StackSize, 16 * 1024, TAG_DONE);
-    CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Strip D25", NP_Priority, 25, NP_Affinity, TASKAFFINITY_ANY,
-                      NP_Entry, (IPTR)strip_delay25, NP_StackSize, 16 * 1024, TAG_DONE);
+    {
+        ULONG i;
+        for (i = 0; i < sizeof(strip_pri); i++)
+            CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Strip Delay", NP_Priority, strip_pri[i], NP_Affinity, TASKAFFINITY_ANY,
+                              NP_Entry, (IPTR)strip_delay, NP_StackSize, 16 * 1024, NP_UserData, (IPTR)&strip.dly[i], TAG_DONE);
+    }
 }

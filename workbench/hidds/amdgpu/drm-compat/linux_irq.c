@@ -117,6 +117,7 @@ int amdgpu_dcn_vline; /* ENV:AMDGPU_DCN_VLINE - vblank from the OTG vertical int
  * 8 dm_irq_state entries, 9 last otg_inst, 10 events armed pflip, 11 armed cursor, 12 events sent by commit tail,
  * 13 drm_send_event calls, 14 num_crtcs, 15 last amdgpu_irq_get(crtc) ret */
 unsigned long amdgpu_diag_vbl[16];
+volatile ULONG *amdgpu_diag_irq_pending; /* the MSI task's backlog, for the strip */
 void compat_irq_counts(ULONG *raw, ULONG *handled)
 {
     *raw = irq_raw_count;
@@ -200,6 +201,8 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler, irq_handler_t 
         FreeSignal(ack);
         if (!entry->irq_task || !entry->irq_sigmask)
             entry->irq_task = NULL;
+        else if (!amdgpu_diag_irq_pending)
+            amdgpu_diag_irq_pending = &entry->irq_pending;
     }
 
     printk(KERN_INFO "[amdgpu] request_irq: %s on IRQ %u%s\n", name, irq,
