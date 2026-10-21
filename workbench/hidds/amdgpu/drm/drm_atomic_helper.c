@@ -2252,7 +2252,8 @@ int drm_atomic_helper_commit(struct drm_device *dev,
 	int ret;
 	extern unsigned long amdgpu_diag_phase;
 
-	amdgpu_diag_phase = 2;
+	if (!state->async_update)
+		amdgpu_diag_phase = 2;
 
 	if (state->async_update) {
 		ret = drm_atomic_helper_prepare_planes(dev, state);

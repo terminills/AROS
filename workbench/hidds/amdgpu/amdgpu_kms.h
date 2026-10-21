@@ -42,6 +42,9 @@ struct Amdgpu_KMS
     ULONG                       crtc_id;
     drmModeConnectorPtr         clone_connector; /* a second connected output showing the same buffer, or NULL */
     ULONG                       clone_crtc_id;
+    ULONG                       clone_plane_id; /* the clone crtc's primary plane, for scaled clones */
+    struct Amdgpu_FB            clone_canvas;   /* mode-sized buffer behind a scaled clone */
+    ULONG                       clone_w, clone_h; /* the clone's mode, 0 when off or unscaled */
     drmModeModeInfoPtr          curmode;        /* mode set on the crtc, or NULL */
     struct Amdgpu_FB        *curfb;         /* framebuffer shown, or NULL */
 

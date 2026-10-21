@@ -21,6 +21,10 @@
 
 #include "amdgpu_kms.h"
 
+#ifndef DRM_PLANE_TYPE_PRIMARY
+#define DRM_PLANE_TYPE_PRIMARY 1
+#endif
+
 /* drm-aros/drm_drv.c */
 struct pci_dev *amdgpu_aros_findcard(void);
 int amdgpu_aros_init(void);
@@ -145,14 +149,64 @@ static void Amdgpu_KMS_SetClone(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, dr
         if (m->vrefresh == mode->vrefresh)
             break;
     }
+    if (best)
+    {
+        kms->clone_w = kms->clone_h = 0;
+        ret = drmModeSetCrtc(kms->fd, kms->clone_crtc_id, fb->fbid, 0, 0, &connector_id, 1, best);
+        bug("[Amdgpu:KMS] clone: crtc %u connector %u fb %u mode %s: %d\n", kms->clone_crtc_id, connector_id, fb->fbid, best->name, ret);
+        return;
+    }
+
+    /*
+     * No mode of the buffer's size: show the buffer scaled onto the output's
+     * preferred mode. The crtc needs a buffer of the mode's size behind it;
+     * the primary plane then scans our buffer out, scaled to the whole mode.
+     */
+    for (i = 0; i < c->count_modes && kms->clone_plane_id; i++)
+    {
+        drmModeModeInfoPtr m = &c->modes[i];
+
+        if (!best || (m->type & DRM_MODE_TYPE_PREFERRED) ||
+            (!(best->type & DRM_MODE_TYPE_PREFERRED) && m->hdisplay * m->vdisplay > best->hdisplay * best->vdisplay))
+            best = m;
+    }
     if (!best)
     {
-        bug("[Amdgpu:KMS] clone: connector %u has no %ux%u mode, left off\n", connector_id, mode->hdisplay, mode->vdisplay);
+        bug("[Amdgpu:KMS] clone: connector %u has no %ux%u mode and no plane to scale with, left off\n",
+            connector_id, mode->hdisplay, mode->vdisplay);
+        kms->clone_w = kms->clone_h = 0;
         drmModeSetCrtc(kms->fd, kms->clone_crtc_id, 0, 0, 0, NULL, 0, NULL);
         return;
     }
-    ret = drmModeSetCrtc(kms->fd, kms->clone_crtc_id, fb->fbid, 0, 0, &connector_id, 1, best);
-    bug("[Amdgpu:KMS] clone: crtc %u connector %u fb %u mode %s: %d\n", kms->clone_crtc_id, connector_id, fb->fbid, best->name, ret);
+    if (kms->clone_canvas.fbid && (kms->clone_canvas.width != best->hdisplay || kms->clone_canvas.height != best->vdisplay))
+    {
+        Amdgpu_KMS_DestroyFB(kms, &kms->clone_canvas);
+    }
+    if (!kms->clone_canvas.fbid)
+    {
+        if (!Amdgpu_KMS_CreateFB(kms, &kms->clone_canvas, best->hdisplay, best->vdisplay, fb->bpp, fb->depth))
+        {
+            bug("[Amdgpu:KMS] clone: no %ux%u canvas, left off\n", best->hdisplay, best->vdisplay);
+            kms->clone_w = kms->clone_h = 0;
+            drmModeSetCrtc(kms->fd, kms->clone_crtc_id, 0, 0, 0, NULL, 0, NULL);
+            return;
+        }
+        memset(kms->clone_canvas.map, 0, kms->clone_canvas.size);
+    }
+    ret = drmModeSetCrtc(kms->fd, kms->clone_crtc_id, kms->clone_canvas.fbid, 0, 0, &connector_id, 1, best);
+    if (ret == 0)
+        ret = drmModeSetPlane(kms->fd, kms->clone_plane_id, kms->clone_crtc_id, fb->fbid, 0,
+                              0, 0, best->hdisplay, best->vdisplay,
+                              0, 0, fb->width << 16, fb->height << 16);
+    if (ret == 0)
+    {
+        kms->clone_w = best->hdisplay;
+        kms->clone_h = best->vdisplay;
+    }
+    else
+        kms->clone_w = kms->clone_h = 0;
+    bug("[Amdgpu:KMS] clone: crtc %u connector %u fb %u scaled %ux%u onto mode %s: %d\n", kms->clone_crtc_id, connector_id,
+        fb->fbid, fb->width, fb->height, best->name, ret);
 }
 
 BOOL Amdgpu_KMS_SetMode(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, drmModeModeInfoPtr mode)
@@ -401,7 +455,16 @@ BOOL Amdgpu_KMS_MoveCursor(struct Amdgpu_KMS *kms, LONG x, LONG y)
     LOCK_KMS(kms);
     ret = drmModeMoveCursor(kms->fd, kms->crtc_id, x, y);
     if (kms->clone_crtc_id)
-        drmModeMoveCursor(kms->fd, kms->clone_crtc_id, x, y);
+    {
+        LONG cx = x, cy = y;
+
+        if (kms->clone_w && kms->curfb && kms->curfb->width && kms->curfb->height)
+        {
+            cx = x * (LONG)kms->clone_w / (LONG)kms->curfb->width;
+            cy = y * (LONG)kms->clone_h / (LONG)kms->curfb->height;
+        }
+        drmModeMoveCursor(kms->fd, kms->clone_crtc_id, cx, cy);
+    }
     UNLOCK_KMS(kms);
 
     return (ret == 0);
@@ -504,9 +567,29 @@ static BOOL Amdgpu_KMS_SelectDisplay(struct Amdgpu_KMS *kms)
             }
             drmModeFreeEncoder(encoder);
         }
-        bug("[Amdgpu:KMS] clone output: connector %u type %u encoder %u crtc %u (%d modes)\n",
+        /* the clone crtc's primary plane lets a smaller buffer be scaled onto it */
+        if (kms->clone_crtc_id && drmSetClientCap(kms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) == 0)
+        {
+            drmModePlaneResPtr planes = drmModeGetPlaneResources(kms->fd);
+            int crtc_index = -1, p;
+
+            for (i = 0; i < res->count_crtcs; i++)
+                if (res->crtcs[i] == kms->clone_crtc_id)
+                    crtc_index = i;
+            for (p = 0; planes && crtc_index >= 0 && p < (int)planes->count_planes && !kms->clone_plane_id; p++)
+            {
+                drmModePlanePtr plane = drmModeGetPlane(kms->fd, planes->planes[p]);
+
+                if (plane && (plane->possible_crtcs & (1 << crtc_index)) &&
+                    drmModeObjectGetPropertyValue(kms->fd, plane->plane_id, DRM_MODE_OBJECT_PLANE, "type") == DRM_PLANE_TYPE_PRIMARY)
+                    kms->clone_plane_id = plane->plane_id;
+                drmModeFreePlane(plane);
+            }
+            drmModeFreePlaneResources(planes);
+        }
+        bug("[Amdgpu:KMS] clone output: connector %u type %u encoder %u crtc %u plane %u (%d modes)\n",
             kms->clone_connector->connector_id, kms->clone_connector->connector_type, encoder_id,
-            kms->clone_crtc_id, kms->clone_connector->count_modes);
+            kms->clone_crtc_id, kms->clone_plane_id, kms->clone_connector->count_modes);
         if (!kms->clone_crtc_id)
         {
             drmModeFreeConnector(kms->clone_connector);

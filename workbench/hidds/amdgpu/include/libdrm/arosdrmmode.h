@@ -143,6 +143,35 @@ extern void drmModeFreeCrtc( drmModeCrtcPtr ptr );
 extern drmModeEncoderPtr drmModeGetEncoder(int fd, uint32_t encoder_id);
 extern void drmModeFreeEncoder(drmModeEncoderPtr ptr);
 
+/* Plane and property support (clone output scaling) */
+typedef struct _drmModePlane {
+    uint32_t count_formats;
+    uint32_t *formats;
+    uint32_t plane_id;
+    uint32_t crtc_id;
+    uint32_t fb_id;
+    uint32_t crtc_x, crtc_y;
+    uint32_t x, y;
+    uint32_t possible_crtcs;
+    uint32_t gamma_size;
+} drmModePlane, *drmModePlanePtr;
+
+typedef struct _drmModePlaneRes {
+    uint32_t count_planes;
+    uint32_t *planes;
+} drmModePlaneRes, *drmModePlaneResPtr;
+
+extern int drmSetClientCap(int fd, uint64_t capability, uint64_t value);
+extern drmModePlaneResPtr drmModeGetPlaneResources(int fd);
+extern void drmModeFreePlaneResources(drmModePlaneResPtr ptr);
+extern drmModePlanePtr drmModeGetPlane(int fd, uint32_t plane_id);
+extern void drmModeFreePlane(drmModePlanePtr ptr);
+extern int drmModeSetPlane(int fd, uint32_t plane_id, uint32_t crtc_id, uint32_t fb_id, uint32_t flags,
+                           int32_t crtc_x, int32_t crtc_y, uint32_t crtc_w, uint32_t crtc_h,
+                           uint32_t src_x, uint32_t src_y, uint32_t src_w, uint32_t src_h);
+/* the value of the named property of a mode object, or -1 */
+extern int64_t drmModeObjectGetPropertyValue(int fd, uint32_t object_id, uint32_t object_type, const char *name);
+
 /* Cursor support */
 extern int drmModeSetCursor(int fd, uint32_t crtcId, uint32_t bo_handle, 
             uint32_t width, uint32_t height);
