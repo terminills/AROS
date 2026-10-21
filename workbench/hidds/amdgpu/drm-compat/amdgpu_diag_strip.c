@@ -23,6 +23,7 @@ struct Amdgpu_KMS *amdgpu_diag_kms;
 extern ULONG amdgpu_2d_diag[8];
 extern unsigned long amdgpu_diag_vbl[16];
 extern void compat_irq_counts(ULONG *raw, ULONG *handled);
+extern unsigned long amdgpu_compat_ms(void);
 
 #define STRIP_TASKS 12
 
@@ -35,6 +36,7 @@ static struct
     struct Task         *task[STRIP_TASKS];
     ULONG               count[STRIP_TASKS];
     ULONG               other;
+    ULONG               notrun;        /* samples whose task was not in TS_RUN */
 } strip;
 
 /* 3x5 glyphs, rows top to bottom, '1' is a lit pixel */
@@ -147,8 +149,8 @@ static void strip_paint(void)
     }
 
     compat_irq_counts(&raw, &handled);
-    strip_fmt(line, sizeof(line), "T%lu D0:%lu D25:%lu IRQ %lu 2D %lu/%lu FL %lu/%lu TO %lu VBL %lu/%lu",
-              (unsigned long)strip.ticks, (unsigned long)strip.dly0, (unsigned long)strip.dly25,
+    strip_fmt(line, sizeof(line), "UP %lu T%lu D0:%lu D25:%lu IRQ %lu 2D %lu/%lu FL %lu/%lu TO %lu VBL %lu/%lu",
+              amdgpu_compat_ms() / 1000, (unsigned long)strip.ticks, (unsigned long)strip.dly0, (unsigned long)strip.dly25,
               (unsigned long)raw, (unsigned long)amdgpu_2d_diag[2], (unsigned long)amdgpu_2d_diag[3],
               (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[5], (unsigned long)amdgpu_2d_diag[7],
               (unsigned long)amdgpu_diag_vbl[3], (unsigned long)amdgpu_diag_vbl[13]);
@@ -171,7 +173,8 @@ static void strip_paint(void)
                          strip.task[bi]->tc_Node.ln_Name ? strip.task[bi]->tc_Node.ln_Name : "?", (unsigned long)best);
         strip.count[bi] = 0;
     }
-    strip_fmt(line + len, sizeof(line) - len, "OTHER %lu", (unsigned long)strip.other);
+    strip_fmt(line + len, sizeof(line) - len, "OTHER %lu NR %lu", (unsigned long)strip.other, (unsigned long)strip.notrun);
+    strip.notrun = 0;
     strip_text(fb, y0 + SCALE + CELLH, line);
 
     strip_fmt(line, sizeof(line), "PAINT %lu  %lux%lu", (unsigned long)++strip.painted,
@@ -194,6 +197,8 @@ static AROS_INTH1(strip_tick, void *, data)
     ULONG i;
 
     strip.ticks++;
+    if (t->tc_State != TS_RUN)
+        strip.notrun++;
     for (i = 0; i < STRIP_TASKS; i++)
     {
         if (strip.task[i] == t)
