@@ -241,14 +241,22 @@ AROS_LH5(IPTR, vhi_api,
                     if (attr)
                     {
                         struct vhi_dimensions *dim = (struct vhi_dimensions *)attr;
-                        if (dim->dst_width == 0)  dim->dst_width = uh->uh_Width;
-                        if (dim->dst_height == 0) dim->dst_height = uh->uh_Height;
+                        dim->x1 = dim->y1 = 0;
+                        dim->x2 = dim->dst_width = uh->uh_Width;
+                        dim->y2 = dim->dst_height = uh->uh_Height;
                     }
                     break;
                 case VHI_DIGITIZE_PICTURE:
                 {
                     struct vhi_image *img;
                     APTR pixels;
+                    struct vhi_digitize *dig = attr;
+                    /* This driver returns public AllocVec storage only. Do not
+                     * let a caller release it through a different allocator. */
+                    if (dig && dig->custom_memhandling) {
+                        err = VHI_ERR_UNKNOWN_OPTION;
+                        break;
+                    }
 
                     img = AllocVec(sizeof(struct vhi_image),
                                    MEMF_PUBLIC | MEMF_CLEAR);

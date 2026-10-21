@@ -202,7 +202,9 @@ static void select_input(struct App *app, ULONG input)
     ULONG error = 0;
     STRPTR name;
 
-    if (!app->input_count)
+    app->input_count = (ULONG)call_vhi(VHI_METHOD_GET, VHI_NUMBER_OF_INPUTS,
+                                      NULL, &error, app->vhi_handle);
+    if (error || !app->input_count)
         return;
     input %= app->input_count;
     option.option = VHI_OPT_INPUT;
