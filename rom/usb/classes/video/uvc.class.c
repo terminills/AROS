@@ -228,8 +228,9 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     stage = "alternate";
     /* psdSetAltInterface updates Poseidon's selected-interface bookkeeping. */
     if (!nch->ncu_IsBulk) {
-        if (!uvc_alt(ps, control, nch->ncu_StreamAltIf, mp, timer)) goto out;
+        /* SET_INTERFACE can succeed even if its confirming GET times out. */
         active = TRUE;
+        if (!uvc_alt(ps, control, nch->ncu_StreamAltIf, mp, timer)) goto out;
     }
     size = nch->ncu_IsBulk ? maxpayload : nch->ncu_StreamMaxPkt;
     raw = AllocVec(nch->ncu_MaxFrameBuf, MEMF_PUBLIC);
