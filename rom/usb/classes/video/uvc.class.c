@@ -173,13 +173,14 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     struct Library *ps = NULL;
     struct MsgPort *mp = NULL, *tp = NULL;
     struct timerequest *timer = NULL;
-    APTR control = NULL, pipes[16] = {0};
-    BOOL pending[16] = {0};
+    APTR control = NULL, pipes[64] = {0};
+    BOOL pending[64] = {0};
     ULONG slots = 0, slot = 0;
     UBYTE *raw = NULL, *payload = NULL;
     UBYTE probe[26];
     IPTR ifnum = 0;
     ULONG result = 0, maxpayload = 0, size, i, packets = 0;
+    ULONG eof = 0, damaged = 0, maxframe = 0;
     const char *stage = "allocate";
     BOOL timeropen = FALSE, timersent = FALSE, active = FALSE;
     struct uvc_payload frame = {0};
@@ -234,7 +235,7 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     }
     size = nch->ncu_IsBulk ? maxpayload : nch->ncu_StreamMaxPkt;
     raw = AllocVec(nch->ncu_MaxFrameBuf, MEMF_PUBLIC);
-    slots = nch->ncu_IsBulk ? 2 : 16;
+    slots = nch->ncu_IsBulk ? 2 : 64;
     payload = AllocVec(size * slots, MEMF_PUBLIC);
     if (!raw || !payload) goto out;
     for (i=0; i<slots; ++i) {
@@ -262,6 +263,12 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
         packets++;
         actual = psdGetPipeActual(pipes[slot]);
         if (actual > size) break;
+        if (actual >= 2) {
+            UBYTE *p = payload + slot*size;
+            if (p[1] & 2) eof++;
+            if (p[1] & 0x40) damaged++;
+        }
+        if (frame.used > maxframe) maxframe = frame.used;
         if (actual && uvc_payload_feed(&frame, payload + slot*size, actual)) {
             uvc_yuy2_rgb(raw, rgb, nch->ncu_MaxFrameBuf);
             result = (ULONG)nch->ncu_Width*nch->ncu_Height*3;
@@ -275,6 +282,8 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
 out:
     if (!result) bug("uvc.class: grab id=%lu failed stage=%s packets=%lu bytes=%lu maxpayload=%lu\n",
         (IPTR)nch->ncu_Id, stage, (IPTR)packets, (IPTR)frame.used, (IPTR)maxpayload);
+    if (!result) bug("uvc.class: EOF=%lu ERR=%lu maxframe=%lu expected=%lu\n",
+        (IPTR)eof, (IPTR)damaged, (IPTR)maxframe, (IPTR)nch->ncu_MaxFrameBuf);
     for (i=0; i<slots; ++i) {
         if (pending[i]) {
             psdAbortPipe(pipes[i]);
