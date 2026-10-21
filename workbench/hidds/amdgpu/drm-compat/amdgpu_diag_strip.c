@@ -195,11 +195,12 @@ static void strip_paint(void)
     strip_text(fb, y0 + SCALE + 2 * CELLH, line);
 
     {
+        extern unsigned long amdgpu_diag_spin_yields;
         struct Task *sp = amdgpu_diag_spinner, *ow = amdgpu_diag_spin_owner;
-        strip_fmt(line, sizeof(line), "SPIN %lu %.16s ON %.16s LOCK %lx", amdgpu_diag_spins,
+        strip_fmt(line, sizeof(line), "SPIN %lu %.16s ON %.16s LOCK %lx YLD %lu", amdgpu_diag_spins,
                   sp && sp->tc_Node.ln_Name ? sp->tc_Node.ln_Name : "-",
                   ow && ow->tc_Node.ln_Name ? ow->tc_Node.ln_Name : "-",
-                  (unsigned long)(IPTR)amdgpu_diag_spin_lock);
+                  (unsigned long)(IPTR)amdgpu_diag_spin_lock, amdgpu_diag_spin_yields);
         strip_text(fb, y0 + SCALE + 3 * CELLH, line);
     }
 

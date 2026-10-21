@@ -625,6 +625,16 @@ int compat_env_digit(const char *name)
     return 0;
 }
 
+/* a spinner whose lock holder is not running gives the CPU away for a tick */
+unsigned long amdgpu_diag_spin_yields;
+void amdgpu_compat_spin_yield(void)
+{
+    Permit();
+    Delay(1);
+    Forbid();
+    amdgpu_diag_spin_yields++;
+}
+
 /* laptop diag (not for commit): a high-priority heartbeat with the 2D and IRQ counters */
 extern ULONG amdgpu_2d_diag[8];
 void compat_irq_counts(ULONG *raw, ULONG *handled);

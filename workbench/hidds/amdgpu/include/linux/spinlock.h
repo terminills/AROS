@@ -21,11 +21,15 @@
 #include <linux/compiler.h>
 #include <linux/list.h>
 
+#include <exec/tasks.h>
+
 /* laptop diag: who spins on whose lock, read by the on-screen strip */
 extern struct Task *amdgpu_diag_spinner;
 extern struct Task *amdgpu_diag_spin_owner;
 extern void *amdgpu_diag_spin_lock;
 extern unsigned long amdgpu_diag_spins;
+/* Permit, sleep a tick, Forbid: lets a holder that is not running finish */
+void amdgpu_compat_spin_yield(void);
 
 static inline void __compat_spin_acquire(struct raw_spinlock *lock)
 {
@@ -38,12 +42,25 @@ static inline void __compat_spin_acquire(struct raw_spinlock *lock)
     }
 #if defined(__AROSEXEC_SMP__)
     while (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE)) {
+        unsigned long n = 0;
+
         amdgpu_diag_spinner = me;
         amdgpu_diag_spin_owner = lock->owner;
         amdgpu_diag_spin_lock = lock;
         while (__atomic_load_n(&lock->locked, __ATOMIC_RELAXED)) {
             amdgpu_diag_spins++;
             __builtin_ia32_pause();
+            if (++n == 100000) {
+                struct Task *owner = lock->owner;
+
+                /*
+                 * Spinning under Forbid cannot wait for a holder that is
+                 * not on a CPU: on one CPU it never gets one back.
+                 */
+                if (owner && owner->tc_State != TS_RUN)
+                    amdgpu_compat_spin_yield();
+                n = 0;
+            }
         }
     }
     if (amdgpu_diag_spinner == me)
