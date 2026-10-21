@@ -2,6 +2,8 @@
 
 include $(SRCDIR)/config/aros.cfg
 
+#MM- workbench-libs-complete : workbench-libs-vhi
+
 #MM- workbench-libs-vhi : includes workbench-libs-vhi-includes workbench-libs-vhi-uvc
 
 #

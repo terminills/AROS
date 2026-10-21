@@ -6,7 +6,8 @@ FILES := VHIProbe
 
 # The probe needs the genmodule-generated VHI includes (proto/vhi.h etc.),
 # so depend on the includes target of the parent VHI library.
-#MM- test-vhi : workbench-libs-vhi-includes
+#MM- test : test-vhi
+#MM- test-vhi : workbench-libs-vhi-uvc workbench-libs-vhi-includes
 
 %build_prog mmake=test-vhi \
     progname=VHIProbe \
