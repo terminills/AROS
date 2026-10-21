@@ -1,0 +1,16 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+FILES := VHIProbe
+
+# The probe needs the genmodule-generated VHI includes (proto/vhi.h etc.),
+# so depend on the includes target of the parent VHI library.
+#MM- test-vhi : workbench-libs-vhi-includes
+
+%build_prog mmake=test-vhi \
+    progname=VHIProbe \
+    files="$(FILES)" \
+    targetdir=$(AROS_TESTS)/VHI
+
+%common

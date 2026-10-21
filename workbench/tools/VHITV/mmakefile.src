@@ -1,0 +1,14 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+
+include $(SRCDIR)/config/aros.cfg
+
+#MM- workbench-tools : workbench-tools-vhitv
+# The client dispatches through an explicitly opened VHI driver base and uses
+# only the public compiler/include/vhi/vhi.h ABI.
+
+%build_prog mmake=workbench-tools-vhitv \
+    progname=VHITV \
+    files=VHITV \
+    targetdir=$(AROS_TOOLS)
+
+%common
