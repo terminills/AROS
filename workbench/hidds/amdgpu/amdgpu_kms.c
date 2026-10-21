@@ -525,6 +525,19 @@ static BOOL Amdgpu_KMS_SelectDisplay(struct Amdgpu_KMS *kms)
     }
 
     drmModeFreeResources(res);
+
+    /*
+     * The firmware may leave the CRTC scanning out its own framebuffer in a
+     * mode the first screen then asks for again; DRM treats that as a plane
+     * update, the display core never activates the stream or its
+     * interrupts, and the first flip waits for a vblank that cannot come.
+     * Turn the CRTC off first, so the first mode set is a real one.
+     */
+    if (kms->crtc_id)
+    {
+        int off = drmModeSetCrtc(kms->fd, kms->crtc_id, 0, 0, 0, NULL, 0, NULL);
+        bug("[Amdgpu:KMS] crtc %u released from the firmware's mode: %d\n", kms->crtc_id, off);
+    }
     return (kms->crtc_id != 0);
 }
 
