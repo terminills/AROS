@@ -12,9 +12,7 @@
 
 #include <vhi/vhi.h>
 
-/* One open VHI session. Real UVC capture state (Poseidon uvc.class binding,
- * negotiated format, streaming endpoint) hangs off uh_UvcBackend once wired;
- * until then the frame source is the built-in test pattern. */
+/* One open VHI session; the selected camera is a binding generation ID. */
 struct UvcHandle
 {
     ULONG            uh_ColorMode;   /* VHI_MODE_COLOR / VHI_MODE_GRAYSCALE */
@@ -23,7 +21,8 @@ struct UvcHandle
     ULONG            uh_Width;
     ULONG            uh_Height;
     ULONG            uh_Input;       /* selected VHI input: 0=test pattern, N=camera */
-    APTR             uh_UvcBackend;  /* NULL until uvc.class capture is wired */
+    struct Library  *uh_ClassBase;
+    ULONG            uh_CameraId;  /* zero for the synthetic input */
     ULONG            uh_FrameSeq;    /* advances the test pattern per grab */
 };
 

@@ -3,21 +3,17 @@
  *                  uvc (USB Video Class) class for poseidon
  *----------------------------------------------------------------------------
  *
- * Poseidon class that binds USB Video Class devices (interface class
- * VIDEO_CLASSCODE 0x0E, VideoControl subclass 0x01) — webcams and HDMI-capture
- * dongles. SKELETON: it recognises and claims the device and creates the
- * per-binding context (struct NepClassUVC); streaming setup (endpoint
- * negotiation, MJPEG/YUYV decode) is the labeled next step. Once streaming
- * lands, decoded frames flow from here into uvc.library's uvc_grab() seam,
- * replacing that driver's built-in test pattern.
- *
- * Clean-room from the USB Video Class spec and AROS <devices/usb_video.h>; not
- * derived from any GPL source.
+ * Poseidon USB Video Class capture with bounded YUY2 frame acquisition.
+ * The existing class dispatcher exposes stable camera IDs and RGB24 frames
+ * to the VHI driver. Binding release waits for an in-flight bounded grab.
  */
 
 #include "debug.h"
 
 #include "uvc.class.h"
+#include <devices/timer.h>
+#include <devices/uvc_capture.h>
+#include "uvc_payload.h"
 
 /* /// "Lib Stuff" */
 static const STRPTR libname = MOD_NAME_STRING;
@@ -28,6 +24,9 @@ static int libInit(LIBBASETYPEPTR nh)
 
     KPRINTF(10, ("libInit nh: 0x%08lx SysBase: 0x%08lx\n", nh, SysBase));
 
+    NEWLIST(&nh->nh_Cameras);
+    InitSemaphore(&nh->nh_Lock);
+    nh->nh_NextId = 0;
     nh->nh_UtilityBase = OpenLibrary("utility.library", 39);
 
 #define	UtilityBase	nh->nh_UtilityBase
@@ -54,273 +53,305 @@ ADD2INITLIB(libInit, 0)
 ADD2EXPUNGELIB(libExpunge, 0)
 /* \\\ */
 
-/* /// "uvc_parse_streaming()" */
-/* Streaming foundation, part 1: from the device's REAL descriptors, find the
- * VideoStreaming interface, its isochronous IN endpoint, and the default
- * format+frame (MJPEG preferred, else uncompressed). Fills nch->ncu_Stream*.
- * Pure descriptor reads — no transfers, safe to run during bind. Field offsets
- * are the byte-exact UVC wire layouts from <devices/usb_video.h>. */
+/* Only YUY2 is accepted here: other uncompressed GUIDs have different layouts.
+ * Prefer the smallest advertised mode, bounded to VGA for USB bandwidth and
+ * memory use. The bDefaultFrameInterval belongs to that exact frame. */
 static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
 {
-    struct Library *ps;
-    struct PsdInterface *vsif;
-    APTR dd;
-    UBYTE deffidx = 0;      /* format's bDefaultFrameIndex (0 = take first frame) */
-    BOOL haveformat = FALSE;
-
-    if(!(ps = OpenLibrary("poseidon.library", 4)))
-        return(FALSE);
-
-    vsif = psdFindInterface(nch->ncu_Device, NULL,
-                            IFA_Class, VIDEO_CLASSCODE,
-                            IFA_SubClass, VIDEO_STREAM_SUBCLASS,
-                            TAG_END);
-    nch->ncu_VSInterface = vsif;
-    if(vsif)
-    {
-        /* The isochronous IN endpoint that carries video payloads lives on the
-         * VideoStreaming ALT settings (1..N), not alt 0 (which is the zero-
-         * bandwidth idle setting with no endpoints). Walk the alternate-interface
-         * list to find the first alt setting that exposes an isoc IN endpoint.
-         * (pif_Node is the first member of a PsdInterface, so each list node IS
-         * an alt-setting interface — same idiom as lan78xx.class.) */
-        {
-            struct List *altlist = NULL;
-            struct Node *node;
-            psdGetAttrs(PGA_INTERFACE, vsif, IFA_AlternateIfList, &altlist, TAG_END);
-            if(altlist)
-            {
-                for(node = altlist->lh_Head; node->ln_Succ; node = node->ln_Succ)
-                {
-                    APTR ep = psdFindEndpoint((APTR) node, NULL,
-                                              EA_IsIn, TRUE,
-                                              EA_TransferType, USEAF_ISOCHRONOUS,
-                                              TAG_END);
-                    if(ep)
-                    {
-                        IPTR mps = 0;
-                        psdGetAttrs(PGA_ENDPOINT, ep, EA_MaxPktSize, &mps, TAG_END);
-                        /* keep the highest-bandwidth alt setting — it must carry
-                         * at least the negotiated maxpayload to stream. */
-                        if((UWORD) mps > nch->ncu_StreamMaxPkt)
-                        {
-                            nch->ncu_StreamEP = ep;
-                            nch->ncu_StreamAltIf = (APTR) node;
-                            nch->ncu_StreamMaxPkt = (UWORD) mps;
-                        }
-                    }
+    struct Library *ps = OpenLibrary("poseidon.library", 4);
+    APTR dd = NULL;
+    UBYTE format = 0;
+    ULONG best = 0;
+    static const UBYTE yuy2[16] = {
+        'Y','U','Y','2',0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71
+    };
+    if (!ps) return FALSE;
+    nch->ncu_VSInterface = psdFindInterface(nch->ncu_Device, NULL,
+        IFA_Class, VIDEO_CLASSCODE, IFA_SubClass, VIDEO_STREAM_SUBCLASS,
+        TAG_END);
+    if (!nch->ncu_VSInterface) goto done;
+    while ((dd = psdFindDescriptor(nch->ncu_Device, dd,
+        DDA_DescriptorType, UDT_CS_INTERFACE,
+        DDA_Interface, nch->ncu_VSInterface, TAG_END))) {
+        UBYTE *p = NULL;
+        IPTR len = 0;
+        psdGetAttrs(PGA_DESCRIPTOR, dd, DDA_DescriptorData, &p,
+                    DDA_DescriptorLength, &len, TAG_END);
+        if (!p || len < 3 || p[0] > len || p[0] < 3) continue;
+        if (p[2] == UDST_VIDEO_STREAM_FORMAT_UNCOMPRESSED) {
+            format = (p[0] >= 27 && !memcmp(p+5, yuy2, 16) && p[21] == 16)
+                ? p[3] : 0;
+        } else if (p[2] == UDST_VIDEO_STREAM_FORMAT_MJPEG) {
+            format = 0;
+        } else if (p[2] == UDST_VIDEO_STREAM_FRAME_UNCOMPRESSED &&
+                   format && p[0] >= 26) {
+            ULONG w = p[5] | ((ULONG)p[6] << 8);
+            ULONG h = p[7] | ((ULONG)p[8] << 8);
+            ULONG interval = p[21] | ((ULONG)p[22] << 8) |
+                             ((ULONG)p[23] << 16) | ((ULONG)p[24] << 24);
+            if (w && h && !(w & 1) && w <= 640 && h <= 480 && interval &&
+                (!best || w*h < best)) {
+                best = w*h;
+                nch->ncu_Width = w;
+                nch->ncu_Height = h;
+                nch->ncu_FormatIndex = format;
+                nch->ncu_FrameIndex = p[3];
+                nch->ncu_Interval = interval;
+                nch->ncu_MaxFrameBuf = best * 2;
+            }
+        }
+    }
+    if (best) {
+        struct List *alts = NULL;
+        struct Node *node;
+        nch->ncu_StreamEP = psdFindEndpoint(nch->ncu_VSInterface, NULL,
+            EA_IsIn, TRUE, EA_TransferType, USEAF_BULK, TAG_END);
+        nch->ncu_IsBulk = nch->ncu_StreamEP != NULL;
+        if (!nch->ncu_IsBulk) {
+            psdGetAttrs(PGA_INTERFACE, nch->ncu_VSInterface,
+                        IFA_AlternateIfList, &alts, TAG_END);
+            if (alts) for (node=alts->lh_Head; node->ln_Succ; node=node->ln_Succ) {
+                APTR ep = psdFindEndpoint((APTR)node, NULL, EA_IsIn, TRUE,
+                                          EA_TransferType, USEAF_ISOCHRONOUS, TAG_END);
+                IPTR raw = 0, transactions = 1;
+                ULONG bytes;
+                if (!ep) continue;
+                psdGetAttrs(PGA_ENDPOINT, ep, EA_MaxPktSize, &raw,
+                            EA_NumTransMuFrame, &transactions, TAG_END);
+                bytes = raw * transactions;
+                if (bytes > nch->ncu_StreamMaxPkt && bytes <= 3072) {
+                    nch->ncu_StreamEP = ep;
+                    nch->ncu_StreamAltIf = (APTR)node;
+                    nch->ncu_StreamMaxPkt = bytes;
                 }
             }
-            /* Capture dongles (e.g. HDMI grabbers) often stream over a BULK
-             * IN endpoint on alt 0 rather than isochronous alt settings. Fall
-             * back to that so both webcams and capture cards are covered. */
-            if(!nch->ncu_StreamEP)
-            {
-                nch->ncu_StreamEP = psdFindEndpoint(vsif, NULL,
-                                                    EA_IsIn, TRUE,
-                                                    EA_TransferType, USEAF_BULK,
-                                                    TAG_END);
-                nch->ncu_IsBulk = (nch->ncu_StreamEP != NULL);
-            }
         }
-
-        dd = NULL;
-        while((dd = psdFindDescriptor(nch->ncu_Device, dd,
-                                      DDA_DescriptorType, UDT_CS_INTERFACE,
-                                      DDA_Interface, vsif,
-                                      TAG_END)))
-        {
-            UBYTE *raw = NULL;
-            UBYTE subtype;
-            psdGetAttrs(PGA_DESCRIPTOR, dd, DDA_DescriptorData, &raw, TAG_END);
-            if(!raw)
-                continue;
-            subtype = raw[2];   /* bDescriptorSubType */
-
-            if(!nch->ncu_HaveStream &&
-               (subtype == UDST_VIDEO_STREAM_FORMAT_MJPEG ||
-                subtype == UDST_VIDEO_STREAM_FORMAT_UNCOMPRESSED))
-            {
-                /* Lock the format identity together with the frame below: once a
-                 * frame is captured (ncu_HaveStream), a LATER format descriptor
-                 * (e.g. the uncompressed format after MJPEG) must not overwrite
-                 * IsMJPEG/FormatIndex, or we'd staple one format's frame onto
-                 * another format's identity. */
-                nch->ncu_IsMJPEG = (subtype == UDST_VIDEO_STREAM_FORMAT_MJPEG);
-                nch->ncu_FormatIndex = raw[3];              /* bFormatIndex */
-                /* MJPEG format: bDefaultFrameIndex at offset 6. Uncompressed
-                 * carries a 16-byte GUID first, so its default index sits
-                 * later; be conservative and take the first frame there. */
-                deffidx = nch->ncu_IsMJPEG ? raw[6] : 0;
-                haveformat = TRUE;
-            }
-            else if(haveformat && !nch->ncu_HaveStream &&
-                    (subtype == UDST_VIDEO_STREAM_FRAME_MJPEG ||
-                     subtype == UDST_VIDEO_STREAM_FRAME_UNCOMPRESSED) &&
-                    (deffidx == 0 || raw[3] == deffidx))
-            {
-                /* UVC frame descriptor: wWidth@5, wHeight@7,
-                 * dwMaxVideoFrameBuffer@17 (all little-endian). */
-                nch->ncu_FrameIndex = raw[3];               /* bFrameIndex */
-                nch->ncu_Width  = raw[5] | (raw[6] << 8);
-                nch->ncu_Height = raw[7] | (raw[8] << 8);
-                nch->ncu_MaxFrameBuf = raw[17] | (raw[18] << 8) |
-                                       (raw[19] << 16) | (raw[20] << 24);
-                nch->ncu_HaveStream = TRUE;
-            }
-        }
+        nch->ncu_HaveStream = nch->ncu_StreamEP != NULL;
     }
+done:
     CloseLibrary(ps);
-    return(nch->ncu_HaveStream);
+    return nch->ncu_HaveStream;
 }
-/* \\\ */
 
-/* /// "uvc_negotiate()" */
-/* Streaming foundation, part 2: the UVC Probe/Commit negotiation over EP0
- * (SET_CUR PROBE -> GET_CUR PROBE -> SET_CUR COMMIT), which fixes the format,
- * frame and payload size before any isochronous transfer. This is the
- * scaffolding; opening the isoc pipe, selecting the streaming alt setting, and
- * pulling+decoding payloads is the remaining step (see NOTE at the tail). */
-static void uvc_negotiate(struct NepClassUVC *nch)
+/* Every transfer shares a deadline for the whole grab, including controls.
+ * A submitted pipe is collected exactly once, also after abort. */
+static LONG uvc_transfer(struct Library *ps, APTR pipe, APTR data, ULONG size,
+                         struct MsgPort *mp, struct timerequest *timer)
 {
-    struct Library *ps;
-    struct MsgPort *mp;
-    APTR ep0;
-    IPTR vsifnum = 0;
-    struct uvc_streaming_control probe;
-
-    if(!nch->ncu_HaveStream)
-        return;
-    if(!(ps = OpenLibrary("poseidon.library", 4)))
-        return;
-
-    psdGetAttrs(PGA_INTERFACE, nch->ncu_VSInterface,
-                IFA_InterfaceNum, &vsifnum, TAG_END);
-
-    if((mp = CreateMsgPort()))
-    {
-        if((ep0 = psdAllocPipe(nch->ncu_Device, mp, NULL)))
-        {
-            LONG ioerr;
-            ULONG maxpayload = 0;
-
-            /* GET_CUR(PROBE) FIRST to seed the struct with the device's own valid
-             * defaults. A mostly-zero SET_CUR makes some devices return a zeroed
-             * payload size (maxpayload=0); seeding from the device avoids that.
-             * Then override only the format+frame we want. */
-            memset(&probe, 0, sizeof(probe));
-            psdPipeSetup(ep0, URTF_IN | URTF_CLASS | URTF_INTERFACE,
-                         UVUDR_GET_CUR, UVVSCS_PROBE_CONTROL << 8, (UWORD)vsifnum);
-            psdDoPipe(ep0, &probe, sizeof(probe));
-
-            probe.bFormatIndex = nch->ncu_FormatIndex;
-            probe.bFrameIndex = nch->ncu_FrameIndex;
-
-            /* SET_CUR(PROBE) — propose our format/frame */
-            psdPipeSetup(ep0, URTF_OUT | URTF_CLASS | URTF_INTERFACE,
-                         UVUDR_SET_CUR, UVVSCS_PROBE_CONTROL << 8, (UWORD)vsifnum);
-            psdDoPipe(ep0, &probe, sizeof(probe));
-
-            /* GET_CUR(PROBE) — read the negotiated result (payload size, interval) */
-            psdPipeSetup(ep0, URTF_IN | URTF_CLASS | URTF_INTERFACE,
-                         UVUDR_GET_CUR, UVVSCS_PROBE_CONTROL << 8, (UWORD)vsifnum);
-            ioerr = psdDoPipe(ep0, &probe, sizeof(probe));
-
-            if(!ioerr)
-            {
-                maxpayload = probe.dwMaxPayloadTransferSize[0] |
-                             (probe.dwMaxPayloadTransferSize[1] << 8) |
-                             (probe.dwMaxPayloadTransferSize[2] << 16) |
-                             (probe.dwMaxPayloadTransferSize[3] << 24);
-                /* SET_CUR(COMMIT) — lock it in */
-                psdPipeSetup(ep0, URTF_OUT | URTF_CLASS | URTF_INTERFACE,
-                             UVUDR_SET_CUR, UVVSCS_COMMIT_CONTROL << 8,
-                             (UWORD)vsifnum);
-                psdDoPipe(ep0, &probe, sizeof(probe));
-            }
-            psdAddErrorMsg(ioerr ? RETURN_WARN : RETURN_OK, (STRPTR) libname,
-                           "UVC negotiated: %s %ldx%ld fmt=%ld frame=%ld maxpayload=%ld (ioerr %ld)",
-                           nch->ncu_IsMJPEG ? "MJPEG" : "uncompressed",
-                           (IPTR) nch->ncu_Width, (IPTR) nch->ncu_Height,
-                           (IPTR) probe.bFormatIndex, (IPTR) probe.bFrameIndex,
-                           (IPTR) maxpayload, (IPTR) ioerr);
-            /* headless-observable mirror (QEMU serial/debug log) */
-            bug("uvc.class: UVC negotiated %s %ldx%ld fmt=%ld frame=%ld maxpayload=%ld ioerr=%ld\n",
-                nch->ncu_IsMJPEG ? "MJPEG" : "uncompressed",
-                (IPTR) nch->ncu_Width, (IPTR) nch->ncu_Height,
-                (IPTR) probe.bFormatIndex, (IPTR) probe.bFrameIndex,
-                (IPTR) maxpayload, (IPTR) ioerr);
-            psdFreePipe(ep0);
-        }
-        DeleteMsgPort(mp);
-    }
-    CloseLibrary(ps);
-
-    /* NOTE (remaining streaming step): with the format committed, uvc_grab_probe
-     * exercises the isoc pipe; full frame reassembly + decode + the uvc.library
-     * per-input grab handoff are the follow-on. */
+    LONG err;
+    if (CheckIO((struct IORequest *)timer)) return -1;
+    psdSendPipe(pipe, data, size);
+    while (!psdCheckPipe(pipe) && !CheckIO((struct IORequest *)timer))
+        Wait((1UL << mp->mp_SigBit) |
+             (1UL << timer->tr_node.io_Message.mn_ReplyPort->mp_SigBit));
+    if (!psdCheckPipe(pipe)) psdAbortPipe(pipe);
+    err = psdWaitPipe(pipe);
+    return CheckIO((struct IORequest *)timer) ? -1 : err;
 }
-/* \\\ */
 
-/* /// "uvc_grab_probe()" */
-/* Streaming transfer, increment 1: activate the highest-bandwidth streaming alt
- * setting, open the isochronous IN pipe, pull ONE transfer, and verify a real
- * UVC payload arrived (header length + bmHeader + END_OF_FRAME bit). De-risks
- * the isoc mechanism before full frame reassembly/decode. Bounded to one
- * transfer, then restores the idle alt 0 to release the isoc bandwidth. */
-static void uvc_grab_probe(struct NepClassUVC *nch)
+static BOOL uvc_alt(struct Library *ps, APTR control, APTR interface,
+                    struct MsgPort *mp, struct timerequest *timer)
 {
-    struct Library *ps;
-    struct MsgPort *mp;
-    APTR ep0, isocpipe;
-    ULONG bufsize;
-
-    if(!nch->ncu_StreamEP || !nch->ncu_StreamAltIf || nch->ncu_IsBulk)
-        return;
-    if(!(ps = OpenLibrary("poseidon.library", 4)))
-        return;
-    bufsize = nch->ncu_StreamMaxPkt ? nch->ncu_StreamMaxPkt : 1024;
-
-    if((mp = CreateMsgPort()))
-    {
-        if((ep0 = psdAllocPipe(nch->ncu_Device, mp, NULL)))
-        {
-            /* switch VideoStreaming to the streaming alt setting (commits isoc
-             * bandwidth) */
-            if(psdSetAltInterface(ep0, nch->ncu_StreamAltIf))
-            {
-                if((isocpipe = psdAllocPipe(nch->ncu_Device, mp, nch->ncu_StreamEP)))
-                {
-                    UBYTE *buf = psdAllocVec(bufsize);
-                    if(buf)
-                    {
-                        LONG ioerr;
-                        ULONG actual;
-                        memset(buf, 0, bufsize);
-                        ioerr = psdDoPipe(isocpipe, buf, bufsize);
-                        actual = psdGetPipeActual(isocpipe);
-                        psdAddErrorMsg(RETURN_OK, (STRPTR) libname,
-                                       "isoc probe: maxpkt=%ld ioerr=%ld actual=%ld hdrlen=%ld bmHeader=0x%02lx",
-                                       (IPTR) nch->ncu_StreamMaxPkt, (IPTR) ioerr,
-                                       (IPTR) actual, (IPTR) buf[0], (IPTR) buf[1]);
-                        bug("uvc.class: isoc probe maxpkt=%ld ioerr=%ld actual=%ld hdrlen=%ld bmHeader=0x%02lx eof=%ld\n",
-                            (IPTR) nch->ncu_StreamMaxPkt, (IPTR) ioerr, (IPTR) actual,
-                            (IPTR) buf[0], (IPTR) buf[1],
-                            (IPTR) ((buf[1] & UVMJHF_END_OF_FRAME) ? 1 : 0));
-                        psdFreeVec(buf);
-                    }
-                    psdFreePipe(isocpipe);
-                }
-                /* release the isoc bandwidth: back to the idle alt 0 */
-                psdSetAltInterface(ep0, nch->ncu_VSInterface);
-            }
-            psdFreePipe(ep0);
-        }
-        DeleteMsgPort(mp);
-    }
-    CloseLibrary(ps);
+    IPTR number = 0, alternate = 0;
+    UBYTE current[8] = {0};
+    psdGetAttrs(PGA_INTERFACE, interface, IFA_InterfaceNum, &number,
+                IFA_AlternateNum, &alternate, TAG_END);
+    psdPipeSetup(control, URTF_STANDARD|URTF_INTERFACE,
+                 USR_SET_INTERFACE, alternate, number);
+    if (uvc_transfer(ps, control, NULL, 0, mp, timer)) return FALSE;
+    psdPipeSetup(control, URTF_IN|URTF_STANDARD|URTF_INTERFACE,
+                 USR_GET_INTERFACE, 0, number);
+    if (uvc_transfer(ps, control, current, 1, mp, timer) ||
+        psdGetPipeActual(control) != 1 || current[0] != alternate) return FALSE;
+    return psdSetAltInterface(NULL, interface);
 }
-/* \\\ */
+
+static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
+{
+    struct Library *ps = NULL;
+    struct MsgPort *mp = NULL, *tp = NULL;
+    struct timerequest *timer = NULL;
+    APTR control = NULL, pipes[16] = {0};
+    BOOL pending[16] = {0};
+    ULONG slots = 0, slot = 0;
+    UBYTE *raw = NULL, *payload = NULL;
+    UBYTE probe[26];
+    IPTR ifnum = 0;
+    ULONG result = 0, maxpayload, size, i;
+    BOOL timeropen = FALSE, timersent = FALSE, active = FALSE;
+    struct uvc_payload frame = {0};
+    if (!nch->ncu_HaveStream || !rgb ||
+        capacity < (ULONG)nch->ncu_Width*nch->ncu_Height*3) return 0;
+    ps = OpenLibrary("poseidon.library", 4);
+    if (!ps || !(mp = CreateMsgPort()) || !(tp = CreateMsgPort())) goto out;
+    timer = (struct timerequest *)CreateIORequest(tp, sizeof(*timer));
+    if (!timer || OpenDevice("timer.device", UNIT_MICROHZ,
+                             (struct IORequest *)timer, 0)) goto out;
+    timeropen = TRUE;
+    timer->tr_node.io_Command = TR_ADDREQUEST;
+    timer->tr_time.tv_secs = 3;
+    timer->tr_time.tv_micro = 0;
+    SendIO((struct IORequest *)timer);
+    timersent = TRUE;
+    control = psdAllocPipe(nch->ncu_Device, mp, NULL);
+    if (!control) goto out;
+    psdGetAttrs(PGA_INTERFACE, nch->ncu_VSInterface, IFA_InterfaceNum, &ifnum, TAG_END);
+    memset(probe, 0, sizeof(probe));
+    psdPipeSetup(control, URTF_IN|URTF_CLASS|URTF_INTERFACE,
+                 UVUDR_GET_CUR, UVVSCS_PROBE_CONTROL << 8, ifnum);
+    if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer) ||
+        psdGetPipeActual(control) != sizeof(probe)) goto out;
+    probe[0] = 1; probe[1] = 0;
+    probe[2] = nch->ncu_FormatIndex; probe[3] = nch->ncu_FrameIndex;
+    for (i=0; i<4; ++i) probe[4+i] = nch->ncu_Interval >> (8*i);
+    psdPipeSetup(control, URTF_OUT|URTF_CLASS|URTF_INTERFACE,
+                 UVUDR_SET_CUR, UVVSCS_PROBE_CONTROL << 8, ifnum);
+    if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer)) goto out;
+    psdPipeSetup(control, URTF_IN|URTF_CLASS|URTF_INTERFACE,
+                 UVUDR_GET_CUR, UVVSCS_PROBE_CONTROL << 8, ifnum);
+    if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer) ||
+        psdGetPipeActual(control) != sizeof(probe) ||
+        probe[2] != nch->ncu_FormatIndex || probe[3] != nch->ncu_FrameIndex) goto out;
+    maxpayload = probe[22] | ((ULONG)probe[23]<<8) |
+                 ((ULONG)probe[24]<<16) | ((ULONG)probe[25]<<24);
+    if (maxpayload < 2 || maxpayload > 1024*1024 ||
+        (!nch->ncu_IsBulk && maxpayload > nch->ncu_StreamMaxPkt)) goto out;
+    psdPipeSetup(control, URTF_OUT|URTF_CLASS|URTF_INTERFACE,
+                 UVUDR_SET_CUR, UVVSCS_COMMIT_CONTROL << 8, ifnum);
+    if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer)) goto out;
+    /* psdSetAltInterface updates Poseidon's selected-interface bookkeeping. */
+    if (!nch->ncu_IsBulk) {
+        if (!uvc_alt(ps, control, nch->ncu_StreamAltIf, mp, timer)) goto out;
+        active = TRUE;
+    }
+    size = nch->ncu_IsBulk ? maxpayload : nch->ncu_StreamMaxPkt;
+    raw = AllocVec(nch->ncu_MaxFrameBuf, MEMF_PUBLIC);
+    slots = nch->ncu_IsBulk ? 2 : 16;
+    payload = AllocVec(size * slots, MEMF_PUBLIC);
+    if (!raw || !payload) goto out;
+    for (i=0; i<slots; ++i) {
+        pipes[i] = psdAllocPipe(nch->ncu_Device, mp, nch->ncu_StreamEP);
+        if (!pipes[i]) goto out;
+        psdSetAttrs(PGA_PIPE, pipes[i], PPA_AllowRuntPackets, TRUE,
+                    PPA_NakTimeout, TRUE, PPA_NakTimeoutTime, 1000, TAG_END);
+        psdSendPipe(pipes[i], payload + i*size, size);
+        pending[i] = TRUE;
+    }
+    frame.data = raw; frame.capacity = nch->ncu_MaxFrameBuf;
+    while (!CheckIO((struct IORequest *)timer)) {
+        ULONG actual;
+        LONG error;
+        while (!psdCheckPipe(pipes[slot]) && !CheckIO((struct IORequest *)timer))
+            Wait((1UL << mp->mp_SigBit) | (1UL << tp->mp_SigBit));
+        if (!psdCheckPipe(pipes[slot])) break;
+        error = psdWaitPipe(pipes[slot]);
+        pending[slot] = FALSE;
+        if (error) break;
+        actual = psdGetPipeActual(pipes[slot]);
+        if (actual > size) break;
+        if (actual && uvc_payload_feed(&frame, payload + slot*size, actual)) {
+            uvc_yuy2_rgb(raw, rgb, nch->ncu_MaxFrameBuf);
+            result = (ULONG)nch->ncu_Width*nch->ncu_Height*3;
+            break;
+        }
+        psdSendPipe(pipes[slot], payload + slot*size, size);
+        pending[slot] = TRUE;
+        slot = (slot + 1) % slots;
+    }
+
+out:
+    for (i=0; i<slots; ++i) {
+        if (pending[i]) {
+            psdAbortPipe(pipes[i]);
+            psdWaitPipe(pipes[i]);
+        }
+        if (pipes[i]) psdFreePipe(pipes[i]);
+    }
+    if (active) {
+        /* Give cleanup its own bounded deadline even if capture timed out. */
+        if (!CheckIO((struct IORequest *)timer)) AbortIO((struct IORequest *)timer);
+        WaitIO((struct IORequest *)timer);
+        timer->tr_time.tv_secs = 1;
+        timer->tr_time.tv_micro = 0;
+        SendIO((struct IORequest *)timer);
+        if (!uvc_alt(ps, control, nch->ncu_VSInterface, mp, timer))
+            bug("uvc.class: failed to restore idle alternate setting\n");
+    }
+    if (control) psdFreePipe(control);
+    if (timersent) {
+        if (!CheckIO((struct IORequest *)timer)) AbortIO((struct IORequest *)timer);
+        WaitIO((struct IORequest *)timer);
+    }
+    if (timeropen) CloseDevice((struct IORequest *)timer);
+    if (timer) DeleteIORequest((struct IORequest *)timer);
+    if (tp) DeleteMsgPort(tp);
+    if (mp) DeleteMsgPort(mp);
+    FreeVec(payload); FreeVec(raw);
+    if (ps) CloseLibrary(ps);
+    return result;
+}
+
+static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
+{
+    struct NepClassUVC *nch, snapshot;
+    struct Library *ps = NULL;
+    ULONG index = 0;
+    IPTR result = 0;
+    BOOL found = FALSE;
+    if (method == UVCM_GRAB) {
+        ps = OpenLibrary("poseidon.library", 4);
+        if (!ps) return 0;
+        psdLockReadPBase();
+    }
+    ObtainSemaphore(&nh->nh_Lock);
+    ForeachNode(&nh->nh_Cameras, nch) {
+        if (method == UVCM_COUNT) { result++; continue; }
+        if (!args) break;
+        if (method == UVCM_INFO && index++ == args[0]) {
+            struct UVCCameraInfo *info = (APTR)args[1];
+            if (info) {
+                memset(info, 0, sizeof(*info));
+                info->id = nch->ncu_Id;
+                info->width = nch->ncu_Width; info->height = nch->ncu_Height;
+                memcpy(info->name, nch->ncu_Name, sizeof(info->name));
+                result = TRUE;
+            }
+            break;
+        }
+        if (method == UVCM_GRAB && nch->ncu_Id == args[0]) {
+            snapshot = *nch;
+            found = TRUE;
+            break;
+        }
+    }
+    ReleaseSemaphore(&nh->nh_Lock);
+    if (ps) {
+        APTR pd = NULL;
+        /* The base read lock pins the active inventory while acquiring the
+         * device lock. Never wait for a device lock with the class lock held:
+         * binding release runs under the device lock and takes the class lock. */
+        if (found) {
+            while ((pd = psdGetNextDevice(pd)))
+                if (pd == snapshot.ncu_Device) break;
+        }
+        if (pd) psdLockWriteDevice(pd);
+        psdUnlockPBase();
+        if (pd) {
+            /* A manual unbind or configuration switch may have won while
+             * acquiring the device lock. Revalidate before using descriptors. */
+            found = FALSE;
+            ObtainSemaphore(&nh->nh_Lock);
+            ForeachNode(&nh->nh_Cameras, nch) {
+                if (nch->ncu_Id == args[0]) { found = TRUE; break; }
+            }
+            ReleaseSemaphore(&nh->nh_Lock);
+            if (found) result = uvc_grab(&snapshot, (APTR)args[1], args[2]);
+            psdUnlockDevice(pd);
+        }
+        CloseLibrary(ps);
+    }
+    return result;
+}
 
 /*
  * ***********************************************************************
@@ -390,6 +421,8 @@ struct NepClassUVC * usbForceInterfaceBinding(struct NepUVCBase *nh, struct PsdI
 
         if((nch = psdAllocVec(sizeof(struct NepClassUVC))))
         {
+            memset(nch, 0, sizeof(*nch));
+            if (devname) strncpy(nch->ncu_Name, devname, sizeof(nch->ncu_Name)-1);
             nch->ncu_ClsBase = nh;
             nch->ncu_Device = pd;
             nch->ncu_Hub = hubpd;
@@ -400,36 +433,20 @@ struct NepClassUVC * usbForceInterfaceBinding(struct NepUVCBase *nh, struct PsdI
             nch->ncu_DevIDString = devidstr;
             nch->ncu_IfIDString = ifidstr;
 
-            /* TODO(streaming): walk the class-specific VideoStreaming
-             * descriptors (UDST_VIDEO_STREAM_FORMAT_MJPEG /
-             * _FORMAT_UNCOMPRESSED), pick a format+frame, open the isochronous
-             * or bulk streaming pipe, and expose decoded frames to
-             * uvc.library's uh_UvcBackend seam. */
-
-            psdAddErrorMsg(RETURN_OK, (STRPTR) libname,
-                           "Bound USB Video device '%s'", devname);
-            /* Streaming foundation: parse the device's real VideoStreaming
-             * descriptors, then negotiate format/frame over EP0. Non-fatal —
-             * the binding stands regardless of streaming readiness. */
-            if(uvc_parse_streaming(nch))
-            {
-                psdAddErrorMsg(RETURN_OK, (STRPTR) libname,
-                               "  VideoStreaming: %s %ldx%ld (fmt %ld frame %ld), %s-ep %s",
-                               nch->ncu_IsMJPEG ? "MJPEG" : "uncompressed",
-                               (IPTR) nch->ncu_Width, (IPTR) nch->ncu_Height,
-                               (IPTR) nch->ncu_FormatIndex, (IPTR) nch->ncu_FrameIndex,
-                               nch->ncu_IsBulk ? "bulk" : "isoc",
-                               nch->ncu_StreamEP ? "found" : "MISSING");
-                /* headless-observable mirror (captured in the QEMU debug log) */
-                bug("uvc.class: VideoStreaming %s %ldx%ld fmt=%ld frame=%ld %s-ep=%s\n",
-                    nch->ncu_IsMJPEG ? "MJPEG" : "uncompressed",
-                    (IPTR) nch->ncu_Width, (IPTR) nch->ncu_Height,
-                    (IPTR) nch->ncu_FormatIndex, (IPTR) nch->ncu_FrameIndex,
-                    nch->ncu_IsBulk ? "bulk" : "isoc",
-                    nch->ncu_StreamEP ? "found" : "MISSING");
-                uvc_negotiate(nch);
-                uvc_grab_probe(nch);
+            if (!uvc_parse_streaming(nch)) {
+                psdAddErrorMsg(RETURN_WARN, (STRPTR)libname,
+                    "No supported YUY2 mode (up to 640x480) on '%s'", devname);
+                psdFreeVec(nch);
+                CloseLibrary(ps);
+                return NULL;
             }
+            ObtainSemaphore(&nh->nh_Lock);
+            nch->ncu_Id = ++nh->nh_NextId;
+            AddTail(&nh->nh_Cameras, &nch->ncu_Node);
+            ReleaseSemaphore(&nh->nh_Lock);
+            bug("uvc.class: bound id=%lu YUY2 %lux%lu %s\n",
+                (IPTR)nch->ncu_Id, (IPTR)nch->ncu_Width,
+                (IPTR)nch->ncu_Height, devname);
             CloseLibrary(ps);
             return(nch);
         }
@@ -455,7 +472,10 @@ void usbReleaseInterfaceBinding(struct NepUVCBase *nh, struct NepClassUVC *nch)
         psdGetAttrs(PGA_DEVICE, pd, DA_ProductName, &devname, TAG_END);
         psdAddErrorMsg(RETURN_OK, (STRPTR) libname,
                        "Released USB Video device '%s'!", devname);
+        ObtainSemaphore(&nh->nh_Lock);
+        Remove(&nch->ncu_Node);
         psdFreeVec(nch);
+        ReleaseSemaphore(&nh->nh_Lock);
         CloseLibrary(ps);
     }
 }
@@ -544,6 +564,8 @@ AROS_LH2(IPTR, usbDoMethodA,
     AROS_LIBFUNC_INIT
 
     KPRINTF(10, ("Do Method %ld\n", methodid));
+    if (methodid >= UVCM_COUNT && methodid <= UVCM_GRAB)
+        return uvc_method(nh, methodid, methoddata);
     switch(methodid)
     {
         case UCM_AttemptInterfaceBinding:

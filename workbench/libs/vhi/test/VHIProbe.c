@@ -13,7 +13,7 @@
               -> CLOSE
 
     It is hardware-independent: it exercises whatever VHI driver is named on
-    the command line (default "vhi/testcard.library", the synthetic test-card
+    the command line (default "uvc.library", the synthetic test-card
     driver). Once the real UVC-backed driver exists, point it at that name and
     the same probe verifies real frames.
 
@@ -21,7 +21,7 @@
     genmodule-generated <proto/vhi.h>. Clean-room; not derived from any GPL
     source.
 
-    Usage:  VHIProbe [drivername] [dumpfile]
+    Usage:  VHIProbe [drivername] [dumpfile] [input]
 */
 
 #include <exec/types.h>
@@ -35,6 +35,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* Mirror the load-bearing result lines to BOTH the shell (printf, for a human
  * at the console) and the debug console (bug, tagged "VHIProbe:", captured in
@@ -46,7 +47,16 @@
  * single entry vhi_api at the first LVO), so proto/vhi.h dispatches through
  * whichever driver we OpenLibrary() into VHIBase. */
 struct Library *VHIBase = NULL;
-#include <proto/vhi.h>
+#include <aros/libcall.h>
+static IPTR call_vhi(ULONG method, ULONG submethod, APTR attr,
+                     ULONG *error, APTR handle)
+{
+    return AROS_LC5(IPTR, vhi_api,
+        AROS_LCA(ULONG, method, D2), AROS_LCA(ULONG, submethod, D3),
+        AROS_LCA(APTR, attr, D4), AROS_LCA(ULONG *, error, D5),
+        AROS_LCA(APTR, handle, D6), struct Library *, VHIBase, 5, Vhi);
+}
+#define vhi_api call_vhi
 
 static const char *vhi_errstr(ULONG err)
 {
@@ -121,7 +131,7 @@ static ULONG frame_checksum(const APTR buf, ULONG len)
 
 int main(int argc, char **argv)
 {
-    const char *drvname  = (argc > 1) ? argv[1] : "vhi/testcard.library";
+    const char *drvname  = (argc > 1) ? argv[1] : "uvc.library";
     const char *dumpfile = (argc > 2) ? argv[2] : NULL;
     ULONG err = 0;
     APTR handle = NULL;
@@ -186,6 +196,15 @@ int main(int argc, char **argv)
         }
     }
 
+    {
+        struct vhi_setoptions option;
+        option.option = VHI_OPT_INPUT;
+        option.value = argc > 3 ? strtoul(argv[3], NULL, 10) : 0;
+        vhi_api(VHI_METHOD_SET, VHI_OPTIONS, &option, &err, handle);
+        PROBE_LOG("  selected input: %lu%s\n", (unsigned long)option.value,
+                  option.value ? " (camera)" : " (SYNTHETIC)");
+        if (err) goto out_close_drv;
+    }
     memset(&sz, 0, sizeof(sz));
     err = 0;
     vhi_api(VHI_METHOD_GET, VHI_MAXIMUM_SIZE, &sz, &err, handle);

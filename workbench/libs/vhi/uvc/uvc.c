@@ -12,19 +12,9 @@
     SET VHI_OPTIONS(option=VHI_OPT_INPUT). There is no global device registry —
     an app is told the driver name explicitly and picks an input.
 
-    Inputs exposed here:
-      input 0        = built-in TEST PATTERN (always present; deterministic,
-                       hardware-free — this is what CI/VHIProbe validates).
-      input 1 .. N   = the UVC cameras Poseidon currently has enumerated
-                       (each device carrying a VideoControl interface, class
-                       VIDEO_CLASSCODE / VIDEO_CTRL_SUBCLASS).
-
-    Frame CAPTURE from a real camera is not yet implemented: selecting a camera
-    input and digitising returns VHI_ERR_NO_INPUT_DATA. Enumeration (count +
-    names) is live so enumerateDevices()-style discovery works today; streaming
-    (descriptor walk -> isoc pipe -> decode, via uvc.class) is the labelled
-    follow-on. Clean-room from <vhi/vhi.h> + the cAMIra reference; not derived
-    from any GPL source.
+    Input zero is explicitly synthetic. Other inputs are supported cameras
+    bound to uvc.class. Selecting a camera snapshots its binding generation;
+    unplugging it returns no input data rather than selecting a different camera.
 */
 
 #include <exec/types.h>
@@ -42,108 +32,36 @@
 #include "uvc_intern.h"
 #include LC_LIBDEFS_FILE
 
-/* poseidon.library base for the proto/poseidon.h inline stubs (libbase "ps"). */
-struct Library *ps = NULL;
+#include <devices/uvc_capture.h>
 
-/* Default geometry until real UVC descriptors are read from the device. */
-#define UVC_DEF_WIDTH   320
-#define UVC_DEF_HEIGHT  240
+#define UVC_DEF_WIDTH 320
+#define UVC_DEF_HEIGHT 240
+#define TESTPATTERN_NAME "Test Pattern (synthetic)"
 
-#define TESTPATTERN_NAME  "Test Pattern (built-in)"
-
-/* --------------------------------------------------------------------------
- * Camera enumeration via Poseidon. A "camera input" is any enumerated device
- * carrying a VideoControl interface (VIDEO_CLASSCODE / VIDEO_CTRL_SUBCLASS).
- * Walk under the read-locked PBase. If want_index >= 0, stop at that camera
- * (0-based) and copy its product name into namebuf; return the total count via
- * *count_out. All Poseidon use is serialised by ub_Lock and brackets its own
- * OpenLibrary/CloseLibrary, so the shared "ps" base is never raced.
- * ------------------------------------------------------------------------ */
-static void uvc_walk_cameras(struct UvcBase *UvcBase, LONG want_index,
-                             ULONG *count_out, STRPTR namebuf, ULONG namelen)
+static IPTR uvc_class(struct UvcHandle *uh, ULONG method, IPTR *args)
 {
-    ULONG count = 0;
-    APTR pd;
-
-    if (count_out) *count_out = 0;
-    if (namebuf && namelen) namebuf[0] = 0;
-
-    ObtainSemaphore(&UvcBase->ub_Lock);
-    if ((ps = OpenLibrary("poseidon.library", 4)))
-    {
-        psdLockReadPBase();
-        pd = NULL;
-        while ((pd = psdGetNextDevice(pd)))
-        {
-            /* does this device expose a UVC VideoControl interface? */
-            APTR pif = psdFindInterface(pd, NULL,
-                                        IFA_Class, VIDEO_CLASSCODE,
-                                        IFA_SubClass, VIDEO_CTRL_SUBCLASS,
-                                        TAG_END);
-            if (pif)
-            {
-                if (want_index >= 0 && (ULONG)want_index == count &&
-                    namebuf && namelen)
-                {
-                    STRPTR devname = NULL;
-                    psdGetAttrs(PGA_DEVICE, pd, DA_ProductName, &devname, TAG_END);
-                    if (devname)
-                    {
-                        ULONG i = 0;
-                        while (devname[i] && i < namelen - 1)
-                        {
-                            namebuf[i] = devname[i];
-                            i++;
-                        }
-                        namebuf[i] = 0;
-                    }
-                }
-                count++;
-            }
-        }
-        psdUnlockPBase();
-        CloseLibrary(ps);
-        ps = NULL;
-    }
-    ReleaseSemaphore(&UvcBase->ub_Lock);
-
-    if (count_out) *count_out = count;
+    if (!uh->uh_ClassBase) return 0;
+    return AROS_LC2(IPTR, usbDoMethodA, AROS_LCA(ULONG, method, D0),
+        AROS_LCA(IPTR *, args, A1), struct Library *, uh->uh_ClassBase, 7, Nep);
 }
-
-static ULONG uvc_count_cameras(struct UvcBase *UvcBase)
+static BOOL uvc_info(struct UvcHandle *uh, ULONG index, struct UVCCameraInfo *info)
 {
-    ULONG n = 0;
-    uvc_walk_cameras(UvcBase, -1, &n, NULL, 0);
-    return n;
+    IPTR args[2] = { index, (IPTR)info };
+    return uvc_class(uh, UVCM_INFO, args) != 0;
 }
-
-/* Return an AllocVec'd copy of the name of VHI input `index`; the consumer
- * frees it (VHI FREEVEC). input 0 = test pattern, 1..N = cameras. */
-static STRPTR uvc_input_name(struct UvcBase *UvcBase, ULONG index)
+static STRPTR uvc_input_name(struct UvcHandle *uh, ULONG index)
 {
-    char buf[128];
+    struct UVCCameraInfo info;
+    const char *name = TESTPATTERN_NAME;
     STRPTR out;
-    ULONG len;
-
-    if (index == 0)
-    {
-        const char *s = TESTPATTERN_NAME;
-        ULONG i = 0;
-        while (s[i]) { buf[i] = s[i]; i++; }
-        buf[i] = 0;
+    ULONG len = 0;
+    if (index) {
+        if (!uvc_info(uh, index-1, &info)) return NULL;
+        name = info.name;
     }
-    else
-    {
-        ULONG dummy;
-        buf[0] = 0;
-        uvc_walk_cameras(UvcBase, (LONG)(index - 1), &dummy, buf, sizeof(buf));
-        if (!buf[0])
-            return NULL;
-    }
-
-    for (len = 0; buf[len]; len++) ;
-    out = AllocVec(len + 1, MEMF_PUBLIC);
-    if (out) CopyMem(buf, out, len + 1);
+    while (name[len]) ++len;
+    out = AllocVec(len+1, MEMF_PUBLIC);
+    if (out) CopyMem(name, out, len+1);
     return out;
 }
 
@@ -207,7 +125,9 @@ AROS_LH5(IPTR, vhi_api,
                 uh->uh_Width = UVC_DEF_WIDTH;
                 uh->uh_Height = UVC_DEF_HEIGHT;
                 uh->uh_Input = 0;              /* default: test pattern */
-                uh->uh_UvcBackend = NULL;
+                uh->uh_ClassBase = OpenLibrary("uvc.class", 1);
+                if (!uh->uh_ClassBase)
+                    uh->uh_ClassBase = OpenLibrary("SYS:Classes/USB/uvc.class", 1);
                 result = (IPTR)uh;
             }
             else
@@ -215,8 +135,10 @@ AROS_LH5(IPTR, vhi_api,
             break;
 
         case VHI_METHOD_CLOSE:
-            if (uh)
+            if (uh) {
+                if (uh->uh_ClassBase) CloseLibrary(uh->uh_ClassBase);
                 FreeVec(uh);
+            }
             break;
 
         case VHI_METHOD_GET:
@@ -240,11 +162,11 @@ AROS_LH5(IPTR, vhi_api,
                     break;
                 case VHI_NUMBER_OF_INPUTS:
                     /* input 0 (test pattern) + one per enumerated camera */
-                    result = 1 + uvc_count_cameras(UvcBase);
+                    result = 1 + uvc_class(uh, UVCM_COUNT, NULL);
                     break;
                 case VHI_NAME_OF_INPUT:
                     /* attr = input index; returns an AllocVec'd name to free */
-                    result = (IPTR)uvc_input_name(UvcBase, (ULONG)(IPTR)attr);
+                    result = (IPTR)uvc_input_name(uh, (ULONG)(IPTR)attr);
                     break;
                 case VHI_SUPPORTED_MODES:
                     result = VHI_MODE_COLOR | VHI_MODE_GRAYSCALE;
@@ -264,7 +186,7 @@ AROS_LH5(IPTR, vhi_api,
                         struct vhi_size *sz = (struct vhi_size *)attr;
                         sz->max_width = uh->uh_Width;
                         sz->max_height = uh->uh_Height;
-                        sz->fixed = FALSE;
+                        sz->fixed = TRUE;
                         sz->scalable = FALSE;
                     }
                     break;
@@ -285,17 +207,27 @@ AROS_LH5(IPTR, vhi_api,
                         struct vhi_setoptions *so = (struct vhi_setoptions *)attr;
                         if (so->option == VHI_OPT_INPUT)
                         {
-                            ULONG ninputs = 1 + uvc_count_cameras(UvcBase);
-                            if (so->value < ninputs)
+                            struct UVCCameraInfo info;
+                            if (!so->value) {
+                                uh->uh_Input = 0;
+                                uh->uh_CameraId = 0;
+                                uh->uh_Width = UVC_DEF_WIDTH;
+                                uh->uh_Height = UVC_DEF_HEIGHT;
+                            } else if (uvc_info(uh, so->value-1, &info)) {
                                 uh->uh_Input = so->value;
-                            else
-                                err = VHI_ERR_UNKNOWN_OPTION;
+                                uh->uh_CameraId = info.id;
+                                uh->uh_Width = info.width;
+                                uh->uh_Height = info.height;
+                            } else err = VHI_ERR_NO_HARDWARE;
                         }
-                        else
-                            uh->uh_Options = so->value;
+                        else err = VHI_ERR_UNKNOWN_OPTION;
                     }
                     break;
-                case VHI_COLOR_MODE:  uh->uh_ColorMode = (ULONG)(IPTR)attr; break;
+                case VHI_COLOR_MODE:
+                    if ((IPTR)attr == VHI_MODE_COLOR || (IPTR)attr == VHI_MODE_GRAYSCALE)
+                        uh->uh_ColorMode = (ULONG)(IPTR)attr;
+                    else err = VHI_ERR_UNKNOWN_OPTION;
+                    break;
                 case VHI_VIDEOFORMAT: uh->uh_Format = (ULONG)(IPTR)attr; break;
                 default:              err = VHI_ERR_UNKNOWN_OPTION; break;
             }
@@ -318,23 +250,34 @@ AROS_LH5(IPTR, vhi_api,
                     struct vhi_image *img;
                     APTR pixels;
 
-                    /* Real camera inputs: streaming not yet implemented. Be
-                     * honest — the input exists and is selectable, but there
-                     * is no frame source until uvc.class streaming is wired. */
-                    if (uh->uh_Input != 0)
-                    {
-                        err = VHI_ERR_NO_INPUT_DATA;
-                        break;
-                    }
-
                     img = AllocVec(sizeof(struct vhi_image),
                                    MEMF_PUBLIC | MEMF_CLEAR);
                     if (!img) { err = VHI_ERR_OUT_OF_MEMORY; break; }
-                    pixels = uvc_grab_testpattern(uh);
+                    if (!uh->uh_Input) pixels = uvc_grab_testpattern(uh);
+                    else {
+                        ULONG bytes = uh->uh_Width * uh->uh_Height * 3;
+                        IPTR args[3];
+                        pixels = AllocVec(bytes, MEMF_PUBLIC);
+                        args[0] = uh->uh_CameraId;
+                        args[1] = (IPTR)pixels;
+                        args[2] = bytes;
+                        if (pixels && uvc_class(uh, UVCM_GRAB, args) != bytes) {
+                            FreeVec(pixels);
+                            pixels = NULL;
+                        }
+                        if (pixels && uh->uh_ColorMode == VHI_MODE_GRAYSCALE) {
+                            ULONG i;
+                            UBYTE *p = pixels;
+                            for (i=0; i<bytes; i+=3) {
+                                UBYTE g = (30*p[i]+59*p[i+1]+11*p[i+2])/100;
+                                p[i]=p[i+1]=p[i+2]=g;
+                            }
+                        }
+                    }
                     if (!pixels)
                     {
                         FreeVec(img);
-                        err = VHI_ERR_ERR_WHILE_DIG;
+                        err = VHI_ERR_NO_INPUT_DATA;
                         break;
                     }
                     uh->uh_FrameSeq++;

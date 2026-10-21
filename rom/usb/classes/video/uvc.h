@@ -10,6 +10,8 @@
 #include <exec/types.h>
 #include <exec/nodes.h>
 #include <exec/libraries.h>
+#include <exec/semaphores.h>
+#include <exec/lists.h>
 
 /* struct Psd* are used only through pointers here, so forward pointers to the
  * incomplete poseidon types are sufficient (the full definitions come from
@@ -34,12 +36,7 @@ struct uvc_streaming_control
     UBYTE dwMaxPayloadTransferSize[4];
 };
 
-/* One bound UVC device: the VideoControl interface plus its associated
- * VideoStreaming interface. This is the USB-side counterpart to uvc.library's
- * seam — decoded frames will flow from here into uvc.library, replacing the test
- * pattern. The ncu_Stream* fields below are the streaming foundation: parsed at
- * bind time from the device's real descriptors; the isoc pipe/negotiation that
- * uses them is the in-progress next step. */
+/* One bound UVC camera. Descriptor pointers remain owned by Poseidon. */
 struct NepClassUVC
 {
     struct Node          ncu_Node;         /* Node linkage */
@@ -53,7 +50,7 @@ struct NepClassUVC
     STRPTR               ncu_DevIDString;  /* Device ID String */
     STRPTR               ncu_IfIDString;   /* Interface ID String */
 
-    /* --- streaming foundation (parsed at bind; not yet transferring) --- */
+    /* Selected YUY2 mode and transport, parsed at bind time. */
     struct PsdInterface *ncu_VSInterface;  /* the VideoStreaming interface (alt 0) */
     APTR                 ncu_StreamEP;     /* isoc IN endpoint (found, unopened) */
     APTR                 ncu_StreamAltIf;  /* alt-setting interface owning ncu_StreamEP */
@@ -65,12 +62,19 @@ struct NepClassUVC
     UBYTE                ncu_HaveStream;   /* TRUE once a format+frame was parsed */
     UWORD                ncu_Width;        /* negotiated frame width */
     UWORD                ncu_Height;       /* negotiated frame height */
+    char                 ncu_Name[128];
+    ULONG                ncu_Id;
+    ULONG                ncu_Interval;
+    ULONG                ncu_MaxPayload;
     ULONG                ncu_MaxFrameBuf;  /* dwMaxVideoFrameBuf from the frame desc */
 };
 
 struct NepUVCBase
 {
     struct Library       nh_Library;       /* standard */
+    struct List          nh_Cameras;
+    struct SignalSemaphore nh_Lock;
+    ULONG                nh_NextId;
     UWORD                nh_Flags;         /* various flags */
 
     struct Library      *nh_UtilityBase;   /* Utility base */
