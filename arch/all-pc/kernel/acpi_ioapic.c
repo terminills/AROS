@@ -229,6 +229,10 @@ static void IOAPIC_CheckTimer(struct KernelBase *KernelBase, struct IOAPICCfgDat
     UBYTE pin, vect;
     IPTR flags;
 
+    struct TagItem *cmdTags = LibFindTagItem(KRN_CmdLine, BootMsg);
+    /* "irq0pic" on the command line skips the probe and keeps IRQ 0 on the 8259A */
+    BOOL forcePIC = cmdTags && strstr((const char *)cmdTags->ti_Data, "irq0pic");
+
     if (!apicPrivate || !IOAPIC_IntToPin(ioapicData, intrMap, 0, &pin))
         return;
     irqRoute = (struct acpi_ioapic_route *)&ioapicData->ioapic_RouteTable[pin];
@@ -241,39 +245,45 @@ static void IOAPIC_CheckTimer(struct KernelBase *KernelBase, struct IOAPICCfgDat
     asm volatile("pushfl; popl %0; cli" : "=r"(flags) :: "memory");
 #endif
 
-    /* Channel 0, rate generator, 1ms */
-    outb(0x34, 0x43);
-    outb(0xA9, 0x40);
-    outb(0x04, 0x40);
-
-    irqRoute->mask = 0;
-    acpi_IOAPIC_WriteReg(ioapicData->ioapic_Base,
-        IOAPICREG_REDTBLBASE + (pin << 1),
-        (ioapicData->ioapic_RouteTable[pin] & 0xFFFFFFFF));
-
-    for (polls = 0; (polls < 2000000) && (wraps < 20); polls++)
+    if (!forcePIC)
     {
-        if (apic_Read(apicPrivate->lapicBase, APIC_IRR + ((vect >> 5) << 4)) & (1 << (vect & 31)))
-        {
-            delivered = TRUE;
-            break;
-        }
-        outb(0x00, 0x43);
-        count = inb(0x40);
-        count |= inb(0x40) << 8;
-        if (count > prev)
-            wraps++;
-        prev = count;
-    }
+        /* Channel 0, rate generator, 1ms */
+        outb(0x34, 0x43);
+        outb(0xA9, 0x40);
+        outb(0x04, 0x40);
 
-    irqRoute->mask = 1;
-    acpi_IOAPIC_WriteReg(ioapicData->ioapic_Base,
-        IOAPICREG_REDTBLBASE + (pin << 1),
-        (ioapicData->ioapic_RouteTable[pin] & 0xFFFFFFFF));
+        irqRoute->mask = 0;
+        acpi_IOAPIC_WriteReg(ioapicData->ioapic_Base,
+            IOAPICREG_REDTBLBASE + (pin << 1),
+            (ioapicData->ioapic_RouteTable[pin] & 0xFFFFFFFF));
+
+        for (polls = 0; (polls < 2000000) && (wraps < 20); polls++)
+        {
+            if (apic_Read(apicPrivate->lapicBase, APIC_IRR + ((vect >> 5) << 4)) & (1 << (vect & 31)))
+            {
+                delivered = TRUE;
+                break;
+            }
+            outb(0x00, 0x43);
+            count = inb(0x40);
+            count |= inb(0x40) << 8;
+            if (count > prev)
+                wraps++;
+            prev = count;
+        }
+
+        irqRoute->mask = 1;
+        acpi_IOAPIC_WriteReg(ioapicData->ioapic_Base,
+            IOAPICREG_REDTBLBASE + (pin << 1),
+            (ioapicData->ioapic_RouteTable[pin] & 0xFFFFFFFF));
+    }
 
     if (!delivered)
     {
-        bug("[Kernel:IOAPIC] 8254 timer not connected to IO-APIC pin %u, IRQ 0 stays on the 8259A\n", pin);
+        if (forcePIC)
+            bug("[Kernel:IOAPIC] irq0pic: IRQ 0 stays on the 8259A\n");
+        else
+            bug("[Kernel:IOAPIC] 8254 timer not connected to IO-APIC pin %u, IRQ 0 stays on the 8259A\n", pin);
         KERNELIRQ_ICID(0) = xtpicIC->ic_Id;
         KERNELIRQ_ICINST(0) = 0;
         i8259a_MaskAll(xtpicIC->ic_Private);
