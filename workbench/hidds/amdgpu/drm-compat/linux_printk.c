@@ -392,6 +392,7 @@ static void nlog_append(const char *s, size_t n)
 }
 
 int amdgpu_diag_level;
+void amdgpu_log_alive_start(void);
 
 static void nlog_flusher(void)
 {
@@ -405,9 +406,14 @@ static void nlog_flusher(void)
     if (nlog.sigbit == (ULONG)-1)
         return;
     /* level 5: the buffer exists from the start, the flusher stays out of the
-     * first screen; nothing signals it until it announces itself here */
+     * first screen; nothing signals it until it announces itself here, and
+     * only then does the heartbeat start, to describe whatever state the
+     * screen is in by now */
     if (amdgpu_diag_level == 5)
+    {
         Delay(1500);
+        amdgpu_log_alive_start();
+    }
     nlog.flusher = self;
 
     if (GetVar("AMDGPU_LOGFILE", name, sizeof(name), GVF_GLOBAL_ONLY) <= 0)
@@ -531,7 +537,8 @@ int compat_env_digit(const char *name);
  * SYS:Prefs/Env-Archive/AMDGPU_DIAG: 0/absent nothing, 1 log file + heartbeat
  * with the register/cache probes, 2 log file + heartbeat without the probes,
  * 3 log file only, 4 a silent heartbeat (a timer request every 2 s, nothing else),
- * 5 log file whose flusher starts 30 s late (the buffer alone during the first screen).
+ * 5 log file whose flusher and heartbeat start 30 s late (the buffer alone during
+ * the first screen, then the level 1 picture of whatever state the screen is in).
  */
 BOOL amdgpu_log_init(void)
 {
@@ -664,7 +671,7 @@ static void nlog_alive(void)
             (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[5],
             (unsigned long)amdgpu_2d_diag[6], (unsigned long)amdgpu_2d_diag[7],
             (unsigned long)raw, (unsigned long)handled);
-        if (amdgpu_diag_level == 1)
+        if (amdgpu_diag_level == 1 || amdgpu_diag_level == 5)
         {
             extern void amdgpu_diag_snapshot(void);
             amdgpu_diag_snapshot();
