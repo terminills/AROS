@@ -146,6 +146,8 @@ static LONG uvc_transfer(struct Library *ps, APTR pipe, APTR data, ULONG size,
              (1UL << timer->tr_node.io_Message.mn_ReplyPort->mp_SigBit));
     if (!psdCheckPipe(pipe)) psdAbortPipe(pipe);
     err = psdWaitPipe(pipe);
+    if (err) bug("uvc.class: transfer error=%ld actual=%lu requested=%lu\n",
+                 (IPTR)err, (IPTR)psdGetPipeActual(pipe), (IPTR)size);
     return CheckIO((struct IORequest *)timer) ? -1 : err;
 }
 
@@ -177,7 +179,8 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     UBYTE *raw = NULL, *payload = NULL;
     UBYTE probe[26];
     IPTR ifnum = 0;
-    ULONG result = 0, maxpayload, size, i;
+    ULONG result = 0, maxpayload = 0, size, i, packets = 0;
+    const char *stage = "allocate";
     BOOL timeropen = FALSE, timersent = FALSE, active = FALSE;
     struct uvc_payload frame = {0};
     if (!nch->ncu_HaveStream || !rgb ||
@@ -196,11 +199,13 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     control = psdAllocPipe(nch->ncu_Device, mp, NULL);
     if (!control) goto out;
     psdGetAttrs(PGA_INTERFACE, nch->ncu_VSInterface, IFA_InterfaceNum, &ifnum, TAG_END);
+    stage = "probe-default";
     memset(probe, 0, sizeof(probe));
     psdPipeSetup(control, URTF_IN|URTF_CLASS|URTF_INTERFACE,
                  UVUDR_GET_CUR, UVVSCS_PROBE_CONTROL << 8, ifnum);
     if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer) ||
         psdGetPipeActual(control) != sizeof(probe)) goto out;
+    stage = "probe-set";
     probe[0] = 1; probe[1] = 0;
     probe[2] = nch->ncu_FormatIndex; probe[3] = nch->ncu_FrameIndex;
     for (i=0; i<4; ++i) probe[4+i] = nch->ncu_Interval >> (8*i);
@@ -212,6 +217,7 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer) ||
         psdGetPipeActual(control) != sizeof(probe) ||
         probe[2] != nch->ncu_FormatIndex || probe[3] != nch->ncu_FrameIndex) goto out;
+    stage = "probe-validate";
     maxpayload = probe[22] | ((ULONG)probe[23]<<8) |
                  ((ULONG)probe[24]<<16) | ((ULONG)probe[25]<<24);
     if (maxpayload < 2 || maxpayload > 1024*1024 ||
@@ -219,6 +225,7 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     psdPipeSetup(control, URTF_OUT|URTF_CLASS|URTF_INTERFACE,
                  UVUDR_SET_CUR, UVVSCS_COMMIT_CONTROL << 8, ifnum);
     if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer)) goto out;
+    stage = "alternate";
     /* psdSetAltInterface updates Poseidon's selected-interface bookkeeping. */
     if (!nch->ncu_IsBulk) {
         if (!uvc_alt(ps, control, nch->ncu_StreamAltIf, mp, timer)) goto out;
@@ -237,6 +244,7 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
         psdSendPipe(pipes[i], payload + i*size, size);
         pending[i] = TRUE;
     }
+    stage = "payload";
     frame.data = raw; frame.capacity = nch->ncu_MaxFrameBuf;
     while (!CheckIO((struct IORequest *)timer)) {
         ULONG actual;
@@ -246,7 +254,11 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
         if (!psdCheckPipe(pipes[slot])) break;
         error = psdWaitPipe(pipes[slot]);
         pending[slot] = FALSE;
-        if (error) break;
+        if (error) {
+            bug("uvc.class: payload error=%ld\n", (IPTR)error);
+            break;
+        }
+        packets++;
         actual = psdGetPipeActual(pipes[slot]);
         if (actual > size) break;
         if (actual && uvc_payload_feed(&frame, payload + slot*size, actual)) {
@@ -260,6 +272,8 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     }
 
 out:
+    if (!result) bug("uvc.class: grab id=%lu failed stage=%s packets=%lu bytes=%lu maxpayload=%lu\n",
+        (IPTR)nch->ncu_Id, stage, (IPTR)packets, (IPTR)frame.used, (IPTR)maxpayload);
     for (i=0; i<slots; ++i) {
         if (pending[i]) {
             psdAbortPipe(pipes[i]);
