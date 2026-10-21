@@ -746,8 +746,11 @@ EXPORT_SYMBOL(drm_event_cancel_free);
 static void drm_send_event_helper(struct drm_device *dev,
 			   struct drm_pending_event *e, ktime_t timestamp)
 {
+	extern unsigned long amdgpu_diag_vbl[16];
+
 	assert_spin_locked(&dev->event_lock);
 
+	amdgpu_diag_vbl[13]++;
 	if (e->completion) {
 		complete_all(e->completion);
 		e->completion_release(e->completion);

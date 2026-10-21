@@ -1211,23 +1211,35 @@ int drm_vblank_get(struct drm_device *dev, unsigned int pipe)
 	struct drm_vblank_crtc *vblank = drm_vblank_crtc(dev, pipe);
 	unsigned long irqflags;
 	int ret = 0;
+	extern unsigned long amdgpu_diag_vbl[16];
 
-	if (!drm_dev_has_vblank(dev))
+	amdgpu_diag_vbl[0]++;
+	amdgpu_diag_vbl[14] = dev->num_crtcs;
+	if (!drm_dev_has_vblank(dev)) {
+		amdgpu_diag_vbl[1]++;
 		return -EINVAL;
+	}
 
-	if (drm_WARN_ON(dev, pipe >= dev->num_crtcs))
+	if (drm_WARN_ON(dev, pipe >= dev->num_crtcs)) {
+		amdgpu_diag_vbl[1]++;
 		return -EINVAL;
+	}
 
 	spin_lock_irqsave(&dev->vbl_lock, irqflags);
 	/* Going from 0->1 means we have to enable interrupts again */
 	if (atomic_add_return(1, &vblank->refcount) == 1) {
+		amdgpu_diag_vbl[3]++;
 		ret = drm_vblank_enable(dev, pipe);
+		amdgpu_diag_vbl[4] = (unsigned long)(long)ret;
 	} else {
 		if (!vblank->enabled) {
 			atomic_dec(&vblank->refcount);
 			ret = -EINVAL;
 		}
 	}
+	amdgpu_diag_vbl[2] = atomic_read(&vblank->refcount);
+	if (ret)
+		amdgpu_diag_vbl[1]++;
 	spin_unlock_irqrestore(&dev->vbl_lock, irqflags);
 
 	return ret;

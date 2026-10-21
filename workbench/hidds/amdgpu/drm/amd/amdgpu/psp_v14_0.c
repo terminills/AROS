@@ -332,6 +332,11 @@ static int psp_v14_0_ring_create(struct psp_context *psp,
 		ret = psp_wait_for(
 			psp, SOC15_REG_OFFSET(MP0, 0, regMPASP_SMN_C2PMSG_64),
 			MBOX_TOS_RESP_FLAG, MBOX_TOS_RESP_MASK, 0);
+		/* laptop PSP diagnosis (not for commit) */
+		dev_warn(adev->dev, "[psp-probe] km ring: C2PMSG_64 %08x 65 %08x 67 %08x 69 %08x 70 %08x 71 %08x ret %d\n",
+			 RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_64), RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_65),
+			 RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_67), RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_69),
+			 RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_70), RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_71), ret);
 	}
 
 	return ret;

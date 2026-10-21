@@ -21,6 +21,12 @@
 #include <linux/compiler.h>
 #include <linux/list.h>
 
+/* laptop diag: who spins on whose lock, read by the on-screen strip */
+extern struct Task *amdgpu_diag_spinner;
+extern struct Task *amdgpu_diag_spin_owner;
+extern void *amdgpu_diag_spin_lock;
+extern unsigned long amdgpu_diag_spins;
+
 static inline void __compat_spin_acquire(struct raw_spinlock *lock)
 {
     struct Task *me = FindTask(NULL);
@@ -31,9 +37,17 @@ static inline void __compat_spin_acquire(struct raw_spinlock *lock)
         return;
     }
 #if defined(__AROSEXEC_SMP__)
-    while (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE))
-        while (__atomic_load_n(&lock->locked, __ATOMIC_RELAXED))
+    while (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE)) {
+        amdgpu_diag_spinner = me;
+        amdgpu_diag_spin_owner = lock->owner;
+        amdgpu_diag_spin_lock = lock;
+        while (__atomic_load_n(&lock->locked, __ATOMIC_RELAXED)) {
+            amdgpu_diag_spins++;
             __builtin_ia32_pause();
+        }
+    }
+    if (amdgpu_diag_spinner == me)
+        amdgpu_diag_spinner = NULL;
 #else
     lock->locked = 1;
 #endif

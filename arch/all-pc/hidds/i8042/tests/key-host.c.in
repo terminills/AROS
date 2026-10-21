@@ -1,0 +1,59 @@
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef uint8_t UBYTE;
+typedef int16_t WORD;
+typedef uint16_t UWORD;
+typedef uint32_t ULONG;
+typedef void OOP_Object;
+struct ExecBase {int dummy;};
+struct pHidd_Kbd_Event {UWORD flags,code;};
+struct Task {int dummy;};
+struct i8042base {struct {OOP_Object *kbdhw;} csd;};
+struct kbd_data {
+    struct {struct i8042base *base; void *self;} hwdata;
+    struct Task *CtrlTask; ULONG LEDSigBit;
+    ULONG kbd_keystate,kbd_ledstate; WORD prev_amigacode; UWORD prev_keycode;
+};
+#define D(x)
+#define NOKEY -1
+#define SD_ACTION_COLDREBOOT 0
+static int events;
+static UWORD lastcode;
+static ULONG lastsignal;
+static void ShutdownA(int action) {}
+static void Signal(struct Task *t,ULONG mask) {lastsignal=mask;}
+static void push(struct pHidd_Kbd_Event *evt) {
+    assert(evt->code<=0xff); assert(evt->flags==0); events++; lastcode=evt->code;
+}
+#define KBDPUSHEVENT(cl,hw,driver,evt) push(evt)
+@DEFS@
+@TABLES@
+@KEY@
+static struct i8042base base;
+static struct kbd_data data;
+static void clear(void) {
+    memset(&data,0,sizeof(data)); data.hwdata.base=&base;
+    data.prev_amigacode=-2; data.LEDSigBit=17;
+    events=0; lastsignal=0;
+}
+static void key(UBYTE c) {i8042_kbd_process_irq_key(&data,c,NULL);}
+int main(void) {
+    clear(); key(0x7f); assert(events==0);
+    clear(); key(0xe0); key(0x7f); assert(events==0);
+    clear(); key(0x1e); key(0x1e); assert(events==1 && lastcode==RAWKEY_A);
+    key(0x9e); assert(events==2 && lastcode==(RAWKEY_A|0x80));
+    clear(); key(0xe0); key(0x48); assert(events==1 && lastcode==RAWKEY_UP);
+    clear(); key(0xe1); key(0x1d); key(0x45); assert(events==1 && lastcode==0x6e);
+    key(0xe1); key(0x9d); key(0xc5); assert(events==2 && lastcode==0xee);
+    clear(); key(0xfa); key(0xfe); key(0); key(0xff); assert(events==0);
+    clear(); key(0x3a); assert(lastsignal==(1UL<<17));
+    clear(); key(0x45); assert(lastsignal==(1UL<<17));
+    for(int code=0;code<256;code++) {
+        clear(); key(code);
+        clear(); key(0xe0); key(code);
+        clear(); key(0xe1); key(code);
+    }
+    puts("PASS 768 ordinary/E0/E1 byte cases, make/break/repeat/Pause/ACK/error and LED masks; no invalid events");
+}

@@ -6456,6 +6456,119 @@ static int gfx_v11_0_set_eop_interrupt_state(struct amdgpu_device *adev,
 	return 0;
 }
 
+
+/* laptop diag (not for commit): ring, fence and IH state as the CPU sees it, before and after a cache line flush */
+static u32 amdgpu_diag_rd(u32 *p, u32 *after)
+{
+	u32 v = p ? *(volatile u32 *)p : 0;
+
+	if (p) {
+		__asm__ __volatile__("mfence; clflush (%0); mfence" : : "r"(p) : "memory");
+		*after = *(volatile u32 *)p;
+	} else
+		*after = 0;
+	return v;
+}
+
+/* laptop diag: the platform timer picture - HPET, PIT channel 0, IO-APIC pin 2 */
+static void amdgpu_diag_timer(void)
+{
+	extern void amdgpu_compat_log(const char *fmt, ...);
+	static volatile u32 *hpet, *ioapic;
+	u32 cap = 0, conf = 0, t0c = 0, t0cmp = 0, rte_lo = 0, rte_hi = 0;
+	u64 mc0 = 0, mc1 = 0;
+	u8 lo, hi, lo2, hi2;
+
+	if (!hpet)
+		hpet = ioremap(0xFED00000, 0x1000);
+	if (!ioapic)
+		ioapic = ioremap(0xFEC00000, 0x100);
+	if (hpet) {
+		cap = hpet[0];
+		conf = hpet[0x10 / 4];
+		mc0 = *(volatile u64 *)&hpet[0xF0 / 4];
+		t0c = hpet[0x100 / 4];
+		t0cmp = hpet[0x108 / 4];
+		mc1 = *(volatile u64 *)&hpet[0xF0 / 4];
+	}
+	asm volatile("outb %%al, $0x43" : : "a"((u8)0x00));
+	asm volatile("inb $0x40, %%al" : "=a"(lo));
+	asm volatile("inb $0x40, %%al" : "=a"(hi));
+	asm volatile("outb %%al, $0x43" : : "a"((u8)0x00));
+	asm volatile("inb $0x40, %%al" : "=a"(lo2));
+	asm volatile("inb $0x40, %%al" : "=a"(hi2));
+	if (ioapic) {
+		ioapic[0] = 0x14;
+		rte_lo = ioapic[4];
+		ioapic[0] = 0x15;
+		rte_hi = ioapic[4];
+	}
+	amdgpu_compat_log("[diag] timer: hpet cap %08x conf %08x t0 conf %08x cmp %08x main %llx->%llx | pit ch0 %u->%u | ioapic pin2 rte %08x:%08x\n",
+		cap, conf, t0c, t0cmp, (unsigned long long)mc0, (unsigned long long)mc1,
+		(unsigned)lo | ((unsigned)hi << 8), (unsigned)lo2 | ((unsigned)hi2 << 8), rte_hi, rte_lo);
+}
+
+void amdgpu_diag_snapshot(void)
+{
+	extern void *amdgpu_diag_adev;
+	extern unsigned long amdgpu_diag_counters[24];
+	extern void amdgpu_compat_log(const char *fmt, ...);
+	struct amdgpu_device *adev = amdgpu_diag_adev;
+	struct amdgpu_ring *ring;
+	struct amdgpu_ih_ring *ih;
+	u32 seq0, seq1, rp0, rp1, ihw0, ihw1, regrptr, regwptr, ihreg;
+
+	if (!adev)
+		return;
+	amdgpu_diag_timer();
+	ring = &adev->gfx.gfx_ring[0];
+	ih = &adev->irq.ih;
+	seq0 = amdgpu_diag_rd(ring->fence_drv.cpu_addr, &seq1);
+	rp0 = amdgpu_diag_rd(ring->rptr_cpu_addr, &rp1);
+	ihw0 = amdgpu_diag_rd((u32 *)ih->wptr_cpu, &ihw1);
+	regrptr = RREG32_SOC15(GC, 0, regCP_RB0_RPTR);
+	regwptr = RREG32_SOC15(GC, 0, regCP_RB0_WPTR);
+	ihreg = RREG32_NO_KIQ(ih->ih_regs.ih_rb_wptr);
+	amdgpu_compat_log("[diag] gfx0 sw wptr %llx reg rptr %x wptr %x wb rptr %x/%x fence sync %x last %x mem %x/%x | ih rptr %x wptr mem %x/%x reg %x | ih entries %lu last %lu:%lu eop %lu fproc %lu/%lu fallback %lu timers %lu\n",
+		(unsigned long long)ring->wptr, regrptr, regwptr, rp0, rp1,
+		ring->fence_drv.sync_seq, (u32)atomic_read(&ring->fence_drv.last_seq), seq0, seq1,
+		ih->rptr, ihw0, ihw1, ihreg,
+		amdgpu_diag_counters[0], amdgpu_diag_counters[6], amdgpu_diag_counters[7], amdgpu_diag_counters[1],
+		amdgpu_diag_counters[2], amdgpu_diag_counters[3], amdgpu_diag_counters[4], amdgpu_diag_counters[5]);
+	{
+		extern unsigned long amdgpu_diag_last[16];
+		extern unsigned long amdgpu_diag_dce_src[256];
+		extern unsigned long amdgpu_compat_ms(void);
+		char hist[200]; int n = 0, i;
+
+		amdgpu_compat_log("[diag] t=%lu ms waits: wait_cs %lu libdrm %lu syncobj waits %lu timeouts %lu cbs %lu (last count %lu flags %lx) | sched run %lu done %lu | cs post-deps replace %lu point %lu last fence %lx seq %lu ctx %lu ndeps %lu\n",
+			amdgpu_compat_ms(), amdgpu_diag_counters[8], amdgpu_diag_counters[12],
+			amdgpu_diag_counters[14], amdgpu_diag_counters[15], amdgpu_diag_counters[16], amdgpu_diag_last[5], amdgpu_diag_last[6],
+			amdgpu_diag_counters[10], amdgpu_diag_counters[11],
+			amdgpu_diag_counters[17], amdgpu_diag_counters[18], amdgpu_diag_last[8], amdgpu_diag_last[9], amdgpu_diag_last[10], amdgpu_diag_last[11]);
+		if (amdgpu_diag_last[0])
+			amdgpu_compat_log("[diag] last syncobj timeout: fence %lx flags %lx seqno %lu ctx %lu parent %lx scheduled flags %lx\n",
+				amdgpu_diag_last[0], amdgpu_diag_last[1], amdgpu_diag_last[2], amdgpu_diag_last[3], amdgpu_diag_last[4], amdgpu_diag_last[7]);
+		for (i = 0; i < 256 && n < (int)sizeof(hist) - 16; i++)
+			if (amdgpu_diag_dce_src[i])
+				n += snprintf(hist + n, sizeof(hist) - n, " %d:%lu", i, amdgpu_diag_dce_src[i]);
+		amdgpu_compat_log("[diag] dce irq by src:%s\n", n ? hist : " none");
+		{ extern void amdgpu_diag_dm_snapshot(void); amdgpu_diag_dm_snapshot(); }
+	}
+	/* the GART entries the GPU uses to write the fence and the ring read pointer */
+	if (adev->gart.ptr && ring->fence_drv.gpu_addr >= adev->gmc.gart_start &&
+	    ring->fence_drv.gpu_addr < adev->gmc.gart_end) {
+		u64 idx = (ring->fence_drv.gpu_addr - adev->gmc.gart_start) >> PAGE_SHIFT;
+		u64 pte = ((volatile u64 *)adev->gart.ptr)[idx];
+		u64 idx2 = (ring->rptr_gpu_addr - adev->gmc.gart_start) >> PAGE_SHIFT;
+		u64 pte2 = ((volatile u64 *)adev->gart.ptr)[idx2];
+		amdgpu_compat_log("[diag] gart: fence gpu %llx pte[%llu] %016llx rptr pte[%llu] %016llx (snooped bit2 valid bit0) default %016llx ih ring %llx wptr %llx\n",
+			(unsigned long long)ring->fence_drv.gpu_addr, (unsigned long long)idx, (unsigned long long)pte,
+			(unsigned long long)idx2, (unsigned long long)pte2, (unsigned long long)adev->gart.gart_pte_flags,
+			(unsigned long long)ih->gpu_addr, (unsigned long long)ih->wptr_addr);
+	}
+}
+
 static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,
 			     struct amdgpu_irq_src *source,
 			     struct amdgpu_iv_entry *entry)
@@ -6466,6 +6579,7 @@ static int gfx_v11_0_eop_irq(struct amdgpu_device *adev,
 	int i;
 
 	DRM_DEBUG("IH: CP EOP\n");
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[1]++; }
 
 	if (adev->enable_mes && doorbell_offset) {
 		struct amdgpu_userq_fence_driver *fence_drv = NULL;

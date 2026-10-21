@@ -1,0 +1,67 @@
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef uint8_t UBYTE;
+typedef int16_t WORD;
+typedef uint16_t UWORD;
+typedef void OOP_Object;
+struct pHidd_Mouse_Event {int x,y,button,type;};
+struct i8042base {struct {void *mousehw;} csd;};
+/* Keep the packet/counter layout identical to i8042_mouse.h. */
+struct mouse_data {
+    struct {struct i8042base *base; void *ioTimer,*self;} hwdata;
+    void *irq; UWORD buttonstate; UBYTE mouse_data[5];
+    UBYTE mouse_collected_bytes,mouse_protocol,mouse_packetsize,expected_mouse_acks,packetsize;
+    struct pHidd_Mouse_Event event;
+};
+#define D(x)
+#define INTELLIMOUSE_SUPPORT 1
+#define LEFT_BUTTON 1
+#define RIGHT_BUTTON 2
+#define MIDDLE_BUTTON 4
+#define vHidd_Mouse_NoButton 0
+#define vHidd_Mouse_Button1 1
+#define vHidd_Mouse_Button2 2
+#define vHidd_Mouse_Button3 3
+#define vHidd_Mouse_Motion 0
+#define vHidd_Mouse_Press 1
+#define vHidd_Mouse_Release 2
+#define vHidd_Mouse_WheelMotion 3
+@DEFS@
+static UBYTE input[1024],status_bits;
+static unsigned n,pos,events,wheels;
+static struct pHidd_Mouse_Event last;
+static UBYTE i8042_read_status_port(void) {return pos<n ? KBD_STATUS_OBF|status_bits : 0;}
+static UBYTE i8042_read_data_port(void) {assert(pos<n); return input[pos++];}
+static void push(struct pHidd_Mouse_Event *e) {events++; last=*e; wheels+=e->type==vHidd_Mouse_WheelMotion;}
+#define MOUSEPUSHEVENT(cl,hw,driver,e) push(e)
+@MOUSE@
+static struct i8042base base;
+static struct mouse_data data;
+static void clear(int size) {
+    memset(&data,0,sizeof(data)); data.hwdata.base=&base; data.mouse_packetsize=size;
+    pos=n=events=wheels=0; status_bits=KBD_STATUS_MOUSE_OBF;
+}
+static void feed(const UBYTE *bytes,unsigned count) {
+    memcpy(input,bytes,count); n=count; pos=0; i8042_mouse_irq_handler(&data,NULL);
+}
+int main(void) {
+    UBYTE burst[512]; memset(burst,0xfa,sizeof(burst));
+    int invalid[]={0,1,2,5,255};
+    for(unsigned i=0;i<sizeof(invalid)/sizeof(*invalid);i++) {
+        clear(invalid[i]); feed(burst,sizeof(burst));
+        assert(pos==sizeof(burst) && events==0 && data.mouse_collected_bytes==0);
+        assert(data.mouse_packetsize==invalid[i]);
+    }
+    const UBYTE motion[]={0x08,1,2};
+    clear(3); data.mouse_data[3]=1; feed(motion,3);
+    assert(events==1 && wheels==0 && last.x==1 && last.y==-2);
+    clear(3); data.mouse_collected_bytes=255; feed(motion,3);
+    assert(events==1 && data.mouse_collected_bytes==0);
+    clear(4); const UBYTE wheel[]={0x08,0,0,0x0f}; feed(wheel,4);
+    assert(events==1 && wheels==1 && last.y==-1);
+    clear(3); status_bits=0; feed(motion,3); assert(pos==0 && events==0);
+    clear(3); status_bits|=KBD_STATUS_PERR; feed(motion,3); assert(pos==3 && events==0);
+    puts("PASS early/malformed mouse sizes and stale index, ordinary motion, wheel, keyboard/error-byte filtering");
+}

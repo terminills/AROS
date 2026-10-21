@@ -735,6 +735,23 @@ psp_cmd_submit_buf(struct psp_context *psp,
 		psp->cmd_buf_mem->resp.status == PSP_ERR_UNKNOWN_COMMAND) && amdgpu_sriov_vf(psp->adev);
 
 	memcpy(&cmd->resp, &psp->cmd_buf_mem->resp, sizeof(struct psp_gfx_resp));
+	if (!timeout || psp->cmd_buf_mem->resp.status)
+		dev_warn(psp->adev->dev, "[psp-probe] cmd 0x%x index %d: timeout left %d fence_buf %u resp.status 0x%x wptr %u fence_mc %llx ring_mem[0..3] %08x %08x %08x %08x\n",
+			 psp->cmd_buf_mem->cmd_id, index, timeout, *((unsigned int *)psp->fence_buf),
+			 psp->cmd_buf_mem->resp.status,
+			 psp->funcs->ring_get_wptr ? psp_ring_get_wptr(psp) : 0, fence_mc_addr,
+			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[0] : 0,
+			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[1] : 0,
+			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[2] : 0,
+			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[3] : 0);
+	if (!timeout || psp->cmd_buf_mem->resp.status) {
+		extern void amdgpu_log_sync(void);
+		dev_warn(psp->adev->dev, "[psp-probe] frame[4..5] %08x %08x fence_buf now %u\n",
+			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[4] : 0,
+			 psp->km_ring.ring_mem ? ((uint32_t *)psp->km_ring.ring_mem)[5] : 0,
+			 *((unsigned int *)psp->fence_buf));
+		amdgpu_log_sync();
+	}
 
 	/* In some cases, psp response status is not 0 even there is no
 	 * problem while the command is submitted. Some version of PSP FW
@@ -2574,7 +2591,56 @@ static int psp_hw_start(struct psp_context *psp)
 		}
 	}
 
+	/* laptop PSP diagnosis (not for commit) */
+	dev_warn(adev->dev, "[psp-probe] apu %d autoload %d vramfw %d fw valid: kdb %d spl %d sys %d soc %d intf %d dbg %d ras %d sos %d toc %d (toc %u bytes) timeout %d\n",
+		 !!(adev->flags & AMD_IS_APU), psp->autoload_supported, adev->debug_use_vram_fw_buf,
+		 is_psp_fw_valid(psp->kdb), is_psp_fw_valid(psp->spl), is_psp_fw_valid(psp->sys),
+		 is_psp_fw_valid(psp->soc_drv), is_psp_fw_valid(psp->intf_drv), is_psp_fw_valid(psp->dbg_drv),
+		 is_psp_fw_valid(psp->ras_drv), is_psp_fw_valid(psp->sos), is_psp_fw_valid(psp->toc),
+		 psp->toc.size_bytes, adev->psp_timeout);
+	dev_warn(adev->dev, "[psp-probe] fw_pri %llx (pl %u) cmd %llx (pl %u) fence %llx (pl %u) ring %llx (pl %u) size %u\n",
+		 psp->fw_pri_mc_addr, psp->fw_pri_bo ? psp->fw_pri_bo->tbo.resource->mem_type : 0,
+		 psp->cmd_buf_mc_addr, psp->cmd_buf_bo ? psp->cmd_buf_bo->tbo.resource->mem_type : 0,
+		 psp->fence_buf_mc_addr, psp->fence_buf_bo ? psp->fence_buf_bo->tbo.resource->mem_type : 0,
+		 psp->km_ring.ring_mem_mc_addr, adev->firmware.rbuf ? adev->firmware.rbuf->tbo.resource->mem_type : 0,
+		 psp->km_ring.ring_size);
+	dev_warn(adev->dev, "[psp-probe] gmc fb %llx-%llx vram %llx-%llx (real %llu MB) gart %llx-%llx agp %llx-%llx\n",
+		 adev->gmc.fb_start, adev->gmc.fb_end, adev->gmc.vram_start, adev->gmc.vram_end,
+		 adev->gmc.real_vram_size >> 20, adev->gmc.gart_start, adev->gmc.gart_end,
+		 adev->gmc.agp_start, adev->gmc.agp_end);
+	dev_warn(adev->dev, "[psp-probe] aper_base %llx size %llu MB kaddr %p fence_buf %p ring_mem %p\n",
+		 adev->gmc.aper_base, adev->gmc.aper_size >> 20, adev->mman.aper_base_kaddr,
+		 psp->fence_buf, psp->km_ring.ring_mem);
+#if defined(__x86_64__)
+	{
+		extern void compat_dump_memtype(const char *tag, void *va);
+		extern void compat_probe_rw(const char *tag, void *va);
+		extern void amdgpu_log_alive_start(void);
+		extern int amdgpu_diag_level;
+		extern void *amdgpu_diag_adev;
+		amdgpu_diag_adev = adev;
+		if (amdgpu_diag_level == 1 || amdgpu_diag_level == 2 || amdgpu_diag_level == 4)
+			amdgpu_log_alive_start();
+		if (amdgpu_diag_level == 5) {
+			extern void amdgpu_diag_strip_start(void);
+			amdgpu_diag_strip_start();
+		}
+		if (amdgpu_diag_level == 1) {
+			if (psp->fence_buf) {
+				compat_dump_memtype("fence_buf", psp->fence_buf);
+				compat_probe_rw("fence_buf", psp->fence_buf);
+			}
+			if (psp->km_ring.ring_mem) {
+				compat_dump_memtype("ring_mem", psp->km_ring.ring_mem);
+				compat_probe_rw("ring_mem", psp->km_ring.ring_mem);
+			}
+		}
+	}
+#endif
+
 	ret = psp_ring_create(psp, PSP_RING_TYPE__KM);
+	dev_warn(adev->dev, "[psp-probe] ring create ret %d wptr %u\n", ret,
+		 psp->funcs->ring_get_wptr ? psp_ring_get_wptr(psp) : 0);
 	if (ret) {
 		dev_err(adev->dev, "PSP create ring failed!\n");
 		return ret;

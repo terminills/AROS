@@ -104,12 +104,33 @@ static void irq_task_main(void)
     Signal(entry->irq_parent, entry->irq_ack);
 }
 
+/* laptop diag (not for commit): interrupt counters for the alive line */
+static ULONG irq_raw_count;
+unsigned long amdgpu_diag_counters[24]; /* 8 wait_cs calls, 9 wait_cs timeouts, 10 sched run_job, 11 sched job_done, 12 libdrm fence queries, 13 wait_fences calls */ /* 0 ih entries, 1 eop irqs, 2 fence_process calls, 3 advanced, 4 fallback fired, 5 timers fired, 6 last client, 7 last src */
+void *amdgpu_diag_adev;
+unsigned long amdgpu_diag_last[16]; /* 0-7 last syncobj wait timeout: fence, flags, seqno, ctx, parent, count, wait flags, scheduled flags; 8-11 last CS post-dep: fence, seqno, ctx, ndeps */
+unsigned long amdgpu_diag_dce_src[256]; /* IH entries from client DCE by src_id */
+unsigned long amdgpu_diag_ih_client[32]; /* IH entries by client_id */
+int amdgpu_dcn_vline; /* ENV:AMDGPU_DCN_VLINE - vblank from the OTG vertical interrupt on DCN, as Linux does */
+/* laptop diag F: the vblank enable chain. 0 drm_vblank_get calls, 1 get failures, 2 last refcount, 3 drm_vblank_enable calls,
+ * 4 last __enable_vblank ret, 5 set_vblank(enable) calls, 6 rejects (crtc not enabled), 7 last amdgpu_irq_get(vupdate) ret,
+ * 8 dm_irq_state entries, 9 last otg_inst, 10 events armed pflip, 11 armed cursor, 12 events sent by commit tail,
+ * 13 drm_send_event calls, 14 num_crtcs, 15 last amdgpu_irq_get(crtc) ret */
+unsigned long amdgpu_diag_vbl[16];
+volatile ULONG *amdgpu_diag_irq_pending; /* the MSI task's backlog, for the strip */
+void compat_irq_counts(ULONG *raw, ULONG *handled)
+{
+    *raw = irq_raw_count;
+    *handled = irq_count;
+}
+
 static AROS_INTH1(irq_dispatcher, struct irq_handler_entry *, entry)
 {
     AROS_INTFUNC_INIT
 
     irqreturn_t ret;
 
+    irq_raw_count++;
     if (entry->irq_task)
     {
         __atomic_add_fetch(&entry->irq_pending, 1, __ATOMIC_ACQ_REL);
@@ -180,6 +201,8 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler, irq_handler_t 
         FreeSignal(ack);
         if (!entry->irq_task || !entry->irq_sigmask)
             entry->irq_task = NULL;
+        else if (!amdgpu_diag_irq_pending)
+            amdgpu_diag_irq_pending = &entry->irq_pending;
     }
 
     printk(KERN_INFO "[amdgpu] request_irq: %s on IRQ %u%s\n", name, irq,

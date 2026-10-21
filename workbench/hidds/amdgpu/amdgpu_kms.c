@@ -91,6 +91,8 @@ VOID Amdgpu_KMS_DestroyFB(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb)
     if (kms->curfb == fb)
     {
         drmModeSetCrtc(kms->fd, kms->crtc_id, 0, 0, 0, NULL, 0, NULL);
+        if (kms->clone_crtc_id)
+            drmModeSetCrtc(kms->fd, kms->clone_crtc_id, 0, 0, 0, NULL, 0, NULL);
         kms->curfb = NULL;
         kms->curmode = NULL;
     }
@@ -122,6 +124,37 @@ drmModeModeInfoPtr Amdgpu_KMS_FindMode(struct Amdgpu_KMS *kms, ULONG width, ULON
     return NULL;
 }
 
+void amdgpu_compat_log(const char *fmt, ...);
+
+/* show the same buffer on the second output, in its mode of the same size (kms lock held) */
+static void Amdgpu_KMS_SetClone(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, drmModeModeInfoPtr mode)
+{
+    drmModeConnectorPtr c = kms->clone_connector;
+    drmModeModeInfoPtr best = NULL;
+    uint32_t connector_id = c->connector_id;
+    int i, ret;
+
+    for (i = 0; i < c->count_modes; i++)
+    {
+        drmModeModeInfoPtr m = &c->modes[i];
+
+        if (m->hdisplay != mode->hdisplay || m->vdisplay != mode->vdisplay)
+            continue;
+        if (!best || m->vrefresh == mode->vrefresh)
+            best = m;
+        if (m->vrefresh == mode->vrefresh)
+            break;
+    }
+    if (!best)
+    {
+        bug("[Amdgpu:KMS] clone: connector %u has no %ux%u mode, left off\n", connector_id, mode->hdisplay, mode->vdisplay);
+        drmModeSetCrtc(kms->fd, kms->clone_crtc_id, 0, 0, 0, NULL, 0, NULL);
+        return;
+    }
+    ret = drmModeSetCrtc(kms->fd, kms->clone_crtc_id, fb->fbid, 0, 0, &connector_id, 1, best);
+    bug("[Amdgpu:KMS] clone: crtc %u connector %u fb %u mode %s: %d\n", kms->clone_crtc_id, connector_id, fb->fbid, best->name, ret);
+}
+
 BOOL Amdgpu_KMS_SetMode(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, drmModeModeInfoPtr mode)
 {
     uint32_t connector_id;
@@ -147,6 +180,12 @@ BOOL Amdgpu_KMS_SetMode(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, drmModeMod
             fb->map = map;
         kms->curfb = fb;
         kms->curmode = mode;
+        {
+            extern struct Amdgpu_KMS *amdgpu_diag_kms;
+            amdgpu_diag_kms = kms;
+        }
+        if (kms->clone_connector)
+            Amdgpu_KMS_SetClone(kms, fb, mode);
     }
     UNLOCK_KMS(kms);
 
@@ -328,6 +367,8 @@ BOOL Amdgpu_KMS_ShowCursor(struct Amdgpu_KMS *kms, BOOL show)
                                 AMDGPU_CURSOR_SIZE, AMDGPU_CURSOR_SIZE, 0, 0);
     else
         ret = drmModeSetCursor(kms->fd, kms->crtc_id, 0, AMDGPU_CURSOR_SIZE, AMDGPU_CURSOR_SIZE);
+    if (kms->clone_crtc_id && ret == 0)
+        drmModeSetCursor(kms->fd, kms->clone_crtc_id, show ? kms->cursor.handle : 0, AMDGPU_CURSOR_SIZE, AMDGPU_CURSOR_SIZE);
     UNLOCK_KMS(kms);
 
     if (ret)
@@ -349,6 +390,8 @@ BOOL Amdgpu_KMS_MoveCursor(struct Amdgpu_KMS *kms, LONG x, LONG y)
 
     LOCK_KMS(kms);
     ret = drmModeMoveCursor(kms->fd, kms->crtc_id, x, y);
+    if (kms->clone_crtc_id)
+        drmModeMoveCursor(kms->fd, kms->clone_crtc_id, x, y);
     UNLOCK_KMS(kms);
 
     return (ret == 0);
@@ -380,8 +423,16 @@ static BOOL Amdgpu_KMS_SelectDisplay(struct Amdgpu_KMS *kms)
 
         if (connector->connection == DRM_MODE_CONNECTED && connector->count_modes > 0)
         {
-            kms->connector = connector;
-            break;
+            if (!kms->connector)
+            {
+                kms->connector = connector;
+                continue;
+            }
+            if (!kms->clone_connector)
+            {
+                kms->clone_connector = connector;
+                continue;
+            }
         }
         drmModeFreeConnector(connector);
     }
@@ -418,6 +469,38 @@ static BOOL Amdgpu_KMS_SelectDisplay(struct Amdgpu_KMS *kms)
                 }
             }
             drmModeFreeEncoder(encoder);
+        }
+    }
+
+    /* the clone takes any other crtc its encoder can drive */
+    if (kms->clone_connector && res->count_crtcs > 1)
+    {
+        drmModeEncoderPtr encoder = NULL;
+        uint32_t encoder_id = kms->clone_connector->encoder_id;
+
+        if (!encoder_id && kms->clone_connector->count_encoders > 0)
+            encoder_id = kms->clone_connector->encoders[0];
+        if (encoder_id)
+            encoder = drmModeGetEncoder(kms->fd, encoder_id);
+        if (encoder)
+        {
+            for (i = 0; i < res->count_crtcs; i++)
+            {
+                if ((encoder->possible_crtcs & (1 << i)) && res->crtcs[i] != kms->crtc_id)
+                {
+                    kms->clone_crtc_id = res->crtcs[i];
+                    break;
+                }
+            }
+            drmModeFreeEncoder(encoder);
+        }
+        bug("[Amdgpu:KMS] clone output: connector %u type %u encoder %u crtc %u (%d modes)\n",
+            kms->clone_connector->connector_id, kms->clone_connector->connector_type, encoder_id,
+            kms->clone_crtc_id, kms->clone_connector->count_modes);
+        if (!kms->clone_crtc_id)
+        {
+            drmModeFreeConnector(kms->clone_connector);
+            kms->clone_connector = NULL;
         }
     }
 

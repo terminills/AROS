@@ -1,0 +1,59 @@
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+typedef uint8_t UBYTE;
+#define TRUE 1
+#define FALSE 0
+#define D(x)
+#define DFAIL(x)
+@DEFS@
+struct IORequest {int dummy;};
+struct i8042base {struct {unsigned char cs_intbits;} csd;};
+struct kbd_data {struct {struct IORequest *ioTimer;} hwdata;};
+static int replies[16], count, pos, writes[256], repeat_resend;
+static void i8042_write_command_with_wait(struct IORequest *i,int val) {}
+static void i8042_write_data_with_wait(struct IORequest *i,int val) {
+    assert(val>=0 && val<256); writes[val]++;
+    /* Bound even the unfixed implementation so the negative test cannot hang. */
+    assert(writes[val]<=4);
+}
+static int i8042_wait_for_input(struct IORequest *i) {
+    if (pos<count) return replies[pos++];
+    assert(repeat_resend); return KBD_REPLY_RESEND;
+}
+static int i8042_wait_for_input_with_timeout(struct IORequest *i,int timeout) {
+    assert(timeout==500); return i8042_wait_for_input(i);
+}
+@RESET@
+static void setup(const int *r,int n,int repeat) {
+    for(int i=0;i<256;i++) writes[i]=0;
+    for(int i=0;i<n;i++) replies[i]=r[i];
+    count=n; pos=0; repeat_resend=repeat;
+}
+int main(void) {
+    struct IORequest io;
+    struct kbd_data data={{&io}};
+    struct i8042base base={{0}};
+    const int good[]={0x55,0,0xfa,0xaa,0xfa,0xfa};
+    setup(good,6,0);
+    assert(i8042_kbd_reset(&base,&data));
+    assert(writes[0xff]==1 && writes[0xf5]==1 && writes[0xf4]==1);
+    const int reset_resend[]={0x55,0};
+    setup(reset_resend,2,1);
+    assert(!i8042_kbd_reset(&base,&data));
+    assert(writes[0xff]==3 && writes[0xf5]==0);
+    const int disable_resend[]={0x55,0,0xfa,0xaa};
+    setup(disable_resend,4,1);
+    assert(!i8042_kbd_reset(&base,&data));
+    assert(writes[0xf5]==3 && writes[0xf4]==0);
+    const int retry_success[]={0x55,0,0xfe,0xfa,0xaa,0xfe,0xfa,0xfa};
+    setup(retry_success,8,0);
+    assert(i8042_kbd_reset(&base,&data));
+    assert(writes[0xff]==2 && writes[0xf5]==2);
+    for(int fail=0;fail<6;fail++) {
+        setup(good,6,0); replies[fail]=-1;
+        assert(!i8042_kbd_reset(&base,&data));
+    }
+    puts("PASS reset/disable endless RESEND capped at three, retry success, six timeout stages");
+}

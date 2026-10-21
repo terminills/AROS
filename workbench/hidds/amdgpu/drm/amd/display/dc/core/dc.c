@@ -5413,6 +5413,16 @@ enum dc_irq_source dc_interrupt_to_irq_source(
 /*
  * dc_interrupt_set() - Enable/disable an AMD hw interrupt source
  */
+/* laptop diag (not for commit): the enable and status registers behind an interrupt source */
+bool dc_interrupt_diag(struct dc *dc, enum dc_irq_source src, uint32_t *reg, uint32_t *val, uint32_t *mask, uint32_t *status)
+{
+	extern bool dal_irq_service_diag(struct irq_service *irq_service, enum dc_irq_source source,
+					 uint32_t *reg, uint32_t *val, uint32_t *mask, uint32_t *status);
+	if (!dc || !dc->res_pool || !dc->res_pool->irqs)
+		return false;
+	return dal_irq_service_diag(dc->res_pool->irqs, src, reg, val, mask, status);
+}
+
 bool dc_interrupt_set(struct dc *dc, enum dc_irq_source src, bool enable)
 {
 

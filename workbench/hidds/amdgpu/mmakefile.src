@@ -18,7 +18,7 @@ include $(SRCDIR)/$(CURDIR)/sources.radeonsi.mak
 #MM- workbench-hidds-amdgpu : hidd-amdgpu-mesa$(OPT_MESAGL)
 #MM- hidd-amdgpu-mesa26.0.0 : hidd-amdgpu-$(AROS_TARGET_ARCH)-$(AROS_TARGET_CPU)
 #MM- hidd-amdgpu-pc-x86_64 : hidd-amdgpu hidd-amdgpu-ids
-#MM hidd-amdgpu: includes hidd-amdgpu-drmcore hidd-amdgpu-drm hidd-amdgpu-libdrm hidd-amdgpu-libdrm-amdgpu hidd-amdgpu-radeonsi hidd-gallium mesa3dgl-linklibs linklibs-libatomic workbench-libs-z-linklib
+#MM hidd-amdgpu: includes kernel-acpica-sharedlib-includes hidd-amdgpu-drmcore hidd-amdgpu-drm hidd-amdgpu-libdrm hidd-amdgpu-libdrm-amdgpu hidd-amdgpu-radeonsi hidd-gallium mesa3dgl-linklibs linklibs-libatomic workbench-libs-z-linklib
 #MM hidd-amdgpu-libdrm : mesa3dgl-linklibs
 #MM hidd-amdgpu-libdrm-amdgpu : includes
 #MM hidd-amdgpu-radeonsi : hidd-amdgpu-radeonsi-gen mesa3dgl-linklibs mesa3d-linklib-aco mesa3d-linklib-amd-common
@@ -127,7 +127,7 @@ AMD_INCLUDES := \
 
 # Kbuild forces kconfig.h and compiler_types.h into every file and passes the
 # configuration as CONFIG_ symbols; the default x86_64 configuration is used.
-DRM_CPPFLAGS := -D__KERNEL__ -DCONFIG_X86 -DCONFIG_X86_64 -DDRM_COMPAT_NAME=\"amdgpu\" \
+DRM_CPPFLAGS := -D__KERNEL__ -DCONFIG_X86 -DCONFIG_X86_64 -DCONFIG_64BIT -DDRM_COMPAT_NAME=\"amdgpu\" \
                 -DCONFIG_DRM_AMDGPU -DCONFIG_DRM_AMD_DC -DCONFIG_DRM_AMD_DC_FP \
                 -DCONFIG_DRM_AMDGPU_SI -DCONFIG_DRM_AMDGPU_CIK -DCONFIG_DRM_AMD_DC_SI \
                 -DBUILD_FEATURE_TIMING_SYNC=0 \
@@ -256,6 +256,7 @@ FILES	:=	\
 	amdgpu_stdio \
 	amdgpu_2d \
 	amdgpu_pthread \
+	amdgpu_acpi \
 	$(SRCDIR)/workbench/libs/mesa/emul_arosc \
 	amdgpu_util
 
@@ -277,7 +278,7 @@ USER_LDFLAGS := \
   -Wl,--start-group -lgallium_radeonsi -llibdrm_amdgpu -laco -lamd_common -laddrlib -lcompiler \
   -ldrm_amdgpu -ldrm_amdgpu_drv -ldrm_amdgpu_core \
   -lgalliumauxiliary -lmesautil \
-  -loop -lhiddstubs -lz -lpthread -lposixc -lstdc
+  -loop -lhiddstubs -lacpica -lz -lpthread -lposixc -lstdc
 ifneq ($(TARGET_LIBATOMIC),)
 USER_LDFLAGS += $(TARGET_CXX_LIBS)
 endif

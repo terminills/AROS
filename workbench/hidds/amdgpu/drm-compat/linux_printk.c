@@ -335,7 +335,9 @@ int scnprintk(char *buf, size_t size, const char *fmt, ...)
  * T:amdgpu.log when SYS: cannot be written - read-only boot media; "off"
  * to disable), and AMDGPU_SERIAL set to "all" sends every line to serial.
  */
-#if DEBUG
+/* laptop PSP diagnosis (not for commit): file log on in this build too */
+#define AMDGPU_FILELOG 1
+#if DEBUG || AMDGPU_FILELOG
 #define NLOG_SIZE   (2 * 1024 * 1024)
 
 static struct {
@@ -389,6 +391,9 @@ static void nlog_append(const char *s, size_t n)
         Signal(nlog.flusher, 1UL << nlog.sigbit);
 }
 
+int amdgpu_diag_level;
+void amdgpu_log_alive_start(void);
+
 static void nlog_flusher(void)
 {
     struct Task *self = FindTask(NULL);
@@ -400,6 +405,15 @@ static void nlog_flusher(void)
     nlog.sigbit = AllocSignal(-1);
     if (nlog.sigbit == (ULONG)-1)
         return;
+    /* level 5: the buffer exists from the start, the flusher stays out of the
+     * first screen; nothing signals it until it announces itself here, and
+     * only then does the heartbeat start, to describe whatever state the
+     * screen is in by now */
+    if (amdgpu_diag_level == 5)
+    {
+        Delay(1500);
+        amdgpu_log_alive_start();
+    }
     nlog.flusher = self;
 
     if (GetVar("AMDGPU_LOGFILE", name, sizeof(name), GVF_GLOBAL_ONLY) <= 0)
@@ -423,7 +437,8 @@ static void nlog_flusher(void)
         BPTR fh;
         ULONG head, tail;
 
-        Wait((1UL << nlog.sigbit) | SIGBREAKF_CTRL_C);
+        if (nlog.head == nlog.tail)
+            Wait((1UL << nlog.sigbit) | SIGBREAKF_CTRL_C);
         /* let a burst of lines accumulate */
         Delay(2);
 
@@ -436,8 +451,21 @@ static void nlog_flusher(void)
          */
         if (!created && name[0] == '\0')
         {
-            strcpy(name, "SYS:amdgpu.log");
+            /* one file per boot, so the log of a failed boot survives the next one */
+            struct DateStamp ds;
+            char suffix[32];
+
+            DateStamp(&ds);
+            /* the laptop clock reads the same time at every boot; the TSC does not */
+            snprintf(suffix, sizeof(suffix), "%ld-%ld-%04lx", (long)ds.ds_Days, (long)ds.ds_Minute,
+                     (unsigned long)(__builtin_ia32_rdtsc() & 0xffff));
+            snprintf(name, sizeof(name), "Efi:amdgpu-%s.log", suffix);
             fh = Open(name, MODE_NEWFILE);
+            if (!fh)
+            {
+                snprintf(name, sizeof(name), "SYS:amdgpu-%s.log", suffix);
+                fh = Open(name, MODE_NEWFILE);
+            }
             if (!fh)
             {
                 strcpy(name, "T:amdgpu.log");
@@ -503,20 +531,177 @@ static void nlog_flusher(void)
     }
 }
 
+int compat_env_digit(const char *name);
+
+/*
+ * SYS:Prefs/Env-Archive/AMDGPU_DIAG: 0/absent nothing, 1 log file + heartbeat
+ * with the register/cache probes, 2 log file + heartbeat without the probes,
+ * 3 log file only, 4 a silent heartbeat (a timer request every 2 s, nothing else),
+ * 5 log file whose flusher and heartbeat start 30 s late (the buffer alone during
+ * the first screen, then the level 1 picture of whatever state the screen is in).
+ */
 BOOL amdgpu_log_init(void)
 {
     if (nlog.started)
         return TRUE;
     nlog.started = TRUE;
+    amdgpu_diag_level = compat_env_digit("AMDGPU_DIAG");
+    if (!amdgpu_diag_level || amdgpu_diag_level == 4 || amdgpu_diag_level > 5)
+        return TRUE;
     nlog.sigbit = (ULONG)-1;
     nlog.buf = AllocMem(NLOG_SIZE, MEMF_ANY);
     if (!nlog.buf)
         return FALSE;
-    CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Log", NP_Priority, -1,
+    CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Log", NP_Priority, 61,
                       NP_Affinity, TASKAFFINITY_ANY, NP_Entry, (IPTR)nlog_flusher, NP_StackSize, 32 * 1024, TAG_DONE);
     return TRUE;
 }
+
+/* laptop diag (not for commit): read a yes/no switch from ENV: */
+int compat_env_flag(const char *name)
+{
+    char var[16];
+    char path[64];
+    BPTR fh;
+    LONG n = 0;
+
+    if (GetVar((CONST_STRPTR)name, var, sizeof(var), GVF_GLOBAL_ONLY) > 0)
+        return var[0] == '1' || var[0] == 'y' || var[0] == 'Y';
+    /* the driver starts before ENV:/ENVARC: are assigned; read the archive by path */
+    snprintf(path, sizeof(path), "SYS:Prefs/Env-Archive/%s", name);
+    fh = Open(path, MODE_OLDFILE);
+    if (fh)
+    {
+        n = Read(fh, var, sizeof(var) - 1);
+        Close(fh);
+    }
+    if (n > 0)
+        return var[0] == '1' || var[0] == 'y' || var[0] == 'Y';
+    return 0;
+}
+
+/* the same switch as a small number */
+int compat_env_digit(const char *name)
+{
+    char var[16];
+    char path[64];
+    BPTR fh;
+    LONG n = 0;
+
+    snprintf(path, sizeof(path), "SYS:Prefs/Env-Archive/%s", name);
+    fh = Open(path, MODE_OLDFILE);
+    if (!fh)
+    {
+        /* or on the boot stick's EFI partition, writable from any host */
+        snprintf(path, sizeof(path), "Efi:%s", name);
+        fh = Open(path, MODE_OLDFILE);
+    }
+    if (fh)
+    {
+        n = Read(fh, var, sizeof(var) - 1);
+        Close(fh);
+    }
+    if (n > 0 && var[0] >= '0' && var[0] <= '9')
+        return var[0] - '0';
+    if (n > 0 && (var[0] == 'y' || var[0] == 'Y'))
+        return 1;
+    return 0;
+}
+
+/* laptop diag (not for commit): a high-priority heartbeat with the 2D and IRQ counters */
+extern ULONG amdgpu_2d_diag[8];
+void compat_irq_counts(ULONG *raw, ULONG *handled);
+void amdgpu_compat_log(const char *fmt, ...);
+
+#include <exec/execbase.h>
+#include <exec/tasks.h>
+#include <aros/x86_64/cpucontext.h>
+#include <proto/debug.h>
+#include <libraries/debug.h>
+
+/* who is ready (preempted) while the heartbeat runs: a spinner shows up here with its PC */
+static void nlog_ready_tasks(void)
+{
+    struct Library *DebugBase = OpenLibrary("debug.library", 0);
+    struct Task *t;
+    char line[384];
+    int len = 0, count = 0;
+
+    Forbid();
+    ForeachNode(&SysBase->TaskReady, t)
+    {
+        UQUAD rip = 0;
+        char *mod = NULL, *sym = NULL;
+
+        if ((t->tc_Flags & TF_ETASK) && t->tc_UnionETask.tc_ETask && t->tc_UnionETask.tc_ETask->et_RegFrame)
+            rip = ((struct ExceptionContext *)t->tc_UnionETask.tc_ETask->et_RegFrame)->rip;
+        if (DebugBase && rip)
+        {
+            struct TagItem tags[] = { { DL_ModuleName, (IPTR)&mod }, { DL_SymbolName, (IPTR)&sym }, { TAG_DONE, 0 } };
+            DecodeLocationA((APTR)rip, tags);
+        }
+        if (len < (int)sizeof(line) - 100)
+            len += snprintf(line + len, sizeof(line) - len, " '%s' pri %d rip %llx %s:%s;", t->tc_Node.ln_Name,
+                            (int)t->tc_Node.ln_Pri, rip, mod ? mod : "?", sym ? sym : "?");
+        count++;
+    }
+    Permit();
+    if (count)
+        amdgpu_compat_log("[alive]   ready:%s\n", line);
+    if (DebugBase)
+        CloseLibrary(DebugBase);
+}
+
+static void nlog_alive(void)
+{
+    ULONG n = 0;
+
+    for (;;)
+    {
+        ULONG raw = 0, handled = 0;
+
+        Delay(100);
+        if (amdgpu_diag_level == 4)
+            continue;
+        nlog_ready_tasks();
+        compat_irq_counts(&raw, &handled);
+        amdgpu_compat_log("[alive] %lu: 2d calls %lu posted %lu ops %lu/%lu flush %lu/%lu last op %lu fence timeouts %lu, irq raw %lu handled %lu\n",
+            (unsigned long)++n, (unsigned long)amdgpu_2d_diag[0], (unsigned long)amdgpu_2d_diag[1],
+            (unsigned long)amdgpu_2d_diag[2], (unsigned long)amdgpu_2d_diag[3],
+            (unsigned long)amdgpu_2d_diag[4], (unsigned long)amdgpu_2d_diag[5],
+            (unsigned long)amdgpu_2d_diag[6], (unsigned long)amdgpu_2d_diag[7],
+            (unsigned long)raw, (unsigned long)handled);
+        if (amdgpu_diag_level == 1 || amdgpu_diag_level == 5)
+        {
+            extern void amdgpu_diag_snapshot(void);
+            amdgpu_diag_snapshot();
+        }
+    }
+}
+
+void amdgpu_log_alive_start(void)
+{
+    CreateNewProcTags(NP_Name, (IPTR)"Amdgpu Alive", NP_Priority, 60,
+                      NP_Affinity, TASKAFFINITY_ANY, NP_Entry, (IPTR)nlog_alive, NP_StackSize, 32 * 1024, TAG_DONE);
+}
+
+/* laptop diag (not for commit): wait until the flusher has written everything so far */
+void amdgpu_log_sync(void)
+{
+    int i;
+
+    for (i = 0; i < 100 && nlog.head != nlog.tail; i++)
+    {
+        if (nlog.flusher && nlog.sigbit != (ULONG)-1)
+            Signal(nlog.flusher, 1UL << nlog.sigbit);
+        Delay(5);
+    }
+    Delay(60);
+}
 #else
+void amdgpu_log_sync(void)
+{
+}
 #define nlog_append(s, n) ((void)(s), (void)(n))
 #ifdef DRM_COMPAT_SERIAL_ALL
 #define NLOG_SERIAL_ALL TRUE
@@ -543,8 +728,8 @@ static void nlog_emit(char *buf, size_t n)
         n -= 2;
     }
     nlog_append(buf, n);
-#if DEBUG
-    if (level <= 5 || nlog.serial_all || !nlog.buf)
+#if DEBUG || AMDGPU_FILELOG
+    if (level <= 5 || (nlog.buf && nlog.serial_all))
 #else
     if (level <= 5 || NLOG_SERIAL_ALL)
 #endif

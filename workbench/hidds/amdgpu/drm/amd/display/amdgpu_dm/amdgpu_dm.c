@@ -445,6 +445,7 @@ static void dm_pflip_high_irq(void *interrupt_params)
 	u32 vpos, hpos, v_blank_start, v_blank_end;
 	bool vrr_active;
 
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[21]++; }
 	amdgpu_crtc = get_crtc_by_otg_inst(adev, irq_params->irq_src - IRQ_TYPE_PFLIP);
 
 	/* IRQ could occur when in initial stage */
@@ -595,6 +596,7 @@ static void dm_crtc_high_irq_handler(struct amdgpu_device *adev,
 	int vrr_active;
 	bool is_dcn = amdgpu_ip_version(adev, DCE_HWIP, 0) != 0;
 
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[22]++; }
 	if (acrtc->wb_conn) {
 		spin_lock_irqsave(&acrtc->wb_conn->job_lock, flags);
 
@@ -748,8 +750,11 @@ static void dm_vupdate_high_irq(void *interrupt_params)
 	 * vblank and pageflip completion events; VSTARTUP and GRPH_PFLIP are
 	 * not used. Run the full handler here.
 	 */
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[23]++; }
 	if (amdgpu_ip_version(adev, DCE_HWIP, 0) != 0) {
-		dm_crtc_high_irq_handler(adev, acrtc);
+		extern int amdgpu_dcn_vline;
+		if (!amdgpu_dcn_vline)
+			dm_crtc_high_irq_handler(adev, acrtc);
 		return;
 	}
 
@@ -4663,6 +4668,38 @@ static int dcn10_register_irq_handlers(struct amdgpu_device *adev)
 	 * to trigger at end of each vblank, regardless of state of the lock,
 	 * matching DCE behaviour.
 	 */
+	{
+		extern int amdgpu_dcn_vline;
+		extern int compat_env_flag(const char *name);
+
+		amdgpu_dcn_vline = compat_env_flag("AMDGPU_DCN_VLINE");
+		drm_info(adev_to_drm(adev), "AMDGPU_DCN_VLINE=%d\n", amdgpu_dcn_vline);
+	}
+	if (({ extern int amdgpu_dcn_vline; amdgpu_dcn_vline; })) {
+		for (i = DCN_1_0__SRCID__DC_D1_OTG_VSTARTUP;
+		     i <= DCN_1_0__SRCID__DC_D1_OTG_VSTARTUP + adev->mode_info.num_crtc - 1;
+		     i++) {
+			r = amdgpu_irq_add_id(adev, SOC15_IH_CLIENTID_DCE, i, &adev->crtc_irq);
+			if (r) {
+				drm_err(adev_to_drm(adev), "Failed to add crtc irq id!\n");
+				return r;
+			}
+			int_params.int_context = INTERRUPT_HIGH_IRQ_CONTEXT;
+			int_params.irq_source = dc_interrupt_to_irq_source(dc, i, 0);
+			if (int_params.irq_source == DC_IRQ_SOURCE_INVALID ||
+			    int_params.irq_source < DC_IRQ_SOURCE_VBLANK1 ||
+			    int_params.irq_source > DC_IRQ_SOURCE_VBLANK6) {
+				drm_err(adev_to_drm(adev), "Failed to register vblank irq!\n");
+				return -EINVAL;
+			}
+			c_irq_params = &adev->dm.vblank_params[int_params.irq_source - DC_IRQ_SOURCE_VBLANK1];
+			c_irq_params->adev = adev;
+			c_irq_params->irq_src = int_params.irq_source;
+			if (!amdgpu_dm_irq_register_interrupt(adev, &int_params, dm_crtc_high_irq, c_irq_params))
+				return -ENOMEM;
+		}
+	}
+
 	for (i = DCN_1_0__SRCID__OTG0_IHC_V_UPDATE_NO_LOCK_INTERRUPT;
 	     i <= DCN_1_0__SRCID__OTG0_IHC_V_UPDATE_NO_LOCK_INTERRUPT + adev->mode_info.num_crtc - 1;
 	     i++) {
@@ -9672,10 +9709,19 @@ static void dm_arm_vblank_event(struct amdgpu_crtc *acrtc,
 	if (!acrtc->base.state->event || acrtc_state->active_planes == 0)
 		return;
 
+	/*
+	 * Without vblank support there is no interrupt to deliver an armed
+	 * event; leave it on the commit so the commit tail sends it.
+	 */
+	if (!drm_dev_has_vblank(acrtc->base.dev))
+		return;
+
 	if (pflip_update) {
+		extern unsigned long amdgpu_diag_vbl[16];
 		WARN_ON(acrtc->pflip_status != AMDGPU_FLIP_NONE);
 		WARN_ON(acrtc->event);
 
+		amdgpu_diag_vbl[10]++;
 		acrtc->pflip_status = AMDGPU_FLIP_SUBMITTED;
 		acrtc->event = acrtc->base.state->event;
 		acrtc->base.state->event = NULL;
@@ -9684,6 +9730,8 @@ static void dm_arm_vblank_event(struct amdgpu_crtc *acrtc,
 			      "crtc:%d, pflip_stat:AMDGPU_FLIP_SUBMITTED\n",
 			      acrtc->crtc_id);
 	} else if (cursor_update) {
+		extern unsigned long amdgpu_diag_vbl[16];
+		amdgpu_diag_vbl[11]++;
 		acrtc->event = acrtc->base.state->event;
 		acrtc->base.state->event = NULL;
 	}
@@ -9708,6 +9756,9 @@ static void dm_arm_vblank_event_pre_programming(struct amdgpu_crtc *acrtc,
 	assert_spin_locked(&acrtc->base.dev->event_lock);
 
 	if (!acrtc->base.state->event || acrtc_state->active_planes == 0)
+		return;
+
+	if (!drm_dev_has_vblank(acrtc->base.dev))
 		return;
 
 	if (pflip_update || cursor_update)
@@ -11025,9 +11076,12 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
 	 */
 	spin_lock_irqsave(&adev_to_drm(adev)->event_lock, flags);
 	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
+		extern unsigned long amdgpu_diag_vbl[16];
 
-		if (new_crtc_state->event)
+		if (new_crtc_state->event) {
+			amdgpu_diag_vbl[12]++;
 			drm_send_event_locked(dev, &new_crtc_state->event->base);
+		}
 
 		new_crtc_state->event = NULL;
 	}

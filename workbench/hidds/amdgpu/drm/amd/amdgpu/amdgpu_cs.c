@@ -1251,9 +1251,16 @@ static int amdgpu_cs_sync_rings(struct amdgpu_cs_parser *p)
 
 static void amdgpu_cs_post_dependencies(struct amdgpu_cs_parser *p)
 {
+	extern unsigned long amdgpu_diag_counters[24];
+	extern unsigned long amdgpu_diag_last[16];
 	int i;
 
+	amdgpu_diag_last[8] = (unsigned long)p->fence;
+	amdgpu_diag_last[9] = p->fence ? (unsigned long)p->fence->seqno : 0;
+	amdgpu_diag_last[10] = p->fence ? (unsigned long)p->fence->context : 0;
+	amdgpu_diag_last[11] = p->num_post_deps;
 	for (i = 0; i < p->num_post_deps; ++i) {
+		amdgpu_diag_counters[p->post_deps[i].chain && p->post_deps[i].point ? 18 : 17]++;
 		if (p->post_deps[i].chain && p->post_deps[i].point) {
 			drm_syncobj_add_point(p->post_deps[i].syncobj,
 					      p->post_deps[i].chain,
@@ -1510,11 +1517,27 @@ int amdgpu_cs_wait_ioctl(struct drm_device *dev, void *data,
 		return r;
 	}
 
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[8]++; }
 	fence = amdgpu_ctx_get_fence(ctx, entity, wait->in.handle);
 	if (IS_ERR(fence))
 		r = PTR_ERR(fence);
 	else if (fence) {
 		r = dma_fence_wait_timeout(fence, true, timeout);
+		if (r == 0) {
+			extern unsigned long amdgpu_diag_counters[24];
+			extern void amdgpu_compat_log(const char *fmt, ...);
+			struct drm_sched_fence *sf = to_drm_sched_fence(fence);
+			struct dma_fence *parent = sf ? sf->parent : NULL;
+
+			amdgpu_diag_counters[9]++;
+			amdgpu_compat_log("[wait_cs] TIMEOUT handle %llu ip %u ring %u timeout %lu j: seq %llu entity seq %llu fence %p flags %lx seqno %llu ctx %llu ops %s | scheduled flags %lx parent %p flags %lx seqno %llu | sched run %lu done %lu\n",
+				(unsigned long long)wait->in.handle, wait->in.ip_type, wait->in.ring, timeout,
+				(unsigned long long)wait->in.handle, 0ULL,
+				fence, fence->flags, (unsigned long long)fence->seqno, (unsigned long long)fence->context,
+				fence->ops && fence->ops->get_driver_name ? fence->ops->get_driver_name(fence) : "?",
+				sf ? sf->scheduled.flags : 0UL, parent, parent ? parent->flags : 0UL, parent ? (unsigned long long)parent->seqno : 0ULL,
+				amdgpu_diag_counters[10], amdgpu_diag_counters[11]);
+		}
 		if (r > 0 && fence->error)
 			r = fence->error;
 		dma_fence_put(fence);
@@ -1749,6 +1772,7 @@ int amdgpu_cs_wait_fences_ioctl(struct drm_device *dev, void *data,
 	struct drm_amdgpu_fence *fences;
 	int r;
 
+	{ extern unsigned long amdgpu_diag_counters[24]; amdgpu_diag_counters[13]++; }
 	/* Get the fences from userspace */
 	fences = memdup_array_user(u64_to_user_ptr(wait->in.fences),
 				   wait->in.fence_count,

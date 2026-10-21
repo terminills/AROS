@@ -710,7 +710,9 @@ static inline int dm_irq_state(struct amdgpu_device *adev,
 	enum dc_irq_source irq_source;
 	struct dc *dc = adev->dm.dc;
 	struct amdgpu_crtc *acrtc = adev->mode_info.crtcs[crtc_id];
+	extern unsigned long amdgpu_diag_vbl[16];
 
+	amdgpu_diag_vbl[8]++;
 	if (!acrtc) {
 		DRM_ERROR(
 			"%s: crtc is NULL at id :%d\n",
@@ -719,6 +721,7 @@ static inline int dm_irq_state(struct amdgpu_device *adev,
 		return 0;
 	}
 
+	amdgpu_diag_vbl[9] = (unsigned long)(long)acrtc->otg_inst;
 	if (acrtc->otg_inst == -1)
 		return 0;
 
@@ -729,8 +732,62 @@ static inline int dm_irq_state(struct amdgpu_device *adev,
 	if (dc && dc->caps.ips_support && dc->idle_optimizations_allowed)
 		dc_allow_idle_optimizations(dc, false);
 
-	dc_interrupt_set(adev->dm.dc, irq_source, st);
+	{
+		extern unsigned long amdgpu_diag_counters[24];
+		extern unsigned long amdgpu_diag_last[16];
+		bool ok = dc_interrupt_set(adev->dm.dc, irq_source, st);
+
+		amdgpu_diag_counters[19]++;
+		if (st)
+			amdgpu_diag_counters[20]++;
+		amdgpu_diag_last[12] = irq_source;
+		amdgpu_diag_last[13] = (dal_irq_type << 8) | (ok ? 1 : 0) | (st ? 2 : 0);
+	}
 	return 0;
+}
+
+/* laptop diag (not for commit): display interrupt enable registers and handler counts */
+void amdgpu_diag_dm_snapshot(void)
+{
+	extern void *amdgpu_diag_adev;
+	extern unsigned long amdgpu_diag_counters[24];
+	extern unsigned long amdgpu_diag_last[16];
+	extern unsigned long amdgpu_diag_ih_client[32];
+	extern void amdgpu_compat_log(const char *fmt, ...);
+	extern bool dc_interrupt_diag(struct dc *dc, enum dc_irq_source src, uint32_t *reg, uint32_t *val, uint32_t *mask, uint32_t *status);
+	struct amdgpu_device *adev = amdgpu_diag_adev;
+	static const struct { enum dc_irq_source src; const char *name; } probes[] = {
+		{ DC_IRQ_SOURCE_VUPDATE1, "vupdate1" }, { DC_IRQ_SOURCE_VUPDATE2, "vupdate2" },
+		{ DC_IRQ_SOURCE_VBLANK1, "vblank1" }, { DC_IRQ_SOURCE_VBLANK2, "vblank2" },
+		{ DC_IRQ_SOURCE_PFLIP1, "pflip1" },
+	};
+	char line[320]; int n = 0, i;
+
+	if (!adev || !adev->dm.dc)
+		return;
+	for (i = 0; i < 5; i++) {
+		uint32_t reg = 0, val = 0, mask = 0, status = 0;
+		if (dc_interrupt_diag(adev->dm.dc, probes[i].src, &reg, &val, &mask, &status))
+			n += snprintf(line + n, sizeof(line) - n, " %s reg %x val %x mask %x st %x;", probes[i].name, reg, val, mask, status);
+		else
+			n += snprintf(line + n, sizeof(line) - n, " %s none;", probes[i].name);
+	}
+	amdgpu_compat_log("[diag] dm irq_state calls %lu enables %lu last src %lu type/ok/en %lx | handlers pflip %lu crtc %lu vupdate %lu |%s\n",
+		amdgpu_diag_counters[19], amdgpu_diag_counters[20], amdgpu_diag_last[12], amdgpu_diag_last[13],
+		amdgpu_diag_counters[21], amdgpu_diag_counters[22], amdgpu_diag_counters[23], line);
+	{
+		extern unsigned long amdgpu_diag_vbl[16];
+		amdgpu_compat_log("[diag] vbl get %lu fail %lu ref %lu enable %lu enret %ld | setvbl %lu rej %lu vupget %ld crtcget %ld | dmstate %lu otg %ld | armed pflip %lu cursor %lu sent %lu events %lu | ncrtc %lu\n",
+			amdgpu_diag_vbl[0], amdgpu_diag_vbl[1], amdgpu_diag_vbl[2], amdgpu_diag_vbl[3], (long)amdgpu_diag_vbl[4],
+			amdgpu_diag_vbl[5], amdgpu_diag_vbl[6], (long)amdgpu_diag_vbl[7], (long)amdgpu_diag_vbl[15],
+			amdgpu_diag_vbl[8], (long)amdgpu_diag_vbl[9], amdgpu_diag_vbl[10], amdgpu_diag_vbl[11],
+			amdgpu_diag_vbl[12], amdgpu_diag_vbl[13], amdgpu_diag_vbl[14]);
+	}
+	n = 0;
+	for (i = 0; i < 32 && n < (int)sizeof(line) - 16; i++)
+		if (amdgpu_diag_ih_client[i])
+			n += snprintf(line + n, sizeof(line) - n, " %d:%lu", i, amdgpu_diag_ih_client[i]);
+	amdgpu_compat_log("[diag] ih by client:%s\n", n ? line : " none");
 }
 
 static int amdgpu_dm_set_pflip_irq_state(struct amdgpu_device *adev,

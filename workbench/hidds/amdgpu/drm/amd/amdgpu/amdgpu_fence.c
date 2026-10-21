@@ -236,12 +236,16 @@ bool amdgpu_fence_process(struct amdgpu_ring *ring)
 	struct amdgpu_fence_driver *drv = &ring->fence_drv;
 	struct amdgpu_device *adev = ring->adev;
 	uint32_t seq, last_seq;
+	extern unsigned long amdgpu_diag_counters[24];
 
+	amdgpu_diag_counters[2]++;
 	do {
 		last_seq = atomic_read(&ring->fence_drv.last_seq);
 		seq = amdgpu_fence_read(ring);
 
 	} while (atomic_cmpxchg(&drv->last_seq, last_seq, seq) != last_seq);
+	if (seq != last_seq)
+		amdgpu_diag_counters[3]++;
 
 	if (timer_delete(&ring->fence_drv.fallback_timer) &&
 	    seq != ring->fence_drv.sync_seq)
@@ -294,7 +298,9 @@ static void amdgpu_fence_fallback(struct timer_list *t)
 {
 	struct amdgpu_ring *ring = timer_container_of(ring, t,
 						      fence_drv.fallback_timer);
+	extern unsigned long amdgpu_diag_counters[24];
 
+	amdgpu_diag_counters[4]++;
 	if (amdgpu_fence_process(ring))
 		dev_warn(ring->adev->dev,
 			 "Fence fallback timer expired on ring %s\n",

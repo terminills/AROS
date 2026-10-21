@@ -85,7 +85,7 @@ ktime_t ktime_get(void)
 
     if (!TimerBase)
         return 0;
-    GetSysTime(&tv);
+    GetUpTime(&tv);
     return (ktime_t)tv.tv_secs * NSEC_PER_SEC + (ktime_t)tv.tv_micro * NSEC_PER_USEC;
 }
 
@@ -297,6 +297,8 @@ static void timer_proc_main(void)
             struct timer_list *t = container_of(treq, struct timer_list, req);
 
             if (t->pending) {
+                extern unsigned long amdgpu_diag_counters[24];
+                amdgpu_diag_counters[5]++;
                 t->pending = FALSE;
                 if (t->function)
                     t->function(t);
@@ -371,6 +373,11 @@ static int timer_send_cmd(int op, struct timer_list *t, unsigned long expires)
     GetMsg(&port);
     FreeSignal(port.mp_SigBit);
     return cmd.result;
+}
+
+unsigned long amdgpu_compat_ms(void)
+{
+    return (unsigned long)(ktime_get() / 1000000);
 }
 
 void timer_setup(struct timer_list *t, void (*func)(struct timer_list *), unsigned int flags)

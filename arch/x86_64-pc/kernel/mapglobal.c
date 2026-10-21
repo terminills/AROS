@@ -116,11 +116,20 @@ static void set_pte_4k(struct PTE *slot, IPTR phys, KRN_MapAttr flags)
     entry->p = (flags & (MAP_Readable | MAP_Writable | MAP_Executable)) ? 1 : 0;
     entry->rw = (flags & MAP_Writable) ? 1 : 0;
     entry->us = (flags & MAP_Supervisor) ? 0 : 1;
-    entry->pwt = (flags & MAP_WriteThrough) ? 1 : 0;
-    entry->pcd = (flags & MAP_CacheInhibit) ? 1 : 0;
+    if (flags & MAP_WriteCombine)
+    {
+        entry->pat = 1;                 /* -> PAT index 4 == WC */
+        entry->pcd = 0;
+        entry->pwt = 0;
+    }
+    else
+    {
+        entry->pat = 0;
+        entry->pwt = (flags & MAP_WriteThrough) ? 1 : 0;
+        entry->pcd = (flags & MAP_CacheInhibit) ? 1 : 0;
+    }
     entry->a = 0;
     entry->d = 0;
-    entry->pat = 0;
     entry->g = 0;
     entry->avl = 0;
     entry->base_low = phys >> 12;
@@ -161,7 +170,6 @@ static void set_pde_2m(struct PDE2M *slot, IPTR phys, KRN_MapAttr flags)
     entry->ps = 1;
     entry->g = 0;
     entry->avl = 0;
-    entry->pat = 0;
     entry->base_low = phys >> 13;
     entry->base_high = (phys >> 32) & 0x000FFFFF;
     entry->avail = 0;
