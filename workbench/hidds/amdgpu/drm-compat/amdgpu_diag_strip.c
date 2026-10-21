@@ -20,6 +20,12 @@
 
 struct Amdgpu_KMS *amdgpu_diag_kms;
 
+/* who spins on whose compat spinlock (include/linux/spinlock.h) */
+struct Task *amdgpu_diag_spinner;
+struct Task *amdgpu_diag_spin_owner;
+void *amdgpu_diag_spin_lock;
+unsigned long amdgpu_diag_spins;
+
 extern ULONG amdgpu_2d_diag[8];
 extern unsigned long amdgpu_diag_vbl[16];
 extern void compat_irq_counts(ULONG *raw, ULONG *handled);
@@ -93,7 +99,7 @@ static const char *strip_glyph(char c)
 #define SCALE   3
 #define CELLW   (4 * SCALE)
 #define CELLH   (6 * SCALE)
-#define LINES   3
+#define LINES   4
 
 static void strip_text(struct Amdgpu_FB *fb, ULONG y0, const char *s)
 {
@@ -182,6 +188,15 @@ static void strip_paint(void)
     strip_fmt(line, sizeof(line), "PAINT %lu  %lux%lu", (unsigned long)++strip.painted,
               (unsigned long)fb->width, (unsigned long)fb->height);
     strip_text(fb, y0 + SCALE + 2 * CELLH, line);
+
+    {
+        struct Task *sp = amdgpu_diag_spinner, *ow = amdgpu_diag_spin_owner;
+        strip_fmt(line, sizeof(line), "SPIN %lu %.16s ON %.16s LOCK %lx", amdgpu_diag_spins,
+                  sp && sp->tc_Node.ln_Name ? sp->tc_Node.ln_Name : "-",
+                  ow && ow->tc_Node.ln_Name ? ow->tc_Node.ln_Name : "-",
+                  (unsigned long)(IPTR)amdgpu_diag_spin_lock);
+        strip_text(fb, y0 + SCALE + 3 * CELLH, line);
+    }
 
     for (i = 0; i < STRIP_TASKS; i++)
     {
