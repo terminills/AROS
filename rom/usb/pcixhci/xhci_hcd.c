@@ -3418,6 +3418,15 @@ static AROS_INTH1(xhciIntCode, struct PCIController *, hc)
                     ring = (volatile struct pcisusbXHCIRing *)devCtx->dc_EPAllocs[trbe_epid].dmaa_Ptr;
                 }
 
+                /* ISO starvation reports an empty endpoint ring, not a
+                 * completed TD. Its dequeue pointer may already name a newly
+                 * queued request by the time this event is consumed. Never
+                 * retire that request or fall back to the busy request. */
+                if((trbe_ccode == TRB_CC_RING_UNDERRUN ||
+                    trbe_ccode == TRB_CC_RING_OVERRUN) &&
+                   xhciEndpointIsIsoch(hc, devCtx, trbe_epid))
+                    break;
+
                 if(ring && xhciRingAndIndexFromDMA(hc, devCtx, trbe_epid, trb_dma, &ring, &last)) {
                     have_idx = TRUE;
                 }

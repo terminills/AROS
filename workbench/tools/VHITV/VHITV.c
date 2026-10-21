@@ -222,6 +222,11 @@ static void select_input(struct App *app, ULONG input)
         FreeVec(app->input_name);
     app->input_name = (!error) ? name : NULL;
     app->input = input;
+    SetAPen(app->window->RPort, 0);
+    RectFill(app->window->RPort, app->window->BorderLeft,
+             app->window->BorderTop + STATUS_HEIGHT,
+             app->window->Width - app->window->BorderRight - 1,
+             app->window->Height - app->window->BorderBottom - 1);
     set_status(app, "selected");
 }
 
