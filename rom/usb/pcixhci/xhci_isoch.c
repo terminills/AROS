@@ -230,26 +230,11 @@ WORD xhciQueueIsochIO(struct PCIController *hc, struct RTIsoNode *rtn)
         rtn->rtn_Flags &= ~RTISO_FLAG_EXPLICIT_FRAME;
 
     {
-        UWORD interval = ioreq->iouh_Interval ? ioreq->iouh_Interval : 1;
-        BOOL superspeed = (ioreq->iouh_Flags & UHFF_SUPERSPEED) != 0;
-        BOOL highspeed = (ioreq->iouh_Flags & UHFF_HIGHSPEED) != 0;
-
-        if(interval > 16)
-            interval = 16;
-
-        if(superspeed || highspeed) {
-            interval_uf = 1UL << (interval - 1);
-        } else {
-            UWORD exp = (interval - 1) + 3;
-
-            if(exp > 15)
-                exp = 15;
-
-            interval_uf = 1UL << exp;
-        }
-
-        if(interval_uf < 1)
-            interval_uf = 1;
+        /* Poseidon has already expanded bInterval to service intervals:
+           microframes at high/super speed, frames at full speed. */
+        ULONG interval = ioreq->iouh_Interval ? ioreq->iouh_Interval : 1;
+        interval_uf = (ioreq->iouh_Flags & (UHFF_SUPERSPEED | UHFF_HIGHSPEED))
+            ? interval : interval * 8;
     }
 
     interval_frames = (interval_uf + 7) >> 3;
@@ -272,6 +257,12 @@ WORD xhciQueueIsochIO(struct PCIController *hc, struct RTIsoNode *rtn)
     ptd->ptd_FrameIdx = bufreq->ubr_Frame;
     ptd->ptd_Flags |= PTDF_BUFFER_VALID;
     rtn->rtn_BufferReq = *bufreq;
+    /* Do not mistake our generated frame for a client-selected frame on
+       the next request. */
+    if(!(rtn->rtn_Flags & RTISO_FLAG_EXPLICIT_FRAME)) {
+        rtn->rtn_BufferReq.ubr_Frame = 0;
+        ptd->ptd_BufferReq.ubr_Frame = 0;
+    }
     /* RT iso contract (cf. denebusb): after each request the client buffer
        pointer advances by the length transferred, so the next request hook
        continues from the following data unless it supplies a new buffer. */
