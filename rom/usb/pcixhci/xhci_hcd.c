@@ -490,7 +490,7 @@ static void xhciInsertTRB(struct PCIController *hc,
         xhciSetPointer(hc, dst->dbp, dma_payload);
     }
 
-    dst->tparams = AROS_LONG2LE(plen & TRB_TPARAMS_DS_TRBLEN_SMASK);
+    dst->tparams = AROS_LONG2LE(plen & (TRB_TPARAMS_DS_TRBLEN_SMASK | TRB_TPARAMS_DS_TDSIZE_MASK));
     dst->flags   = AROS_LONG2LE(trbflags);
 
     /* Ensure the controller observes the freshly written TRB */
@@ -882,9 +882,11 @@ WORD xhciQueueTRB(struct PCIController *hc, volatile struct pcisusbXHCIRing *rin
                                DEBUGWARNCOLOR_SET "xHCI: link <ringio %p>[%d] 0x%p -> 0x0000000000000000" DEBUGCOLOR_RESET "\n",
                                ring->ringio, ring->next, ring->ringio[ring->next]);
             ring->ringio[ring->next] = NULL;
+            /* A Link TRB inside a TD keeps the TD chained (xHCI 4.11.5.1) */
             xhciInsertTRB(hc, ring,
                           link_dma,
-                          TRBF_FLAG_TRTYPE_LINK | TRBF_FLAG_TC,
+                          TRBF_FLAG_TRTYPE_LINK | TRBF_FLAG_TC |
+                          (AROS_LE2LONG(ring->ring[ring->next - 1].flags) & TRBF_FLAG_CH),
                           0);
             ring->next = 0;
             if(ring->end & RINGENDCFLAG)
@@ -938,9 +940,11 @@ WORD xhciQueueTRB_IO(struct PCIController *hc, volatile struct pcisusbXHCIRing *
                                DEBUGWARNCOLOR_SET "xHCI: <ringio %p>[%d]  0x%p -> 0x0000000000000000" DEBUGCOLOR_RESET "\n",
                                ring->ringio, ring->next, ring->ringio[ring->next]);
             ring->ringio[ring->next] = NULL;
+            /* A Link TRB inside a TD keeps the TD chained (xHCI 4.11.5.1) */
             xhciInsertTRB(hc, ring,
                           link_dma,
-                          TRBF_FLAG_TRTYPE_LINK | TRBF_FLAG_TC,
+                          TRBF_FLAG_TRTYPE_LINK | TRBF_FLAG_TC |
+                          (AROS_LE2LONG(ring->ring[ring->next - 1].flags) & TRBF_FLAG_CH),
                           0);
             ring->next = 0;
             if(ring->end & RINGENDCFLAG)
@@ -1121,7 +1125,22 @@ WORD xhciQueueData_IO(struct PCIController *hc,
         if(ioconlast && (remaining == trblen))
             txflags |= TRBF_FLAG_IOC;
 
-        queued = xhciQueueTRB_IO(hc, ring, payload + offset, trblen, txflags, ioreq);
+        /* TD Size: packets left in the TD after this TRB (xHCI 4.11.2.4) */
+        {
+            ULONG tdsize = 0;
+
+            if(remaining > trblen) {
+                ULONG maxpkt = ((struct IOUsbHWReq *)ioreq)->iouh_MaxPktSize;
+
+                if(!maxpkt)
+                    maxpkt = 512;
+                tdsize = ((plen + maxpkt - 1) / maxpkt) - ((offset + trblen) / maxpkt);
+                if(tdsize > TRB_TPARAMS_DS_TDSIZE_SMASK)
+                    tdsize = TRB_TPARAMS_DS_TDSIZE_SMASK;
+            }
+            queued = xhciQueueTRB_IO(hc, ring, payload + offset,
+                                     trblen | (tdsize << TRBS_TPARAMS_DS_TDSIZE), txflags, ioreq);
+        }
         if(queued == -1)
             return queued;
 
