@@ -13,13 +13,11 @@
               -> CLOSE
 
     It is hardware-independent: it exercises whatever VHI driver is named on
-    the command line (default "uvc.library", the synthetic test-card
-    driver). Once the real UVC-backed driver exists, point it at that name and
-    the same probe verifies real frames.
+    the command line (default "uvc.library"). Input zero of uvc.library is
+    synthetic; subsequent inputs address supported bound USB cameras.
 
     ABI is taken solely from <vhi/vhi.h> (compiler/include/vhi/vhi.h) and the
-    genmodule-generated <proto/vhi.h>. Clean-room; not derived from any GPL
-    source.
+    existing VHI library vector.
 
     Usage:  VHIProbe [drivername] [dumpfile] [input]
 */
@@ -43,9 +41,7 @@
  * observable — no screenshot or shell-redirect needed. */
 #define PROBE_LOG(...)  do { printf(__VA_ARGS__); bug("VHIProbe: " __VA_ARGS__); } while (0)
 
-/* Every VHI driver is a library shaped like vhi.library (libbase VHIBase,
- * single entry vhi_api at the first LVO), so proto/vhi.h dispatches through
- * whichever driver we OpenLibrary() into VHIBase. */
+/* Dispatch through the explicitly opened driver at the standard VHI vector. */
 struct Library *VHIBase = NULL;
 #include <aros/libcall.h>
 static IPTR call_vhi(ULONG method, ULONG submethod, APTR attr,
