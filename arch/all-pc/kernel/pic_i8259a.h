@@ -1,7 +1,7 @@
 #ifndef KERNEL_I8259A_H
 #define KERNEL_I8259A_H
 /*
-    Copyright © 2017-2022, The AROS Development Team. All rights reserved.
+    Copyright © 2017-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: Intel 8259a "XT-PIC" definitions.
@@ -15,6 +15,7 @@
 
 BOOL i8259a_Probe();
 void i8259a_Disable();
+void i8259a_MaskAll(APTR icPrivate);
 
 extern struct IntrController i8259a_IntrController;
 

@@ -212,6 +212,82 @@ static BOOL IOAPIC_IntToPin(struct IOAPICCfgData *ioapicData,
     return TRUE;
 }
 
+/*
+ * Some chipsets do not deliver the 8254 to the IO-APIC pin the firmware
+ * names for IRQ 0. Run it for a few periods with the pin unmasked and look
+ * for its vector in the local APIC's IRR; without it, IRQ 0 stays on the
+ * 8259A, which reaches the boot CPU through LINT0 in ExtINT mode.
+ */
+static void IOAPIC_CheckTimer(struct KernelBase *KernelBase, struct IOAPICCfgData *ioapicData,
+    struct APICData *apicPrivate, struct IntrController *xtpicIC)
+{
+    struct IntrMapping *intrMap = krnInterruptMapping(KernelBase, 0);
+    struct acpi_ioapic_route *irqRoute;
+    UWORD count, prev = 0xFFFF;
+    ULONG polls, wraps = 0;
+    BOOL delivered = FALSE;
+    UBYTE pin, vect;
+    IPTR flags;
+
+    if (!apicPrivate || !IOAPIC_IntToPin(ioapicData, intrMap, 0, &pin))
+        return;
+    irqRoute = (struct acpi_ioapic_route *)&ioapicData->ioapic_RouteTable[pin];
+    if ((vect = irqRoute->vect) == 0)
+        return;
+
+#if defined(__x86_64__)
+    asm volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+#else
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags) :: "memory");
+#endif
+
+    /* Channel 0, rate generator, 1ms */
+    outb(0x34, 0x43);
+    outb(0xA9, 0x40);
+    outb(0x04, 0x40);
+
+    irqRoute->mask = 0;
+    acpi_IOAPIC_WriteReg(ioapicData->ioapic_Base,
+        IOAPICREG_REDTBLBASE + (pin << 1),
+        (ioapicData->ioapic_RouteTable[pin] & 0xFFFFFFFF));
+
+    for (polls = 0; (polls < 2000000) && (wraps < 20); polls++)
+    {
+        if (apic_Read(apicPrivate->lapicBase, APIC_IRR + ((vect >> 5) << 4)) & (1 << (vect & 31)))
+        {
+            delivered = TRUE;
+            break;
+        }
+        outb(0x00, 0x43);
+        count = inb(0x40);
+        count |= inb(0x40) << 8;
+        if (count > prev)
+            wraps++;
+        prev = count;
+    }
+
+    irqRoute->mask = 1;
+    acpi_IOAPIC_WriteReg(ioapicData->ioapic_Base,
+        IOAPICREG_REDTBLBASE + (pin << 1),
+        (ioapicData->ioapic_RouteTable[pin] & 0xFFFFFFFF));
+
+    if (!delivered)
+    {
+        bug("[Kernel:IOAPIC] 8254 timer not connected to IO-APIC pin %u, IRQ 0 stays on the 8259A\n", pin);
+        KERNELIRQ_ICID(0) = xtpicIC->ic_Id;
+        KERNELIRQ_ICINST(0) = 0;
+        i8259a_MaskAll(xtpicIC->ic_Private);
+        if (ictl_is_irq_enabled(0, KernelBase))
+            i8259a_IntrController.ic_IntrEnable(xtpicIC->ic_Private, 0, 0);
+    }
+
+#if defined(__x86_64__)
+    asm volatile("pushq %0; popfq" :: "r"(flags) : "memory", "cc");
+#else
+    asm volatile("pushl %0; popfl" :: "r"(flags) : "memory", "cc");
+#endif
+}
+
 BOOL IOAPICInt_Init(struct KernelBase *KernelBase, icinstid_t instanceCount)
 {
     struct PlatformData *kernPlatD = (struct PlatformData *)KernelBase->kb_PlatformData;
@@ -499,6 +575,8 @@ BOOL IOAPICInt_Init(struct KernelBase *KernelBase, icinstid_t instanceCount)
                 }
             }
             ioapicData->ioapic_Flags |= IOAPICF_ENABLED;
+            if ((instance == 0) && (xtpicIC))
+                IOAPIC_CheckTimer(KernelBase, ioapicData, apicPrivate, xtpicIC);
         }
         ioapic_irqbase += ioapicData->ioapic_IRQCount;
     }

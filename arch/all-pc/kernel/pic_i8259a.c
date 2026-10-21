@@ -234,6 +234,15 @@ struct IntrController i8259a_IntrController =
     .ic_IntrAck     = i8259a_AckIntr,
 };
 
+/* Mask every IRQ, keeping the tracked mask in step with the hardware */
+void i8259a_MaskAll(APTR icPrivate)
+{
+    struct i8259a_Private *xtpicPriv = (struct i8259a_Private *)icPrivate;
+
+    xtpicPriv->irq_ic[0].irq_mask = 0xFFFF;
+    i8259a_Disable();
+}
+
 void i8259a_Disable()
 {
     /* Mask all pic interrupts */
