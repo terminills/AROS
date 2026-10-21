@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2015, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 
     File requester specific code.
 */
@@ -1469,8 +1469,8 @@ STATIC ULONG FRHandleEvents(struct LayoutData *ld, struct AslBase_intern *AslBas
                                     ActivateGadget((struct Gadget *)udata->FileGad, ld->ld_Window, NULL);
                                 }
                             }
-                            GetAttr(STRINGA_TextVal, udata->FileGad, (IPTR *)&dir);
-                            FRAddPath(dir, ld, AslBase);
+                            GetAttr(STRINGA_TextVal, udata->PathGad, (IPTR *)&dir);
+                            FRNewPath(dir, ld, AslBase);
                             FRSetFile(ifreq->ifr_File, ld, AslBase);
                         }
                         break;
