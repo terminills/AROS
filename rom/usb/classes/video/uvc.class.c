@@ -89,6 +89,18 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
             ULONG h = p[7] | ((ULONG)p[8] << 8);
             ULONG interval = p[21] | ((ULONG)p[22] << 8) |
                              ((ULONG)p[23] << 16) | ((ULONG)p[24] << 24);
+            /* Start with a conservative advertised rate (at least 10 fps).
+             * Discrete intervals follow the fixed 26-byte frame descriptor. */
+            if (p[25] && p[0] >= 26 + 4 * (ULONG)p[25]) {
+                ULONG j;
+                for (j = 0; j < p[25]; ++j) {
+                    UBYTE *q = p + 26 + 4*j;
+                    ULONG candidate = q[0] | ((ULONG)q[1]<<8) |
+                        ((ULONG)q[2]<<16) | ((ULONG)q[3]<<24);
+                    if (candidate > interval && candidate <= 1000000)
+                        interval = candidate;
+                }
+            }
             if (w && h && !(w & 1) && w <= 640 && h <= 480 && interval &&
                 (!best || w*h < best)) {
                 best = w*h;
