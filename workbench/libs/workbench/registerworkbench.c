@@ -1,8 +1,9 @@
 /*
-    Copyright (C) 1995-2003, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
 */
 
 #include "workbench_intern.h"
+#include "support.h"
 #include <workbench/workbench.h>
 
 /*****************************************************************************
@@ -63,6 +64,9 @@
         this context means the program that is the file manager and handles
         the GUI, not a program that is started using OpenWorkbenchObjectA()!
 
+        The command search path of the calling process becomes the one
+        returned by WorkbenchControl(WBCTRLA_DuplicateSearchPath).
+
     EXAMPLE
 
     BUGS
@@ -84,8 +88,20 @@
     
         if (WorkbenchBase->wb_WorkbenchPort == NULL)
         {
+            struct Process *me = (struct Process *)FindTask(NULL);
+            struct CommandLineInterface *cli;
+
             WorkbenchBase->wb_WorkbenchPort = messageport;
             success = TRUE;
+
+            if (me->pr_Task.tc_Node.ln_Type == NT_PROCESS && (cli = Cli()) != NULL
+                && cli->cli_CommandDir != BNULL)
+            {
+                BPTR old = WorkbenchBase->wb_SearchPath;
+
+                WorkbenchBase->wb_SearchPath = DuplicateSearchPath(cli->cli_CommandDir);
+                FreeSearchPath(old);
+            }
         }
         
         ReleaseSemaphore(&(WorkbenchBase->wb_WorkbenchPortSemaphore));
