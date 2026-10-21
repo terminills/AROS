@@ -166,7 +166,17 @@ BOOL Amdgpu_KMS_SetMode(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, drmModeMod
     connector_id = kms->connector->connector_id;
 
     LOCK_KMS(kms);
+    {
+        extern struct Task *amdgpu_diag_modeset_task;
+        extern unsigned long amdgpu_diag_phase;
+        amdgpu_diag_modeset_task = FindTask(NULL);
+        amdgpu_diag_phase = 1;
+    }
     ret = drmModeSetCrtc(kms->fd, kms->crtc_id, fb->fbid, 0, 0, &connector_id, 1, mode);
+    {
+        extern unsigned long amdgpu_diag_phase;
+        amdgpu_diag_phase = ret == 0 ? 90 : 91;
+    }
     if (ret == 0)
     {
         /*

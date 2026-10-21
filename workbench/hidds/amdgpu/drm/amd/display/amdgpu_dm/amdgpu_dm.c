@@ -10508,6 +10508,9 @@ static void amdgpu_dm_commit_streams(struct drm_atomic_state *state,
 
 	/* if there mode set or reset, disable eDP PSR, Replay */
 	if (mode_set_reset_required) {
+		extern unsigned long amdgpu_diag_phase;
+
+		amdgpu_diag_phase = 10;
 		if (dm->vblank_control_workqueue)
 			flush_workqueue(dm->vblank_control_workqueue);
 
@@ -10516,9 +10519,21 @@ static void amdgpu_dm_commit_streams(struct drm_atomic_state *state,
 	}
 
 	dm_enable_per_frame_crtc_master_sync(dc_state);
+	{
+		extern unsigned long amdgpu_diag_phase;
+		amdgpu_diag_phase = 11;
+	}
 	mutex_lock(&dm->dc_lock);
 	dc_exit_ips_for_hw_access(dm->dc);
+	{
+		extern unsigned long amdgpu_diag_phase;
+		amdgpu_diag_phase = 12;
+	}
 	WARN_ON(!dc_commit_streams(dm->dc, &params));
+	{
+		extern unsigned long amdgpu_diag_phase;
+		amdgpu_diag_phase = 7;
+	}
 
 	/* Allow idle optimization when vblank count is 0 for display off */
 	if ((dm->active_vblank_irq_count == 0) && amdgpu_dm_is_headless(dm->adev))
@@ -10817,6 +10832,7 @@ static int amdgpu_dm_atomic_setup_commit(struct drm_atomic_state *state)
  */
 static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
 {
+	extern unsigned long amdgpu_diag_phase;
 	struct drm_device *dev = state->dev;
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	struct amdgpu_display_manager *dm = &adev->dm;
@@ -10824,6 +10840,8 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
 	struct dc_state *dc_state = NULL;
 	u32 i, j;
 	struct drm_crtc *crtc;
+
+	amdgpu_diag_phase = 6;
 	struct drm_crtc_state *old_crtc_state, *new_crtc_state;
 	unsigned long flags;
 	bool wait_for_vblank = true;

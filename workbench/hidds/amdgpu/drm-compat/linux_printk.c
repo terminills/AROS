@@ -451,20 +451,37 @@ static void nlog_flusher(void)
          */
         if (!created && name[0] == '\0')
         {
-            /* one file per boot, so the log of a failed boot survives the next one */
+            /*
+             * One file per boot, so the log of a failed boot survives the
+             * next one. The laptop clock reads the same time at every boot
+             * and the low TSC bits repeated across boots (ddd4 twice, 620
+             * then 621 on 2026-10-20), so an existing name is never reused:
+             * the sequence number is probed until the name is free.
+             */
             struct DateStamp ds;
             char suffix[32];
+            const char *vols[] = { "Efi:", "SYS:" };
+            int v;
 
             DateStamp(&ds);
-            /* the laptop clock reads the same time at every boot; the TSC does not */
-            snprintf(suffix, sizeof(suffix), "%ld-%ld-%04lx", (long)ds.ds_Days, (long)ds.ds_Minute,
-                     (unsigned long)(__builtin_ia32_rdtsc() & 0xffff));
-            snprintf(name, sizeof(name), "Efi:amdgpu-%s.log", suffix);
-            fh = Open(name, MODE_NEWFILE);
-            if (!fh)
+            fh = BNULL;
+            for (v = 0; v < 2 && !fh; v++)
             {
-                snprintf(name, sizeof(name), "SYS:amdgpu-%s.log", suffix);
-                fh = Open(name, MODE_NEWFILE);
+                unsigned long seq;
+
+                for (seq = 1; seq < 1000; seq++)
+                {
+                    BPTR lock;
+
+                    snprintf(suffix, sizeof(suffix), "%ld-%ld-%03lu", (long)ds.ds_Days, (long)ds.ds_Minute, seq);
+                    snprintf(name, sizeof(name), "%samdgpu-%s.log", vols[v], suffix);
+                    lock = Lock(name, SHARED_LOCK);
+                    if (!lock)
+                        break;
+                    UnLock(lock);
+                }
+                if (seq < 1000)
+                    fh = Open(name, MODE_NEWFILE);
             }
             if (!fh)
             {
@@ -652,6 +669,57 @@ static void nlog_ready_tasks(void)
         CloseLibrary(DebugBase);
 }
 
+/*
+ * The task inside the first mode set: its state and signals, and the hidd
+ * return addresses on its stack (a sleeping task's call chain), for the
+ * strip and the log.
+ */
+extern struct Task *amdgpu_diag_modeset_task;
+extern unsigned long amdgpu_diag_phase;
+extern char amdgpu_diag_modeset_trace[160];
+
+static void nlog_modeset_trace(void)
+{
+    struct Task *t = amdgpu_diag_modeset_task;
+    struct Library *DebugBase;
+    char line[160];
+    int len, found = 0;
+
+    if (!t)
+        return;
+    DebugBase = OpenLibrary("debug.library", 0);
+    Forbid();
+    len = snprintf(line, sizeof(line), "%.12s st%d sw%lx sr%lx", t->tc_Node.ln_Name ? t->tc_Node.ln_Name : "?",
+                   (int)t->tc_State, (unsigned long)t->tc_SigWait, (unsigned long)t->tc_SigRecvd);
+    if (DebugBase && t->tc_State != TS_RUN && t->tc_SPReg && t->tc_SPUpper)
+    {
+        IPTR *sp = (IPTR *)((IPTR)t->tc_SPReg & ~(IPTR)7);
+        IPTR *top = (IPTR *)t->tc_SPUpper;
+        int words = 0;
+
+        for (; sp < top && words < 8192 && found < 5 && len < (int)sizeof(line) - 28; sp++, words++)
+        {
+            char *mod = NULL, *sym = NULL;
+            APTR start = NULL;
+            struct TagItem tags[] = { { DL_ModuleName, (IPTR)&mod }, { DL_SymbolName, (IPTR)&sym },
+                                      { DL_SymbolStart, (IPTR)&start }, { TAG_DONE, 0 } };
+
+            if (*sp < 0x10000)
+                continue;
+            if (!DecodeLocationA((APTR)*sp, tags) || !mod || !strstr(mod, "amdgpu"))
+                continue;
+            len += snprintf(line + len, sizeof(line) - len, " %.22s+%lx", sym ? sym : "?",
+                            (unsigned long)(*sp - (IPTR)start));
+            found++;
+        }
+    }
+    Permit();
+    strcpy(amdgpu_diag_modeset_trace, line);
+    amdgpu_compat_log("[alive]   modeset: ph%lu %s\n", amdgpu_diag_phase, line);
+    if (DebugBase)
+        CloseLibrary(DebugBase);
+}
+
 static void nlog_alive(void)
 {
     ULONG n = 0;
@@ -664,6 +732,7 @@ static void nlog_alive(void)
         if (amdgpu_diag_level == 4)
             continue;
         nlog_ready_tasks();
+        nlog_modeset_trace();
         compat_irq_counts(&raw, &handled);
         amdgpu_compat_log("[alive] %lu: 2d calls %lu posted %lu ops %lu/%lu flush %lu/%lu last op %lu fence timeouts %lu, irq raw %lu handled %lu\n",
             (unsigned long)++n, (unsigned long)amdgpu_2d_diag[0], (unsigned long)amdgpu_2d_diag[1],

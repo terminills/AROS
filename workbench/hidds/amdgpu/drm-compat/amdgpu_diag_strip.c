@@ -26,6 +26,11 @@ struct Task *amdgpu_diag_spin_owner;
 void *amdgpu_diag_spin_lock;
 unsigned long amdgpu_diag_spins;
 
+/* the task inside Amdgpu_KMS_SetMode, the commit phase it reached, and its stack trace (heartbeat) */
+struct Task *amdgpu_diag_modeset_task;
+unsigned long amdgpu_diag_phase;
+char amdgpu_diag_modeset_trace[160];
+
 extern ULONG amdgpu_2d_diag[8];
 extern unsigned long amdgpu_diag_vbl[16];
 extern void compat_irq_counts(ULONG *raw, ULONG *handled);
@@ -99,7 +104,7 @@ static const char *strip_glyph(char c)
 #define SCALE   3
 #define CELLW   (4 * SCALE)
 #define CELLH   (6 * SCALE)
-#define LINES   4
+#define LINES   5
 
 static void strip_text(struct Amdgpu_FB *fb, ULONG y0, const char *s)
 {
@@ -197,6 +202,9 @@ static void strip_paint(void)
                   (unsigned long)(IPTR)amdgpu_diag_spin_lock);
         strip_text(fb, y0 + SCALE + 3 * CELLH, line);
     }
+
+    strip_fmt(line, sizeof(line), "MS ph%lu %s", amdgpu_diag_phase, amdgpu_diag_modeset_trace);
+    strip_text(fb, y0 + SCALE + 4 * CELLH, line);
 
     for (i = 0; i < STRIP_TASKS; i++)
     {

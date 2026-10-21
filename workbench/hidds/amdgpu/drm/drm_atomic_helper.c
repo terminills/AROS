@@ -1941,8 +1941,11 @@ EXPORT_SYMBOL(drm_atomic_helper_wait_for_vblanks);
 void drm_atomic_helper_wait_for_flip_done(struct drm_device *dev,
 					  struct drm_atomic_state *state)
 {
+	extern unsigned long amdgpu_diag_phase;
 	struct drm_crtc *crtc;
 	int i;
+
+	amdgpu_diag_phase = 9;
 
 	for (i = 0; i < dev->mode_config.num_crtc; i++) {
 		struct drm_crtc_commit *commit = state->crtcs[i].commit;
@@ -2030,8 +2033,11 @@ EXPORT_SYMBOL(drm_atomic_helper_commit_tail_rpm);
 
 static void commit_tail(struct drm_atomic_state *state)
 {
+	extern unsigned long amdgpu_diag_phase;
 	struct drm_device *dev = state->dev;
 	const struct drm_mode_config_helper_funcs *funcs;
+
+	amdgpu_diag_phase = 5;
 	struct drm_crtc_state *new_crtc_state;
 	struct drm_crtc *crtc;
 	ktime_t start;
@@ -2244,6 +2250,9 @@ int drm_atomic_helper_commit(struct drm_device *dev,
 			     bool nonblock)
 {
 	int ret;
+	extern unsigned long amdgpu_diag_phase;
+
+	amdgpu_diag_phase = 2;
 
 	if (state->async_update) {
 		ret = drm_atomic_helper_prepare_planes(dev, state);
@@ -2508,7 +2517,10 @@ crtc_or_fake_commit(struct drm_atomic_state *state, struct drm_crtc *crtc)
 int drm_atomic_helper_setup_commit(struct drm_atomic_state *state,
 				   bool nonblock)
 {
+	extern unsigned long amdgpu_diag_phase;
 	struct drm_crtc *crtc;
+
+	amdgpu_diag_phase = 3;
 	struct drm_crtc_state *old_crtc_state, *new_crtc_state;
 	struct drm_connector *conn;
 	struct drm_connector_state *old_conn_state, *new_conn_state;
@@ -2633,7 +2645,10 @@ EXPORT_SYMBOL(drm_atomic_helper_setup_commit);
  */
 void drm_atomic_helper_wait_for_dependencies(struct drm_atomic_state *state)
 {
+	extern unsigned long amdgpu_diag_phase;
 	struct drm_crtc *crtc;
+
+	amdgpu_diag_phase = 4;
 	struct drm_crtc_state *old_crtc_state;
 	struct drm_plane *plane;
 	struct drm_plane_state *old_plane_state;
@@ -2726,7 +2741,10 @@ EXPORT_SYMBOL(drm_atomic_helper_fake_vblank);
  */
 void drm_atomic_helper_commit_hw_done(struct drm_atomic_state *state)
 {
+	extern unsigned long amdgpu_diag_phase;
 	struct drm_crtc *crtc;
+
+	amdgpu_diag_phase = 8;
 	struct drm_crtc_state *old_crtc_state, *new_crtc_state;
 	struct drm_crtc_commit *commit;
 	int i;
