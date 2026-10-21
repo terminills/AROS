@@ -22,7 +22,17 @@ three-second deadline; alternate-setting cleanup gets one additional second.
 
 ## Build and test
 
-Run the targets sequentially in a configured ADT build directory:
+Initialize the upstream-pinned submodules before a fresh system build:
+
+```
+git submodule update --init --recursive
+```
+
+With an external GCC toolchain, build `linklibs-libatomic` into the private SDK
+if it is absent. Run the normal `make` system target before `make bootiso`;
+`bootiso` alone can package a kernel/test-only tree without a desktop.
+
+Run the camera targets sequentially in a configured ADT build directory:
 
 ```
 make -j8 kernel-usb-classes-uvc
