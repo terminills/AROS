@@ -64,6 +64,7 @@ AROS_AMDGPU_DRMCORE_SOURCES = \
             drm-compat/linux_mem \
             drm-compat/linux_pci \
             drm-compat/linux_printk \
+            drm-compat/amdgpu_diag_strip \
             drm-compat/linux_sched \
             drm-compat/linux_string \
             drm-compat/linux_time \

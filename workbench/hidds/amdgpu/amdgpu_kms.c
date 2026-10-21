@@ -180,6 +180,10 @@ BOOL Amdgpu_KMS_SetMode(struct Amdgpu_KMS *kms, struct Amdgpu_FB *fb, drmModeMod
             fb->map = map;
         kms->curfb = fb;
         kms->curmode = mode;
+        {
+            extern struct Amdgpu_KMS *amdgpu_diag_kms;
+            amdgpu_diag_kms = kms;
+        }
         if (kms->clone_connector)
             Amdgpu_KMS_SetClone(kms, fb, mode);
     }
