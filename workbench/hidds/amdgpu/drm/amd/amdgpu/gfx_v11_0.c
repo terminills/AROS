@@ -6470,6 +6470,44 @@ static u32 amdgpu_diag_rd(u32 *p, u32 *after)
 	return v;
 }
 
+/* laptop diag: the platform timer picture - HPET, PIT channel 0, IO-APIC pin 2 */
+static void amdgpu_diag_timer(void)
+{
+	extern void amdgpu_compat_log(const char *fmt, ...);
+	static volatile u32 *hpet, *ioapic;
+	u32 cap = 0, conf = 0, t0c = 0, t0cmp = 0, rte_lo = 0, rte_hi = 0;
+	u64 mc0 = 0, mc1 = 0;
+	u8 lo, hi, lo2, hi2;
+
+	if (!hpet)
+		hpet = ioremap(0xFED00000, 0x1000);
+	if (!ioapic)
+		ioapic = ioremap(0xFEC00000, 0x100);
+	if (hpet) {
+		cap = hpet[0];
+		conf = hpet[0x10 / 4];
+		mc0 = *(volatile u64 *)&hpet[0xF0 / 4];
+		t0c = hpet[0x100 / 4];
+		t0cmp = hpet[0x108 / 4];
+		mc1 = *(volatile u64 *)&hpet[0xF0 / 4];
+	}
+	asm volatile("outb %%al, $0x43" : : "a"((u8)0x00));
+	asm volatile("inb $0x40, %%al" : "=a"(lo));
+	asm volatile("inb $0x40, %%al" : "=a"(hi));
+	asm volatile("outb %%al, $0x43" : : "a"((u8)0x00));
+	asm volatile("inb $0x40, %%al" : "=a"(lo2));
+	asm volatile("inb $0x40, %%al" : "=a"(hi2));
+	if (ioapic) {
+		ioapic[0] = 0x14;
+		rte_lo = ioapic[4];
+		ioapic[0] = 0x15;
+		rte_hi = ioapic[4];
+	}
+	amdgpu_compat_log("[diag] timer: hpet cap %08x conf %08x t0 conf %08x cmp %08x main %llx->%llx | pit ch0 %u->%u | ioapic pin2 rte %08x:%08x\n",
+		cap, conf, t0c, t0cmp, (unsigned long long)mc0, (unsigned long long)mc1,
+		(unsigned)lo | ((unsigned)hi << 8), (unsigned)lo2 | ((unsigned)hi2 << 8), rte_hi, rte_lo);
+}
+
 void amdgpu_diag_snapshot(void)
 {
 	extern void *amdgpu_diag_adev;
@@ -6482,6 +6520,7 @@ void amdgpu_diag_snapshot(void)
 
 	if (!adev)
 		return;
+	amdgpu_diag_timer();
 	ring = &adev->gfx.gfx_ring[0];
 	ih = &adev->irq.ih;
 	seq0 = amdgpu_diag_rd(ring->fence_drv.cpu_addr, &seq1);
