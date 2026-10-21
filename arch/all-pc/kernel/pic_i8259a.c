@@ -138,6 +138,16 @@ BOOL i8259a_Init(struct KernelBase *KernelBase, icinstid_t instanceCount)
     xtpicPriv = (struct i8259a_Private *)
         AllocMem(sizeof(struct i8259a_Private)
         + sizeof(struct i8259a_Instance) * instanceCount, MEMF_ANY);
+    if (!xtpicPriv && instanceCount <= 2)
+    {
+        /* The controller may be set up before the allocator is usable */
+        static struct {
+            struct i8259a_Private priv;
+            struct i8259a_Instance inst[2];
+        } i8259a_static;
+
+        xtpicPriv = &i8259a_static.priv;
+    }
 
     if ((i8259a_IntrController.ic_Private = xtpicPriv) != NULL)
     {

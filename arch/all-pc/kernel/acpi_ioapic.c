@@ -281,9 +281,14 @@ static void IOAPIC_CheckTimer(struct KernelBase *KernelBase, struct IOAPICCfgDat
     if (!delivered)
     {
         if (forcePIC)
-            bug("[Kernel:IOAPIC] irq0pic: IRQ 0 stays on the 8259A\n");
+            bug("[Kernel:IOAPIC] irq0pic: IRQ 0 stays on the 8259A (ic %p private %p)\n", xtpicIC, xtpicIC->ic_Private);
         else
-            bug("[Kernel:IOAPIC] 8254 timer not connected to IO-APIC pin %u, IRQ 0 stays on the 8259A\n", pin);
+            bug("[Kernel:IOAPIC] 8254 timer not connected to IO-APIC pin %u, IRQ 0 stays on the 8259A (private %p)\n", pin, xtpicIC->ic_Private);
+        if (!xtpicIC->ic_Private)
+        {
+            bug("[Kernel:IOAPIC] 8259A controller has no private data, cannot route IRQ 0 to it\n");
+            goto out;
+        }
         KERNELIRQ_ICID(0) = xtpicIC->ic_Id;
         KERNELIRQ_ICINST(0) = 0;
         i8259a_MaskAll(xtpicIC->ic_Private);
@@ -291,6 +296,7 @@ static void IOAPIC_CheckTimer(struct KernelBase *KernelBase, struct IOAPICCfgDat
             i8259a_IntrController.ic_IntrEnable(xtpicIC->ic_Private, 0, 0);
     }
 
+out:
 #if defined(__x86_64__)
     asm volatile("pushq %0; popfq" :: "r"(flags) : "memory", "cc");
 #else
