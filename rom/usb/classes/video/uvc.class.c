@@ -186,6 +186,8 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     struct MsgPort *mp = NULL, *tp = NULL;
     struct timerequest *timer = NULL;
     APTR control = NULL, pipes[64] = {0};
+    APTR streamalt = nch->ncu_StreamAltIf, streamep = nch->ncu_StreamEP;
+    ULONG streamsize = nch->ncu_StreamMaxPkt;
     BOOL pending[64] = {0};
     ULONG slots = 0, slot = 0;
     UBYTE *raw = NULL, *payload = NULL;
@@ -238,20 +240,41 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     psdPipeSetup(control, URTF_OUT|URTF_CLASS|URTF_INTERFACE,
                  UVUDR_SET_CUR, UVVSCS_COMMIT_CONTROL << 8, ifnum);
     if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer)) goto out;
+    if (!nch->ncu_IsBulk) {
+        struct List *alts = NULL;
+        struct Node *node;
+        psdGetAttrs(PGA_INTERFACE, nch->ncu_VSInterface,
+                    IFA_AlternateIfList, &alts, TAG_END);
+        if (alts) for (node=alts->lh_Head; node->ln_Succ; node=node->ln_Succ) {
+            APTR ep = psdFindEndpoint((APTR)node, NULL, EA_IsIn, TRUE,
+                                      EA_TransferType, USEAF_ISOCHRONOUS, TAG_END);
+            IPTR packet = 0, transactions = 1;
+            ULONG bytes;
+            if (!ep) continue;
+            psdGetAttrs(PGA_ENDPOINT, ep, EA_MaxPktSize, &packet,
+                        EA_NumTransMuFrame, &transactions, TAG_END);
+            bytes = packet * transactions;
+            if (bytes >= maxpayload && bytes < streamsize) {
+                streamsize = bytes;
+                streamalt = (APTR)node;
+                streamep = ep;
+            }
+        }
+    }
     stage = "alternate";
     /* psdSetAltInterface updates Poseidon's selected-interface bookkeeping. */
     if (!nch->ncu_IsBulk) {
         /* SET_INTERFACE can succeed even if its confirming GET times out. */
         active = TRUE;
-        if (!uvc_alt(ps, control, nch->ncu_StreamAltIf, mp, timer)) goto out;
+        if (!uvc_alt(ps, control, streamalt, mp, timer)) goto out;
     }
-    size = nch->ncu_IsBulk ? maxpayload : nch->ncu_StreamMaxPkt;
+    size = nch->ncu_IsBulk ? maxpayload : streamsize;
     raw = AllocVec(nch->ncu_MaxFrameBuf, MEMF_PUBLIC);
     slots = nch->ncu_IsBulk ? 2 : 64;
     payload = AllocVec(size * slots, MEMF_PUBLIC);
     if (!raw || !payload) goto out;
     for (i=0; i<slots; ++i) {
-        pipes[i] = psdAllocPipe(nch->ncu_Device, mp, nch->ncu_StreamEP);
+        pipes[i] = psdAllocPipe(nch->ncu_Device, mp, streamep);
         if (!pipes[i]) goto out;
         psdSetAttrs(PGA_PIPE, pipes[i], PPA_AllowRuntPackets, TRUE,
                     PPA_NakTimeout, TRUE, PPA_NakTimeoutTime, 1000, TAG_END);
