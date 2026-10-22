@@ -170,9 +170,10 @@ static void hda_dma_fromdevice_done(APTR addr, ULONG len)
  * Allocate zeroed memory aligned to `boundary`; the raw allocation is
  * returned through `unaligned` for FreeVec().
  */
-static APTR hda_alloc_aligned(ULONG size, APTR *unaligned, ULONG boundary)
+static APTR hda_alloc_aligned(ULONG size, APTR *unaligned, ULONG boundary,
+                              ULONG flags)
 {
-    APTR mem = AllocVec(size + boundary, MEMF_PUBLIC | MEMF_CLEAR);
+    APTR mem = AllocVec(size + boundary, MEMF_PUBLIC | MEMF_CLEAR | flags);
 
     *unaligned = mem;
     if (mem)
@@ -360,7 +361,8 @@ static BOOL HDA_InitCORB(struct HDAData *hc)
     }
 
     hc->hc_CORB = hda_alloc_aligned(4 * hc->hc_CORBEntries,
-                                    &hc->hc_CORBUnaligned, 128);
+                                    &hc->hc_CORBUnaligned, 128,
+                                    hc->hc_DMAFlags);
     if (!hc->hc_CORB)
         return FALSE;
 
@@ -435,7 +437,8 @@ static BOOL HDA_InitRIRB(struct HDAData *hc)
     hc->hc_RIRBReadPos = 0;
 
     hc->hc_RIRB = hda_alloc_aligned(4 * 2 * hc->hc_RIRBEntries,
-                                    &hc->hc_RIRBUnaligned, 128);
+                                    &hc->hc_RIRBUnaligned, 128,
+                                    hc->hc_DMAFlags);
     if (!hc->hc_RIRB)
         return FALSE;
 
@@ -556,6 +559,14 @@ BOOL HDA__Hidd_HDA__Setup(OOP_Class *cl, OOP_Object *o,
         hda_log(hc, "no codec requested a state change: nothing on the link");
         goto fail;
     }
+
+    /* GCAP 64OK: without it the controller only takes 32-bit addresses */
+    if (hda_readw(hc, HD_GCAP) & HD_GCAP_64OK)
+        hc->hc_DMAFlags = 0;
+    else
+        hc->hc_DMAFlags = MEMF_31BIT;
+    hda_log(hc, "DMA: GCAP 64OK %s, buffers %s", hc->hc_DMAFlags ? "clear" : "set",
+            hc->hc_DMAFlags ? "below 2 GB" : "anywhere");
 
     if (!HDA_InitStreams(hc))
         goto fail;
@@ -968,14 +979,16 @@ BOOL HDA__Hidd_HDA__SetupStream(OOP_Class *cl, OOP_Object *o,
     HDA_FreeStreamBuffers(hs);
 
     hs->hs_BDL = hda_alloc_aligned(
-        sizeof(struct HDA_BDLE) * msg->bufferCount, &hs->hs_BDLUnaligned, 128);
+        sizeof(struct HDA_BDLE) * msg->bufferCount, &hs->hs_BDLUnaligned, 128,
+        hc->hc_DMAFlags);
     if (!hs->hs_BDL)
         return FALSE;
 
     for (i = 0; i < msg->bufferCount; i++)
     {
         APTR buffer = hda_alloc_aligned(msg->bufferSize,
-                                        &hs->hs_BuffersUnaligned[i], 128);
+                                        &hs->hs_BuffersUnaligned[i], 128,
+                                        hc->hc_DMAFlags);
 
         if (!buffer)
         {

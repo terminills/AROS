@@ -119,6 +119,7 @@ struct HDAData
     BOOL   hc_ResetHandlerAdded;
 
     UWORD  hc_CodecMask;
+    ULONG  hc_DMAFlags; /* MEMF_31BIT when GCAP says 32-bit addressing only */
 
     struct SignalSemaphore hc_VerbLock;
     ULONG *hc_CORB;
