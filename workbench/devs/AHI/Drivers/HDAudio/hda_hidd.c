@@ -426,12 +426,13 @@ struct pci_enum_ctx
 
 /*
     The audio function of a display adapter: a function other than 0
-    whose function 0 is a display device.
+    whose function 0 is a display device of the same vendor. AMD APUs
+    put the HD audio controller (1022) on the GPU's device (1002) too.
 */
 static BOOL device_is_display_audio(OOP_Object *dev)
 {
     OOP_Object *driver = NULL;
-    IPTR sub = 0, bus = 0, devnr = 0;
+    IPTR sub = 0, bus = 0, devnr = 0, vendor = 0;
     UWORD classword;
 
     OOP_GetAttr(dev, aHidd_PCIDevice_Sub, &sub);
@@ -447,8 +448,13 @@ static BOOL device_is_display_audio(OOP_Object *dev)
 
     classword = HIDD_PCIDriver_ReadConfigWord(driver, dev, bus, devnr, 0,
                                               0x0A);
+    if (((classword >> 8) & 0xFF) != 0x03)
+        return FALSE;
 
-    return ((classword >> 8) & 0xFF) == 0x03;
+    OOP_GetAttr(dev, aHidd_PCIDevice_VendorID, &vendor);
+
+    return HIDD_PCIDriver_ReadConfigWord(driver, dev, bus, devnr, 0, 0x00)
+           == (UWORD)vendor;
 }
 
 AROS_UFH3(static void, PCIEnumerator,
