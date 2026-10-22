@@ -34,7 +34,7 @@
 
 #define NPREFS_POSITIONS    { "BottomRight", "BottomLeft", "TopRight", "TopLeft", NULL }
 
-#define NDEF_POSITION       NPOS_BOTTOMRIGHT
+#define NDEF_POSITION       NPOS_TOPRIGHT
 #define NDEF_DISPLAYTIME    0
 #define NDEF_MAXVISIBLE     5
 #define NDEF_WIDTH          320
