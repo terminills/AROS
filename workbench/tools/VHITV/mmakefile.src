@@ -2,7 +2,7 @@
 
 include $(SRCDIR)/config/aros.cfg
 
-#MM- workbench-tools : workbench-tools-vhitv
+#MM- workbench-tools : workbench-tools-vhitv workbench-tools-vhitv-icon
 #MM- workbench-tools-vhitv : workbench-libs-vhi-uvc
 # The client dispatches through an explicitly opened VHI driver base and uses
 # only the public compiler/include/vhi/vhi.h ABI.
@@ -11,5 +11,8 @@ include $(SRCDIR)/config/aros.cfg
     progname=VHITV \
     files=VHITV \
     targetdir=$(AROS_TOOLS)
+
+%build_icons mmake=workbench-tools-vhitv-icon icons=VHITV \
+    dir=$(AROS_TOOLS) srcdir=$(SRCDIR)/$(CURDIR)/icons
 
 %common

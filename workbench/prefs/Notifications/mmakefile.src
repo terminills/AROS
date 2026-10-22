@@ -2,11 +2,14 @@
 
 include $(SRCDIR)/config/aros.cfg
 
-#MM- workbench-prefs : workbench-prefs-notifications
+#MM- workbench-prefs : workbench-prefs-notifications workbench-prefs-notifications-icon
 #MM workbench-prefs-notifications : includes linklibs workbench-libs-application
 
 %build_prog mmake=workbench-prefs-notifications \
     progname=Notifications targetdir=$(AROSDIR)/Prefs \
     files=notificationsprefs
+
+%build_icons mmake=workbench-prefs-notifications-icon icons=Notifications \
+    dir=$(AROSDIR)/Prefs srcdir=$(SRCDIR)/$(CURDIR)/icons
 
 %common
