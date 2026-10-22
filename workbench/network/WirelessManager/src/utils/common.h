@@ -53,6 +53,29 @@ static inline unsigned int bswap_32(unsigned int v)
 }
 #endif /* __APPLE__ */
 
+#ifdef __AROS__
+#include <endian.h>
+#define __BYTE_ORDER	_BYTE_ORDER
+#define __LITTLE_ENDIAN	_LITTLE_ENDIAN
+#define __BIG_ENDIAN	_BIG_ENDIAN
+static inline unsigned short bswap_16(unsigned short v)
+{
+	return ((v & 0xff) << 8) | (v >> 8);
+}
+
+static inline unsigned int bswap_32(unsigned int v)
+{
+	return ((v & 0xff) << 24) | ((v & 0xff00) << 8) |
+		((v & 0xff0000) >> 8) | (v >> 24);
+}
+
+static inline unsigned long long bswap_64(unsigned long long v)
+{
+	return ((unsigned long long) bswap_32(v & 0xffffffffULL) << 32) |
+		bswap_32(v >> 32);
+}
+#endif /* __AROS__ */
+
 #ifdef __rtems__
 #include <rtems/endian.h>
 #define __BYTE_ORDER BYTE_ORDER

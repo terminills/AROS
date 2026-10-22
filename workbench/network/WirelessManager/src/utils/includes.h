@@ -41,6 +41,14 @@
 #include <sys/uio.h>
 #include <sys/time.h>
 #endif /* __vxworks */
+#ifdef __AROS__
+/* inet(3) belongs to bsdsocket.library on AROS; os_amiga.c has standalone
+ * versions so that no socket library is needed */
+char * inet_ntoa(struct in_addr in);
+int inet_aton(const char *cp, struct in_addr *addr);
+const char * inet_ntop(int af, const void *src, char *dst, socklen_t size);
+int inet_pton(int af, const char *src, void *dst);
+#endif /* __AROS__ */
 #endif /* CONFIG_NATIVE_WINDOWS */
 
 #endif /* INCLUDES_H */

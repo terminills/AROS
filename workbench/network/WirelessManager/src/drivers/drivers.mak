@@ -77,6 +77,11 @@ DRV_CFLAGS += -DCONFIG_DRIVER_OPENBSD
 DRV_OBJS += ../src/drivers/driver_openbsd.o
 endif
 
+ifdef CONFIG_DRIVER_SANA2
+DRV_WPA_CFLAGS += -DCONFIG_DRIVER_SANA2
+DRV_WPA_OBJS += ../src/drivers/driver_sana2.o
+endif
+
 ifdef CONFIG_DRIVER_NONE
 DRV_CFLAGS += -DCONFIG_DRIVER_NONE
 DRV_OBJS += ../src/drivers/driver_none.o

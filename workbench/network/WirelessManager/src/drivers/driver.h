@@ -6990,5 +6990,8 @@ extern const struct wpa_driver_ops wpa_driver_atheros_ops;
 #ifdef CONFIG_DRIVER_NONE
 extern const struct wpa_driver_ops wpa_driver_none_ops; /* driver_none.c */
 #endif /* CONFIG_DRIVER_NONE */
+#ifdef CONFIG_DRIVER_SANA2
+extern const struct wpa_driver_ops wpa_driver_sana2_ops; /* driver_sana2.c */
+#endif /* CONFIG_DRIVER_SANA2 */
 
 #endif /* DRIVER_H */
