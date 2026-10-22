@@ -296,7 +296,8 @@ static BOOL HDA_ResetChip(struct HDAData *hc)
 
     hda_log(hc, "reset: entered after %d x 100 us", counter);
 
-    hda_usleep(100);
+    /* >= 100 us for the codec PLLs to settle (spec 5.5.1); 500 as Linux */
+    hda_usleep(500);
     hda_setl(hc, HD_GCTL, 1);
 
     for (counter = 0; counter < 1000; counter++)
@@ -319,6 +320,14 @@ static BOOL HDA_ResetChip(struct HDAData *hc)
 
     /* Wait for the codecs to request state change (min. 521us, be generous) */
     hda_usleep(1000);
+
+    if (hda_readb(hc, HD_GCTL) == 0)
+    {
+        D(bug("[HDA] Controller not ready after reset!\n"));
+        hda_log(hc, "reset: GCTL reads 0 after leaving reset, "
+                "controller not ready");
+        return FALSE;
+    }
 
     return TRUE;
 }
