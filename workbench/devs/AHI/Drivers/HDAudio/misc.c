@@ -58,6 +58,8 @@ static BOOL forceQuery = FALSE;
 static BOOL dumpAll = FALSE;
 static int force_speaker_nid = 0;
 
+#define CODEC_PROBE_ATTEMPTS 5
+
 
 #ifdef __AROS__
 #define DebugPrintF bug
@@ -204,10 +206,31 @@ int card_init(struct HDAudioChip *card)
 
     D(bug("[HDAudio] Finding codec ..\n"));
 
-    /* Find the first codec with an audio function group */
+    /* Find the first codec with an audio function group. A codec can
+       stay silent for a while after the link reset; give each address a
+       few tries a second apart before moving on. */
     for(i = 0; i < 16; i++) {
         if(card->codecbits & (1 << i)) {
+            ULONG id = 0;
+            int attempt;
+
             card->codecnr = i;
+
+            for(attempt = 0; attempt < CODEC_PROBE_ATTEMPTS; attempt++) {
+                id = get_parameter(0, VERB_GET_PARMS_VENDOR_DEVICE, card);
+                if(id != 0 && id != 0xFFFFFFFF)
+                    break;
+                hda_log("codec %u: no answer to the vendor id verb, "
+                        "attempt %d of %d", i, attempt + 1,
+                        CODEC_PROBE_ATTEMPTS);
+                udelay(1000000);
+            }
+
+            if(id == 0 || id == 0xFFFFFFFF) {
+                hda_log("codec %u: silent, skipped", i);
+                continue;
+            }
+
             if(power_up_all_nodes(card))
                 break;
         }
