@@ -151,10 +151,15 @@ static void HDAPCI_Quirks(OOP_Object *dev, UWORD vendor, UWORD product)
 
     /*
      * Traffic Class Select: CORB, RIRB and stream data on TC0
-     * (Intel HD Audio specification, PCI configuration register 0x44)
+     * (Intel HD Audio specification, PCI configuration register 0x44).
+     * Not an HDA register on ATI/AMD controllers.
      */
-    data = HIDD_PCIDevice_ReadConfigByte(dev, 0x44);
-    HIDD_PCIDevice_WriteConfigByte(dev, 0x44, data & ~0x07);
+    if (vendor != 0x1002 && vendor != 0x1022)
+    {
+        hda_log("quirk: TCSEL (0x44 bits 0-2) cleared");
+        data = HIDD_PCIDevice_ReadConfigByte(dev, 0x44);
+        HIDD_PCIDevice_WriteConfigByte(dev, 0x44, data & ~0x07);
+    }
 
     if (vendor == 0x8086)
     {
