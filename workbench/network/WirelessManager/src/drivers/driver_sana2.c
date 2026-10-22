@@ -38,6 +38,7 @@
 #include "common.h"
 #include "common/ieee802_11_defs.h"
 #include "common/ieee802_11_common.h"
+#include "common/wpa_common.h"
 #include "driver.h"
 #include "driver_sana2.h"
 #include "eloop.h"
@@ -80,7 +81,8 @@ typedef LONG PINT;
  *   S2_WRITEMGMT. Both carry a complete IEEE 802.11 management frame.
  * S2_EXTAUTHSTATUS: the supplicant's result, ios2_WireError = IEEE 802.11
  *   status code (0 = success, the device then associates), ios2_DstAddr =
- *   BSSID.
+ *   BSSID, ios2_Data/ios2_DataLength = the 16-byte PMKID for the
+ *   association request when there is one.
  * S2AUTH_SAE: bit in S2INFO_AuthTypes, as WPA_AUTH_ALG_SAE.
  */
 #ifndef S2ENC_BIP_CMAC128
@@ -782,16 +784,23 @@ static int wpa_driver_sana2_send_external_auth_status(void *priv,
 	if (!drv->has_extauth)
 		return -1;
 
-	wpa_printf(MSG_DEBUG, "sana2: external authentication status %u",
-		   params->status);
+	wpa_printf(MSG_DEBUG, "sana2: external authentication status %u%s",
+		   params->status, params->pmkid ? " with PMKID" : "");
 	request->ios2_Req.io_Command = S2_EXTAUTHSTATUS;
 	request->ios2_WireError = params->status;
 	if (params->bssid != NULL)
 		CopyMem((APTR)params->bssid, request->ios2_DstAddr, ETH_ALEN);
 	else
 		os_memset(request->ios2_DstAddr, 0, ETH_ALEN);
-	request->ios2_Data = NULL;
-	request->ios2_DataLength = 0;
+	/* The PMKID goes into the association request's RSN element; an AP
+	 * that requires it answers status 53 without it */
+	if (params->status == WLAN_STATUS_SUCCESS && params->pmkid != NULL) {
+		request->ios2_Data = (APTR)params->pmkid;
+		request->ios2_DataLength = PMKID_LEN;
+	} else {
+		request->ios2_Data = NULL;
+		request->ios2_DataLength = 0;
+	}
 
 	return DoIO((APTR)request) == 0 ? 0 : -1;
 }
@@ -853,7 +862,13 @@ static void wpa_driver_sana2_event_extauth(struct wpa_driver_sana2_data *drv)
 	event_data.external_auth.bssid = drv->pending_bssid;
 	event_data.external_auth.ssid = drv->ssid;
 	event_data.external_auth.ssid_len = drv->ssid_len;
-	event_data.external_auth.key_mgmt_suite = drv->key_mgmt_suite;
+	/* The SME wants the RSN AKM selector (host order, OUI in the top
+	 * octets), not the WPA_KEY_MGMT_* bit */
+	event_data.external_auth.key_mgmt_suite =
+		wpa_akm_to_suite(drv->key_mgmt_suite);
+	wpa_printf(MSG_DEBUG, "sana2: external authentication for " MACSTR
+		   " (AKM %#x)", MAC2STR(drv->pending_bssid),
+		   event_data.external_auth.key_mgmt_suite);
 	wpa_supplicant_event(drv->ctx, EVENT_EXTERNAL_AUTH, &event_data);
 }
 
