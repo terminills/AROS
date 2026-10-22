@@ -39,6 +39,7 @@ PCI functions it wants to drive.
 #include <stdarg.h>
 
 #include "hda_hidd.h"
+#include "misc.h"
 
 #define MAX_CONTROLLERS 8
 
@@ -203,6 +204,45 @@ static void HDAPCI_Quirks(OOP_Object *dev, UWORD vendor, UWORD product)
     }
 }
 
+/*
+ * Bring the function to D0 before touching it. A D3hot->D0 transition
+ * may soft-reset the function (PMCSR bit 3 clear), which loses the
+ * BARs the firmware assigned; those are written back.
+ */
+static void HDAPCI_PowerUp(OOP_Object *dev, UWORD pmcap)
+{
+    UWORD pmcsr;
+    ULONG bar0lo, bar0hi;
+
+    if (!pmcap)
+        return;
+
+    pmcsr = HIDD_PCIDevice_ReadConfigWord(dev, pmcap + 4);
+    if ((pmcsr & 0x3) == 0)
+        return;
+
+    bar0lo = HIDD_PCIDevice_ReadConfigLong(dev, 0x10);
+    bar0hi = HIDD_PCIDevice_ReadConfigLong(dev, 0x14);
+
+    HIDD_PCIDevice_WriteConfigWord(dev, pmcap + 4, pmcsr & ~0x3);
+    /* PCI PM 1.2 5.6.1: 10 ms recovery after leaving D3hot */
+    udelay(10000);
+
+    hda_log("power: PMCSR %04x -> %04x, BAR0 %08x:%08x -> %08x:%08x%s",
+            pmcsr, HIDD_PCIDevice_ReadConfigWord(dev, pmcap + 4),
+            bar0hi, bar0lo, HIDD_PCIDevice_ReadConfigLong(dev, 0x14),
+            HIDD_PCIDevice_ReadConfigLong(dev, 0x10),
+            (pmcsr & 0x8) ? "" : " (no NO_SOFT_RESET)");
+
+    if (HIDD_PCIDevice_ReadConfigLong(dev, 0x10) != bar0lo)
+    {
+        HIDD_PCIDevice_WriteConfigLong(dev, 0x10, bar0lo);
+        if ((bar0lo & 0x6) == 0x4)
+            HIDD_PCIDevice_WriteConfigLong(dev, 0x14, bar0hi);
+        hda_log("power: BAR0 written back");
+    }
+}
+
 static OOP_Object *HDAPCI__Root__New(OOP_Class *cl, OOP_Object *o,
         struct pRoot_New *msg)
 {
@@ -269,6 +309,8 @@ static APTR HDAPCI__Hidd_HDA__HWInit(OOP_Class *cl, OOP_Object *o,
             HIDD_PCIDevice_ReadConfigByte(dev, 0x42),
             HIDD_PCIDevice_ReadConfigByte(dev, 0x44),
             HIDD_PCIDevice_ReadConfigWord(dev, 0x78));
+
+    HDAPCI_PowerUp(dev, (UWORD)pmcap);
 
     command |= PCICMF_IODECODE | PCICMF_MEMDECODE | PCICMF_BUSMASTER;
     HIDD_PCIDevice_WriteConfigWord(dev, PCICS_COMMAND, command);
