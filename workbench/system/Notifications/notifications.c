@@ -14,6 +14,7 @@
 #include <dos/rdargs.h>
 #include <dos/notify.h>
 #include <dos/datetime.h>
+#include <dos/var.h>
 #include <devices/timer.h>
 #include <devices/input.h>
 #include <devices/inputevent.h>
@@ -21,6 +22,8 @@
 #include <intuition/screens.h>
 #include <intuition/intuitionbase.h>
 #include <graphics/rastport.h>
+#include <graphics/layers.h>
+#include <libraries/decortheme.h>
 #include <datatypes/datatypes.h>
 #include <datatypes/pictureclass.h>
 #include <datatypes/soundclass.h>
@@ -40,6 +43,8 @@
 #include <proto/application.h>
 #include <proto/openurl.h>
 #include <proto/utility.h>
+#include <proto/decorator.h>
+#include <proto/decortheme.h>
 #include <proto/alib.h>
 
 #include <string.h>
@@ -47,7 +52,7 @@
 #include "../../libs/application/application_server.h"
 #include "notifyprefs.h"
 
-#define VERSTAG "\0$VER: Notifications 1.1 (18.10.2026)"
+#define VERSTAG "\0$VER: Notifications 1.2 (22.10.2026)"
 static const char version[] __attribute__((used)) = VERSTAG;
 
 #define REXX_PORTNAME   "RINGHIO"
@@ -63,12 +68,16 @@ static const char version[] __attribute__((used)) = VERSTAG;
 #define MAX_QUEUED      32
 #define LOG_MAX         65536
 #define SOUND_SECS      30
+#define MENU_MIX        20          /* what Decoration mixes menus with */
+#define THEME_VAR       "SYS/theme.var"
 
 struct Library *ApplicationBase;
 struct Library *OpenURLBase;
 struct Library *CyberGfxBase;
 struct Library *DataTypesBase;
 struct Library *IconBase;
+struct Library *DecoratorBase;
+struct Library *DecorThemeBase;
 struct RxsLib *RexxSysBase;
 
 /* One notification, waiting or shown. */
@@ -104,6 +113,11 @@ struct Popup
     struct Window   *p_Window;
     struct Screen   *p_Screen;      /* locked while the pop-up is open */
     struct TextFont *p_Font;
+    struct DecorImage *p_Under;     /* the screen beneath the pop-up ... */
+    struct DecorImage *p_Back;      /* ... and the theme's menu drawn over it */
+    WORD             p_X, p_Y;
+    UWORD            p_W, p_H;
+    BOOL             p_Hover;
     LONG             p_TicksLeft;   /* < 0: stays until closed */
     ULONG            p_LastSecs, p_LastMicros;
     ULONG           *p_ARGB;        /* image, at most POPUP_IMAGE square, or NULL */
@@ -138,8 +152,26 @@ struct Settings
     TEXT    s_DefSound[NOTIFYSERVER_PATHMAX];
 };
 
-static struct MinList popups, waiting, rexxapps;
+/* Screen area a pop-up has just left; its copy of what was beneath it
+   stays valid until the stack has been rearranged. */
+struct Ghost
+{
+    struct MinNode     g_Node;
+    struct Screen     *g_Screen;
+    struct DecorImage *g_Under;
+    WORD               g_X, g_Y;
+    UWORD              g_W, g_H;
+};
+
+static struct MinList popups, waiting, rexxapps, ghosts;
 static ULONG numwaiting;
+
+/* The menu background of the theme C:Decoration runs with. */
+static struct DecorImage *menuimg;
+static struct TileInfo menutile, *menutilep;
+static ULONG menutint;
+static UWORD menupadl = POPUP_PAD, menupadt = POPUP_PAD, menupadr = POPUP_PAD, menupadb = POPUP_PAD;
+static TEXT themepath[256];
 static struct TextAttr topaz8 = { "topaz.font", 8, FS_NORMAL, FPF_ROMFONT };
 static struct MsgPort *idcmpport, *rexxport;
 static struct Settings set;
@@ -532,6 +564,169 @@ static void ParseGauges(struct Popup *p, CONST_STRPTR g)
     }
 }
 
+static void FreeMenuTheme(void)
+{
+    if (menuimg)
+        DDisposeImageContainer(menuimg);
+    menuimg = NULL;
+    menutilep = NULL;
+    menupadl = menupadt = menupadr = menupadb = POPUP_PAD;
+}
+
+/* Keep only the menu background of the theme named by SYS/theme.var, the
+   one C:Decoration loads at boot; reload when the variable changes. */
+static void LoadMenuTheme(void)
+{
+    struct Process *me = (struct Process *)FindTask(NULL);
+    struct DecorTheme *theme;
+    struct DecorImages *di;
+    struct DecorConfig *dc;
+    APTR oldwin;
+    TEXT path[256];
+
+    if (!DecorThemeBase || !DecoratorBase || !CyberGfxBase)
+        return;
+    if (GetVar(THEME_VAR, path, sizeof(path), GVF_GLOBAL_ONLY) <= 0)
+        path[0] = '\0';
+    if (strcmp(path, themepath) == 0)
+        return;
+    FreeMenuTheme();
+    strcpy(themepath, path);
+    if (!path[0])
+        return;
+
+    oldwin = me->pr_WindowPtr;
+    me->pr_WindowPtr = (APTR)-1;
+    theme = DTLoadTheme(path);
+    me->pr_WindowPtr = oldwin;
+    if (!theme)
+        return;
+
+    dc = DTGetConfig(theme);
+    di = DTGetImages(theme);
+    if (dc && di && di->img_menu && di->img_menu->data
+        && (menuimg = DNewDecorImageContainer(di->img_menu->w, di->img_menu->h)))
+    {
+        CopyMem(di->img_menu->data, menuimg->data,
+                (ULONG)menuimg->w * menuimg->h * sizeof(ULONG));
+        menuimg->ok = TRUE;
+        if (dc->MenuIsTiled)
+        {
+            menutile.TileLeft = dc->MenuTileLeft;
+            menutile.TileTop = dc->MenuTileTop;
+            menutile.TileRight = dc->MenuTileRight;
+            menutile.TileBottom = dc->MenuTileBottom;
+            menutilep = &menutile;
+        }
+        menutint = dc->MenuHighlightTint;
+        if (dc->MenuInnerLeft > menupadl)
+            menupadl = dc->MenuInnerLeft;
+        if (dc->MenuInnerTop > menupadt)
+            menupadt = dc->MenuInnerTop;
+        if (dc->MenuInnerRight > menupadr)
+            menupadr = dc->MenuInnerRight;
+        if (dc->MenuInnerBottom > menupadb)
+            menupadb = dc->MenuInnerBottom;
+    }
+    DTFreeTheme(theme);
+}
+
+static void DropGhosts(void)
+{
+    struct Ghost *g;
+
+    while ((g = (struct Ghost *)REMHEAD((struct List *)&ghosts)))
+    {
+        DDisposeImageContainer(g->g_Under);
+        FreeVec(g);
+    }
+}
+
+/* Remember what was beneath a pop-up that is about to leave its place. */
+static void LeaveGhost(struct Popup *p)
+{
+    struct Ghost *g;
+
+    if (!p->p_Under)
+        return;
+    if ((g = AllocVec(sizeof(*g), MEMF_ANY)))
+    {
+        g->g_Screen = p->p_Screen;
+        g->g_Under = p->p_Under;
+        g->g_X = p->p_X;
+        g->g_Y = p->p_Y;
+        g->g_W = p->p_W;
+        g->g_H = p->p_H;
+        ADDTAIL((struct List *)&ghosts, g);
+        p->p_Under = NULL;
+    }
+}
+
+static void DropBackground(struct Popup *p)
+{
+    if (p->p_Under)
+        DDisposeImageContainer(p->p_Under);
+    if (p->p_Back)
+        DDisposeImageContainer(p->p_Back);
+    p->p_Under = p->p_Back = NULL;
+}
+
+static void CopyUnder(struct DecorImage *src, WORD sx, WORD sy, UWORD sw, UWORD sh,
+                      struct DecorImage *dst, WORD dx, WORD dy, UWORD dw, UWORD dh)
+{
+    WORD x1 = sx > dx ? sx : dx, y1 = sy > dy ? sy : dy;
+    WORD x2 = sx + sw < dx + dw ? sx + sw : dx + dw;
+    WORD y2 = sy + sh < dy + dh ? sy + sh : dy + dh;
+
+    if (x1 < x2 && y1 < y2)
+        DDrawPartToImage(src, dst, x1 - sx, y1 - sy, x2 - x1, y2 - y1, x1 - dx, y1 - dy);
+}
+
+/* The screen beneath a rectangle. Where a pop-up is, or has just been,
+   its own copy of the screen is used, as the display there is ours. */
+static struct DecorImage *ScreenUnder(struct Screen *s, WORD x, WORD y, UWORD w, UWORD h)
+{
+    struct DecorImage *di = DGetImageFromRP(&s->RastPort, x, y, w, h);
+    struct Popup *q;
+    struct Ghost *g;
+
+    if (!di)
+        return NULL;
+    ForeachNode(&popups, q)
+        if (q->p_Screen == s && q->p_Under)
+            CopyUnder(q->p_Under, q->p_X, q->p_Y, q->p_W, q->p_H, di, x, y, w, h);
+    ForeachNode(&ghosts, g)
+        if (g->g_Screen == s)
+            CopyUnder(g->g_Under, g->g_X, g->g_Y, g->g_W, g->g_H, di, x, y, w, h);
+    di->ok = TRUE;
+    return di;
+}
+
+/* The theme's menu background for a pop-up at x,y, as Decoration makes it
+   for a menu window: the screen beneath, blurred, with the menu tiles
+   mixed over it. */
+static BOOL MakeBackground(struct Popup *p, WORD x, WORD y)
+{
+    struct DecorImage *under, *back;
+
+    if (!menuimg || GetBitMapAttr(p->p_Screen->RastPort.BitMap, BMA_DEPTH) < 15)
+        return FALSE;
+    if (!(under = ScreenUnder(p->p_Screen, x, y, p->p_W, p->p_H)))
+        return FALSE;
+    if (!(back = DNewDecorImageContainer(p->p_W, p->p_H)))
+    {
+        DDisposeImageContainer(under);
+        return FALSE;
+    }
+    DDrawPartToImage(under, back, 0, 0, p->p_W, p->p_H, 0, 0);
+    back->ok = TRUE;
+    DRenderMenuBackground(back, menuimg, menutilep, MENU_MIX);
+    DropBackground(p);
+    p->p_Under = under;
+    p->p_Back = back;
+    return TRUE;
+}
+
 #define GAUGE_HEIGHT(p) ((p)->p_Font->tf_YSize + 6)
 
 /* One bar: the level in its colour, the rest left empty, the label centred on it. */
@@ -591,9 +786,10 @@ static void DrawPopup(struct Popup *p)
     struct RastPort *rp = win->RPort;
     struct DrawInfo *dri = GetScreenDrawInfo(p->p_Screen);
     UWORD w = win->Width, h = win->Height;
-    UWORD tx = POPUP_PAD, ty, i;
+    UWORD tx = menupadl, ty, i;
+    BOOL themed = p->p_Back != NULL;
     UWORD bg = dri ? dri->dri_Pens[BACKGROUNDPEN] : 0;
-    UWORD fg = dri ? dri->dri_Pens[TEXTPEN] : 1;
+    UWORD fg = dri ? dri->dri_Pens[(themed && p->p_Hover) ? FILLTEXTPEN : TEXTPEN] : 1;
     UWORD shine = dri ? dri->dri_Pens[SHINEPEN] : 2;
     UWORD shadow = dri ? dri->dri_Pens[SHADOWPEN] : 1;
     UWORD hl = dri ? dri->dri_Pens[FILLPEN] : 3;
@@ -601,24 +797,41 @@ static void DrawPopup(struct Popup *p)
     SetFont(rp, p->p_Font);
     SetDrMd(rp, JAM1);
 
-    SetAPen(rp, bg);
-    RectFill(rp, 0, 0, w - 1, h - 1);
+    if (themed)
+    {
+        struct DecorImage *di = NULL;
 
-    /* a raised frame with an accent line along the top; urgent ones get
-       a thicker one */
-    SetAPen(rp, shine);
-    Move(rp, 0, h - 1);
-    Draw(rp, 0, 0);
-    Draw(rp, w - 1, 0);
-    SetAPen(rp, shadow);
-    Draw(rp, w - 1, h - 1);
-    Draw(rp, 0, h - 1);
-    SetAPen(rp, hl);
-    RectFill(rp, 1, 1, w - 2, p->p_Req.rq_Pri > 8 ? 4 : 2);
+        /* under the pointer: the theme's menu item highlight */
+        if (p->p_Hover && (di = DNewDecorImageContainer(w, h)))
+        {
+            DDrawPartToImage(p->p_Back, di, 0, 0, w, h, 0, 0);
+            DSetImageTint(di, 255 - (menutint >> 24), menutint & 0xffffff);
+            DPutImageToRP(rp, di, 0, 0);
+        }
+        else
+            DDrawPartImageToRP(rp, p->p_Back, 0, 0, 0, 0, w, h);
+    }
+    else
+    {
+        SetAPen(rp, bg);
+        RectFill(rp, 0, 0, w - 1, h - 1);
+
+        /* a raised frame with an accent line along the top; urgent ones get
+           a thicker one */
+        SetAPen(rp, shine);
+        Move(rp, 0, h - 1);
+        Draw(rp, 0, 0);
+        Draw(rp, w - 1, 0);
+        SetAPen(rp, shadow);
+        Draw(rp, w - 1, h - 1);
+        Draw(rp, 0, h - 1);
+        SetAPen(rp, hl);
+        RectFill(rp, 1, 1, w - 2, p->p_Req.rq_Pri > 8 ? 4 : 2);
+    }
 
     if (Sticky(p))
     {
-        UWORD cx = w - POPUP_PAD - CLOSE_BOX, cy = POPUP_PAD;
+        UWORD cx = w - menupadr - CLOSE_BOX, cy = menupadt;
 
         SetAPen(rp, shadow);
         Move(rp, cx, cy);
@@ -635,19 +848,19 @@ static void DrawPopup(struct Popup *p)
 
     if (p->p_ARGB && CyberGfxBase)
     {
-        UWORD iy = POPUP_PAD + 2;
+        UWORD iy = menupadt + 2;
 
         if (p->p_Req.rq_VAlign == 1)
             iy = (h - p->p_ImgH) / 2;
         else if (p->p_Req.rq_VAlign == 2)
-            iy = h - POPUP_PAD - p->p_ImgH;
+            iy = h - menupadb - p->p_ImgH;
         WritePixelArrayAlpha(p->p_ARGB, 0, 0, p->p_ImgW * 4, rp,
-                             POPUP_PAD + (POPUP_IMAGE - p->p_ImgW) / 2, iy,
+                             menupadl + (POPUP_IMAGE - p->p_ImgW) / 2, iy,
                              p->p_ImgW, p->p_ImgH, 0xffffffff);
         tx += POPUP_IMAGE + POPUP_PAD;
     }
 
-    ty = POPUP_PAD + 2 + p->p_Font->tf_Baseline;
+    ty = menupadt + 2 + p->p_Font->tf_Baseline;
     SetAPen(rp, fg);
     if (p->p_Req.rq_Title[0])
     {
@@ -667,7 +880,7 @@ static void DrawPopup(struct Popup *p)
     ty = ty - p->p_Font->tf_Baseline + 4;
     for (i = 0; i < p->p_NumGauges; i++)
     {
-        DrawGauge(p, rp, dri, i, tx, ty, w - tx - POPUP_PAD);
+        DrawGauge(p, rp, dri, i, tx, ty, w - tx - menupadr);
         ty += GAUGE_HEIGHT(p);
     }
 
@@ -675,53 +888,50 @@ static void DrawPopup(struct Popup *p)
         FreeScreenDrawInfo(p->p_Screen, dri);
 }
 
-/* Stack the pop-ups of each screen away from the chosen corner, the
-   newest nearest to it. */
-static void Restack(void)
+/* Where a pop-up goes, given the height of those between it and the
+   chosen corner. */
+static void Place(struct Popup *p, LONG offset, WORD *x, WORD *y)
 {
     BOOL top = (set.s_Position == NPOS_TOPRIGHT || set.s_Position == NPOS_TOPLEFT);
     BOOL left = (set.s_Position == NPOS_BOTTOMLEFT || set.s_Position == NPOS_TOPLEFT);
-    struct Popup *p, *q;
+    struct Screen *s = p->p_Screen;
+    LONG minY = s->BarHeight + 1, px, py;
 
-    ForeachNode(&popups, p)
-    {
-        struct Screen *s = p->p_Screen;
-        struct Window *w = p->p_Window;
-        LONG offset = 0, y, x;
-        LONG minY = s->BarHeight + 1;
-
-        ForeachNode(&popups, q)
-        {
-            if (q == p)
-                break;
-            if (q->p_Screen == s)
-                offset += q->p_Window->Height + POPUP_GAP;
-        }
-        if (top)
-            y = minY + POPUP_MARGIN / 2 + offset;
-        else
-            y = s->Height - POPUP_MARGIN - offset - w->Height;
-        if (y < minY)
-            y = minY;
-        if (y + w->Height > s->Height)
-            y = s->Height - w->Height;
-        x = left ? POPUP_MARGIN : s->Width - w->Width - POPUP_MARGIN;
-        if (x < 0)
-            x = 0;
-        if (w->TopEdge != y || w->LeftEdge != x)
-            ChangeWindowBox(w, x, y, w->Width, w->Height);
-    }
+    if (top)
+        py = minY + POPUP_MARGIN / 2 + offset;
+    else
+        py = s->Height - POPUP_MARGIN - offset - p->p_H;
+    if (py < minY)
+        py = minY;
+    if (py + p->p_H > s->Height)
+        py = s->Height - p->p_H;
+    px = left ? POPUP_MARGIN : s->Width - p->p_W - POPUP_MARGIN;
+    if (px < 0)
+        px = 0;
+    *x = px;
+    *y = py;
 }
 
-static void ShowWaiting(void);
+static LONG StackOffset(struct Popup *p)
+{
+    struct Popup *q;
+    LONG offset = 0;
+
+    ForeachNode(&popups, q)
+    {
+        if (q == p)
+            break;
+        if (q->p_Screen == p->p_Screen && q->p_Window)
+            offset += q->p_H + POPUP_GAP;
+    }
+    return offset;
+}
 
 /* CloseWindow() on a window sharing a port: drop its messages first. */
-static void ClosePopup(struct Popup *p, BOOL next)
+static void ClosePopupWindow(struct Popup *p)
 {
     struct IntuiMessage *im;
     struct Node *succ;
-
-    REMOVE(p);
 
     Forbid();
     im = (struct IntuiMessage *)idcmpport->mp_MsgList.lh_Head;
@@ -738,6 +948,86 @@ static void ClosePopup(struct Popup *p, BOOL next)
     ModifyIDCMP(p->p_Window, 0);
     Permit();
 
+    CloseWindow(p->p_Window);
+    p->p_Window = NULL;
+}
+
+static BOOL OpenPopupWindow(struct Popup *p, WORD x, WORD y)
+{
+    p->p_X = x;
+    p->p_Y = y;
+    MakeBackground(p, x, y);
+    p->p_Window = OpenWindowTags(NULL,
+                                 WA_PubScreen,   (IPTR)p->p_Screen,
+                                 WA_Left,        x,
+                                 WA_Top,         y,
+                                 WA_Width,       p->p_W,
+                                 WA_Height,      p->p_H,
+                                 WA_Borderless,  TRUE,
+                                 WA_Activate,    FALSE,
+                                 WA_ToolBox,     TRUE,
+                                 WA_RMBTrap,     TRUE,
+                                 WA_SmartRefresh, TRUE,
+                                 WA_NoCareRefresh, TRUE,
+                                 WA_BackFill,    (IPTR)LAYERS_NOBACKFILL,
+                                 WA_Title,       (IPTR)p->p_Req.rq_Title,
+                                 TAG_DONE);
+    if (!p->p_Window)
+    {
+        DropBackground(p);
+        return FALSE;
+    }
+    p->p_Window->UserPort = idcmpport;
+    ModifyIDCMP(p->p_Window, IDCMP_MOUSEBUTTONS);
+    DrawPopup(p);
+    return TRUE;
+}
+
+static void FreePopup(struct Popup *p)
+{
+    DropBackground(p);
+    CloseFont(p->p_Font);
+    UnlockPubScreen(NULL, p->p_Screen);
+    FreeVec(p->p_ARGB);
+    FreeVec(p);
+}
+
+/* Stack the pop-ups of each screen away from the chosen corner, the
+   newest nearest to it. A pop-up that has to move is opened afresh at
+   its new place, so its background is taken from a display that holds
+   nothing of ours there. */
+static void Restack(void)
+{
+    struct Popup *p, *next;
+
+    ForeachNodeSafe(&popups, p, next)
+    {
+        WORD x, y;
+
+        if (!p->p_Window)
+            continue;
+        Place(p, StackOffset(p), &x, &y);
+        if (x == p->p_X && y == p->p_Y)
+            continue;
+        ClosePopupWindow(p);
+        LeaveGhost(p);
+        if (!OpenPopupWindow(p, x, y))
+        {
+            REMOVE(p);
+            FreePopup(p);
+        }
+    }
+    DropGhosts();
+}
+
+static void ShowWaiting(void);
+
+static void ClosePopup(struct Popup *p, BOOL next)
+{
+    REMOVE(p);
+    ClosePopupWindow(p);
+    LeaveGhost(p);
+
     if (p->p_Req.rq_ConfirmClose && p->p_Req.rq_AppID && ApplicationBase)
     {
         struct ApplicationCustomMsg acm;
@@ -747,11 +1037,7 @@ static void ClosePopup(struct Popup *p, BOOL next)
         SendApplicationMsg(myappid, p->p_Req.rq_AppID, &acm.almsg, APPLIBMT_ConfirmClose);
     }
 
-    CloseWindow(p->p_Window);
-    CloseFont(p->p_Font);
-    UnlockPubScreen(NULL, p->p_Screen);
-    FreeVec(p->p_ARGB);
-    FreeVec(p);
+    FreePopup(p);
 
     Restack();
     if (next)
@@ -773,6 +1059,7 @@ static ULONG OpenPopup(struct Request *rq)
     struct Popup *p;
     struct RastPort tmprp;
     UWORD textw, h, minh, len, width = set.s_Width;
+    WORD x, y;
 
     if (!(p = AllocVec(sizeof(*p), MEMF_ANY | MEMF_CLEAR)))
         return APPNOTIFY_ERROR_OUTOFMEM;
@@ -795,9 +1082,12 @@ static ULONG OpenPopup(struct Request *rq)
     if (!LoadImage(p, rq->rq_Image) && !LoadIcon(p, rq->rq_Icon))
         LoadImage(p, rq->rq_Icon);
 
+    if (IsListEmpty((struct List *)&popups))
+        LoadMenuTheme();
+
     if (width > p->p_Screen->Width - 2 * POPUP_MARGIN)
         width = p->p_Screen->Width - 2 * POPUP_MARGIN;
-    textw = width - 2 * POPUP_PAD - (p->p_ARGB ? POPUP_IMAGE + POPUP_PAD : 0);
+    textw = width - menupadl - menupadr - (p->p_ARGB ? POPUP_IMAGE + POPUP_PAD : 0);
     if (rq->rq_Pri >= 10)
         p->p_TicksLeft = -1;
     InitRastPort(&tmprp);
@@ -805,14 +1095,18 @@ static ULONG OpenPopup(struct Request *rq)
     WrapText(p, &tmprp, textw);
 
     ParseGauges(p, rq->rq_Gauges);
-    h = POPUP_PAD + 2 + POPUP_PAD + (rq->rq_Title[0] ? p->p_Font->tf_YSize + 4 : 0)
+    h = menupadt + 2 + menupadb + (rq->rq_Title[0] ? p->p_Font->tf_YSize + 4 : 0)
         + p->p_NumLines * p->p_Font->tf_YSize
         + (p->p_NumGauges ? 4 + p->p_NumGauges * GAUGE_HEIGHT(p) : 0);
-    minh = 2 * POPUP_PAD + 2 + (p->p_ARGB ? POPUP_IMAGE : 0);
-    if (Sticky(p) && minh < 2 * POPUP_PAD + CLOSE_BOX)
-        minh = 2 * POPUP_PAD + CLOSE_BOX;
+    minh = menupadt + menupadb + 2 + (p->p_ARGB ? POPUP_IMAGE : 0);
+    if (Sticky(p) && minh < menupadt + menupadb + CLOSE_BOX)
+        minh = menupadt + menupadb + CLOSE_BOX;
+    if (menutilep && minh < menutile.TileTop + menutile.TileBottom)
+        minh = menutile.TileTop + menutile.TileBottom;
     if (h < minh)
         h = minh;
+    p->p_W = width;
+    p->p_H = h;
 
     if (!Sticky(p))
     {
@@ -828,34 +1122,14 @@ static ULONG OpenPopup(struct Request *rq)
         }
     }
 
-    p->p_Window = OpenWindowTags(NULL,
-                                 WA_PubScreen,   (IPTR)p->p_Screen,
-                                 WA_Left,        p->p_Screen->Width - width - POPUP_MARGIN,
-                                 WA_Top,         p->p_Screen->Height - POPUP_MARGIN - h,
-                                 WA_Width,       width,
-                                 WA_Height,      h,
-                                 WA_Borderless,  TRUE,
-                                 WA_Activate,    FALSE,
-                                 WA_ToolBox,     TRUE,
-                                 WA_RMBTrap,     TRUE,
-                                 WA_SmartRefresh, TRUE,
-                                 WA_NoCareRefresh, TRUE,
-                                 WA_Title,       (IPTR)p->p_Req.rq_Title,
-                                 TAG_DONE);
-    if (!p->p_Window)
+    ADDHEAD((struct List *)&popups, p);
+    Place(p, 0, &x, &y);
+    if (!OpenPopupWindow(p, x, y))
     {
-        CloseFont(p->p_Font);
-        UnlockPubScreen(NULL, p->p_Screen);
-        FreeVec(p->p_ARGB);
-        FreeVec(p);
+        REMOVE(p);
+        FreePopup(p);
         return APPNOTIFY_ERROR_GENERIC;
     }
-
-    p->p_Window->UserPort = idcmpport;
-    ModifyIDCMP(p->p_Window, IDCMP_MOUSEBUTTONS);
-
-    ADDHEAD((struct List *)&popups, p);
-    DrawPopup(p);
     Restack();
 
     if (rq->rq_Pri > 8 && set.s_Beep)
@@ -982,9 +1256,9 @@ static void DoubleClicked(struct Popup *p)
 
 static BOOL InCloseBox(struct Popup *p, WORD x, WORD y)
 {
-    WORD cx = p->p_Window->Width - POPUP_PAD - CLOSE_BOX;
+    WORD cx = p->p_Window->Width - menupadr - CLOSE_BOX;
 
-    return Sticky(p) && x >= cx && x < cx + CLOSE_BOX && y >= POPUP_PAD && y < POPUP_PAD + CLOSE_BOX;
+    return Sticky(p) && x >= cx && x < cx + CLOSE_BOX && y >= menupadt && y < menupadt + CLOSE_BOX;
 }
 
 static void HandleIDCMP(void)
@@ -1060,9 +1334,16 @@ static void Tick(void)
 
     ForeachNodeSafe(&popups, p, next)
     {
+        BOOL over = PointerOver(p);
+
+        if (p->p_Back && over != p->p_Hover)
+        {
+            p->p_Hover = over;
+            DrawPopup(p);
+        }
         if (Sticky(p))
             continue;
-        if (PointerOver(p))
+        if (over)
         {
             if (p->p_TicksLeft < 2 * TICKS_PER_SEC)
                 p->p_TicksLeft = 2 * TICKS_PER_SEC;
@@ -1469,11 +1750,14 @@ int main(void)
     NEWLIST((struct List *)&popups);
     NEWLIST((struct List *)&waiting);
     NEWLIST((struct List *)&rexxapps);
+    NEWLIST((struct List *)&ghosts);
 
     if (!(ApplicationBase = OpenLibrary("application.library", 1)))
         return RETURN_FAIL;
     DataTypesBase = OpenLibrary("datatypes.library", 39);
     CyberGfxBase = OpenLibrary("cybergraphics.library", 0);
+    DecoratorBase = OpenLibrary("decorator.library", 0);
+    DecorThemeBase = OpenLibrary("decortheme.library", 0);
     IconBase = OpenLibrary("icon.library", 44);
     RexxSysBase = (struct RxsLib *)OpenLibrary("rexxsyslib.library", 0);
     OpenURLBase = OpenLibrary("openurl.library", 0);
@@ -1580,8 +1864,10 @@ out:
     while ((w = (struct Waiting *)REMHEAD((struct List *)&waiting)))
         FreeVec(w);
     while (!IsListEmpty((struct List *)&popups))
-        ClosePopup((struct Popup *)popups.mlh_Head, FALSE);
+        ClosePopup((struct Popup *)popups.mlh_TailPred, FALSE);
     StopSound();
+    if (DecoratorBase)
+        FreeMenuTheme();
 
     while ((ra = (struct RexxApp *)REMHEAD((struct List *)&rexxapps)))
     {
@@ -1624,6 +1910,10 @@ out:
 
     if (OpenURLBase)
         CloseLibrary(OpenURLBase);
+    if (DecorThemeBase)
+        CloseLibrary(DecorThemeBase);
+    if (DecoratorBase)
+        CloseLibrary(DecoratorBase);
     if (RexxSysBase)
         CloseLibrary((struct Library *)RexxSysBase);
     if (IconBase)
