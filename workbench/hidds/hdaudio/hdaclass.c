@@ -750,6 +750,7 @@ static BOOL HDA_GetResponse(struct HDAData *hc, ULONG *result,
                             BOOL *irq_seen)
 {
     const int timeout = 10000;
+    const int rirb_polls = 200; /* x 5 ms: one second, as Linux */
     int i;
     UBYTE rirb_wp = 0;
 
@@ -772,7 +773,7 @@ static BOOL HDA_GetResponse(struct HDAData *hc, ULONG *result,
         D(bug("[HDA] No response IRQ!\n"));
     }
 
-    for (i = 0; i < timeout; i++)
+    for (i = 0; i < rirb_polls; i++)
     {
         rirb_wp = hda_readb(hc, HD_RIRBWP);
 
