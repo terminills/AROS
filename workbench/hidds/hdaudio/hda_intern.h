@@ -20,9 +20,11 @@
 #define HD_GCAP 0x0
 #define HD_GCAP_ISS_MASK 0x0F00
 #define HD_GCAP_OSS_MASK 0xF000
+#define HD_GCAP_64OK 0x0001
 #define HD_VMIN 0x2
 #define HD_VMAJ 0x3
 #define HD_GCTL 0x8
+#define HD_GCTL_CRST 0x1
 #define HD_WAKEEN 0xC
 #define HD_STATESTS 0xE
 
@@ -105,6 +107,7 @@ struct HDAStream
 struct HDAData
 {
     APTR   hc_DeviceData;
+    struct Hook *hc_LogHook;
 
     BOOL   hc_HWInit;
 

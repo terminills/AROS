@@ -145,6 +145,7 @@ struct HDAudioChip *AllocDriverData(APTR controller, struct DriverBase *AHIsubBa
 
     if(card_init(card) < 0) {
         D(bug("[HDAudio] Unable to initialize Card subsystem.\n"));
+        hda_log("controller %p: no usable codec", controller);
         success = FALSE;
     } else {
         card->card_initialized = TRUE;
@@ -195,6 +196,7 @@ int card_init(struct HDAudioChip *card)
 
     if(card->codecbits == 0) {
         D(bug("[HDAudio] No codecs found!\n"));
+        hda_log("codec mask 0: nothing to probe");
         return -1;
     }
 
@@ -211,9 +213,20 @@ int card_init(struct HDAudioChip *card)
         }
     }
 
+    if(i == 16) {
+        hda_log("codec mask %04x: no codec has an audio function group",
+                card->codecbits);
+    }
+
     if(perform_codec_specific_settings(card) == FALSE) {
+        hda_log("codec %u: configuration failed", card->codecnr);
         return -1;
     }
+
+    hda_log("codec %u: configured, function group %u, DAC %02x ADC %02x "
+            "speaker %02x headphone %02x", card->codecnr,
+            card->function_group, card->dac_nid, card->adc_nid,
+            card->speaker_nid, card->headphone_nid);
 
     /* Program the output amplifiers to 0 dB. After a codec reset the
        amplifiers of some codecs (e.g. VMware's virtual codec) power up
@@ -346,6 +359,8 @@ static BOOL power_up_all_nodes(struct HDAudioChip *card)
     BOOL audio_found = FALSE;
 
     D(bug("[HDAudio] power up\n"));
+    hda_log("codec %u: root node count response %08x (%u nodes from %u)",
+            card->codecnr, node_count_response, node_count, starting_node);
     send_command_12(card->codecnr, 1, VERB_SET_POWER_STATE, 0,
                     card);  // send function reset to audio node, this should power up all nodes
     udelay(20000);
@@ -353,6 +368,9 @@ static BOOL power_up_all_nodes(struct HDAudioChip *card)
     for(i = 0; i < node_count && !audio_found; i++) {
         ULONG function_group_response = get_parameter(starting_node + i, VERB_GET_PARMS_FUNCTION_GROUP_TYPE, card);
         UBYTE function_group = function_group_response & 0xFF;
+
+        hda_log("codec %u: node %u function group type %08x", card->codecnr,
+                starting_node + i, function_group_response);
 
         if(function_group == AUDIO_FUNCTION) {
             int j;
@@ -423,6 +441,9 @@ static BOOL perform_codec_specific_settings(struct HDAudioChip *card)
 
     D(bug("[HDAudio] vendor = %x, device = %x\n", vendor, device));
 
+    hda_log("codec %u: vendor/device %08x%s", card->codecnr,
+            vendor_device_id, forceQuery ? " (QUERY forced)" : "");
+
     if(vendor == 0x10EC && forceQuery == FALSE) { // Realtek
         configured = perform_realtek_specific_settings(card, device);
     } else if(vendor == 0x1106 && forceQuery == FALSE) { // VIA
@@ -433,11 +454,16 @@ static BOOL perform_codec_specific_settings(struct HDAudioChip *card)
         configured = perform_ad_specific_settings(card, device);
     }
 
+    hda_log("codec %u: %s", card->codecnr,
+            configured ? "configured from the known-codec table"
+                       : "not in the known-codec table, interrogating");
+
     // call query-based configuration if the vendor-specific configuration
     // functions haven't configured the codec or have only partially
     // configured it by overriding some values
     if(!configured) {
         if(!interrogate_unknown_chip(card)) {
+            hda_log("codec %u: interrogation failed", card->codecnr);
             return FALSE;
         }
     }
@@ -972,6 +998,8 @@ static BOOL interrogate_unknown_chip(struct HDAudioChip *card)
 
         if(dac == 0) {
             bug("Didn't find DAC!\n");
+            hda_log("codec %u: no audio output converter widget found",
+                    card->codecnr);
             return FALSE;
         }
 
@@ -984,6 +1012,8 @@ static BOOL interrogate_unknown_chip(struct HDAudioChip *card)
     // find FRONT pin
     front = find_widget(card, 4, 0);
     D(bug("[HDAudio] Front PIN = %xh\n", front));
+    hda_log("codec %u: DAC %02x, line-out pin %02x", card->codecnr,
+            card->dac_nid, front);
 
     if(front == 0) {
         D(bug("[HDAudio] Didn't find jack/pin for line output!\n"));

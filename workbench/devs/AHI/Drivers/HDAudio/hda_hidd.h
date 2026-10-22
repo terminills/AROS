@@ -29,6 +29,11 @@ struct HDAudioChip;
 BOOL ahi_hda_init(struct DriverBase *AHIsubBase);
 void ahi_hda_exit(void);
 
+/* Init log in SYS:hdaudio.log; every call is a no-op until opened */
+BOOL hda_log_open(void);
+void hda_log_close(void);
+void hda_log(CONST_STRPTR fmt, ...);
+
 /* Find, claim and wrap every PCI HDA function matching displayAudio/
    vendor (vendor 0 matches any); fills controllers[] with up to max
    controller objects and returns how many were obtained. */

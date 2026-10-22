@@ -27,6 +27,9 @@
 #include <hidd/hidd.h>
 #include <hidd/hda.h>
 
+#include <exec/rawfmt.h>
+#include <stdarg.h>
+
 #include "hda_intern.h"
 
 #include LC_LIBDEFS_FILE
@@ -67,6 +70,25 @@ VOID hda_usleep(ULONG usec)
         DeleteIORequest((struct IORequest *)tr);
     }
     DeleteMsgPort(mp);
+}
+
+/*
+ * One line per bring-up step to the owner's log hook, when it set one;
+ * free otherwise. Task context only.
+ */
+static void hda_log(struct HDAData *hc, CONST_STRPTR fmt, ...)
+{
+    char line[200];
+    va_list ap;
+
+    if (!hc->hc_LogHook)
+        return;
+
+    va_start(ap, fmt);
+    VNewRawDoFmt(fmt, RAWFMTFUNC_STRING, line, ap);
+    va_end(ap);
+
+    CALLHOOKPKT(hc->hc_LogHook, NULL, line);
 }
 
 /* MMIO accessors */
@@ -246,6 +268,9 @@ static BOOL HDA_ResetChip(struct HDAData *hc)
 {
     int counter;
 
+    hda_log(hc, "reset: GCTL %08x STATESTS %04x before",
+            hda_readl(hc, HD_GCTL), hda_readw(hc, HD_STATESTS));
+
     hda_writeb(hc, HD_CORBCTL, 0);
     hda_writeb(hc, HD_RIRBCTL, 0);
 
@@ -264,8 +289,12 @@ static BOOL HDA_ResetChip(struct HDAData *hc)
     if (counter == 1000)
     {
         D(bug("[HDA] Controller would not enter reset!\n"));
+        hda_log(hc, "reset: CRST never read 0 in 100 ms, GCTL %08x",
+                hda_readl(hc, HD_GCTL));
         return FALSE;
     }
+
+    hda_log(hc, "reset: entered after %d x 100 us", counter);
 
     hda_usleep(100);
     hda_setl(hc, HD_GCTL, 1);
@@ -280,8 +309,13 @@ static BOOL HDA_ResetChip(struct HDAData *hc)
     if (counter == 1000)
     {
         D(bug("[HDA] Controller stuck in reset!\n"));
+        hda_log(hc, "reset: CRST never read 1 in 100 ms, GCTL %08x",
+                hda_readl(hc, HD_GCTL));
         return FALSE;
     }
+
+    hda_log(hc, "reset: left after %d x 100 us, GCTL %08x", counter,
+            hda_readl(hc, HD_GCTL));
 
     /* Wait for the codecs to request state change (min. 521us, be generous) */
     hda_usleep(1000);
@@ -330,6 +364,12 @@ static BOOL HDA_InitCORB(struct HDAData *hc)
 
     hda_writew(hc, HD_CORBWP, 0);
     hda_setb(hc, HD_CORBCTL, HD_CORBRUN);
+
+    hda_log(hc, "CORB: CORBSIZE %02x -> %u entries at %p, base %08x:%08x, "
+            "CORBRP %04x CORBCTL %02x", sizereg, hc->hc_CORBEntries,
+            hc->hc_CORB, hda_readl(hc, HD_CORB_HIGH),
+            hda_readl(hc, HD_CORB_LOW), hda_readw(hc, HD_CORBRP),
+            hda_readb(hc, HD_CORBCTL));
 
     return TRUE;
 }
@@ -380,6 +420,12 @@ static BOOL HDA_InitRIRB(struct HDAData *hc)
     hda_writew(hc, HD_RINTCNT, 1);
     hda_writeb(hc, HD_RIRBSTS, 0x5);
     hda_setb(hc, HD_RIRBCTL, HD_RIRBRUN | HD_RINTCTL | 0x4);
+
+    hda_log(hc, "RIRB: RIRBSIZE %02x -> %u entries at %p, base %08x:%08x, "
+            "RIRBWP %04x RIRBCTL %02x", sizereg, hc->hc_RIRBEntries,
+            hc->hc_RIRB, hda_readl(hc, HD_RIRB_HIGH),
+            hda_readl(hc, HD_RIRB_LOW), hda_readw(hc, HD_RIRBWP),
+            hda_readb(hc, HD_RIRBCTL));
 
     return TRUE;
 }
@@ -448,11 +494,16 @@ BOOL HDA__Hidd_HDA__Setup(OOP_Class *cl, OOP_Object *o,
     if (!mmio)
     {
         D(bug("[HDA] HWInit failed\n"));
+        hda_log(hc, "hardware attach failed: no register mapping");
         return FALSE;
     }
     hc->hc_MMIO = (volatile UBYTE *)mmio;
 
     D(bug("[HDA] registers @ 0x%p\n", hc->hc_MMIO));
+
+    hda_log(hc, "registers at %p: GCAP %04x version %u.%u", hc->hc_MMIO,
+            hda_readw(hc, HD_GCAP), hda_readb(hc, HD_VMAJ),
+            hda_readb(hc, HD_VMIN));
 
     if (!HDA_ResetChip(hc))
         goto fail;
@@ -461,9 +512,13 @@ BOOL HDA__Hidd_HDA__Setup(OOP_Class *cl, OOP_Object *o,
     hc->hc_CodecMask = hda_readw(hc, HD_STATESTS) & 0x7FFF;
     D(bug("[HDA] Codec mask %04x\n", hc->hc_CodecMask));
 
+    hda_log(hc, "codecs: STATESTS %04x after reset -> mask %04x",
+            hda_readw(hc, HD_STATESTS), hc->hc_CodecMask);
+
     if (!hc->hc_CodecMask)
     {
         D(bug("[HDA] No codecs present!\n"));
+        hda_log(hc, "no codec requested a state change: nothing on the link");
         goto fail;
     }
 
@@ -485,6 +540,10 @@ BOOL HDA__Hidd_HDA__Setup(OOP_Class *cl, OOP_Object *o,
 
     hda_writel(hc, HD_INTCTL, HD_INTCTL_CIE | HD_INTCTL_GIE);
     hda_usleep(200);
+
+    hda_log(hc, "up: %u in + %u out streams, INTCTL %08x INTSTS %08x",
+            hc->hc_NumInStreams, hc->hc_NumOutStreams,
+            hda_readl(hc, HD_INTCTL), hda_readl(hc, HD_INTSTS));
 
     hc->hc_ResetHandler.is_Node.ln_Type = NT_INTERRUPT;
     hc->hc_ResetHandler.is_Node.ln_Pri = 0;
@@ -593,6 +652,8 @@ OOP_Object *HDA__Root__New(OOP_Class *cl, OOP_Object *o,
 
         hc->hc_DeviceData = (APTR)GetTagData(aHidd_HDA_DeviceData, 0,
                                              msg->attrList);
+        hc->hc_LogHook = (struct Hook *)GetTagData(aHidd_HDA_LogHook, 0,
+                                                   msg->attrList);
 
         InitSemaphore(&hc->hc_VerbLock);
     }
@@ -639,7 +700,8 @@ VOID HDA__Root__Get(OOP_Class *cl, OOP_Object *o, struct pRoot_Get *msg)
 ** Verb interface *************************************************************
 ******************************************************************************/
 
-static ULONG HDA_GetResponse(struct HDAData *hc)
+static BOOL HDA_GetResponse(struct HDAData *hc, ULONG *result,
+                            BOOL *irq_seen)
 {
     const int timeout = 10000;
     int i;
@@ -656,6 +718,8 @@ static ULONG HDA_GetResponse(struct HDAData *hc)
         }
         hda_usleep(10);
     }
+
+    *irq_seen = (i != timeout);
 
     if (i == timeout)
     {
@@ -689,13 +753,17 @@ static ULONG HDA_GetResponse(struct HDAData *hc)
                 D(bug("[HDA] Unsolicited response, skipping\n"));
             }
             else
-                return response;
+            {
+                *result = response;
+                return TRUE;
+            }
         }
     }
 
     D(bug("[HDA] No response! rp = %u, wp = %u\n",
           hc->hc_RIRBReadPos, rirb_wp));
-    return 0;
+    *result = 0;
+    return FALSE;
 }
 
 ULONG HDA__Hidd_HDA__SendCommand(OOP_Class *cl, OOP_Object *o,
@@ -703,6 +771,7 @@ ULONG HDA__Hidd_HDA__SendCommand(OOP_Class *cl, OOP_Object *o,
 {
     struct HDAData *hc = OOP_INST_DATA(cl, o);
     ULONG response;
+    BOOL irq_seen;
     UWORD wp;
 
     if (!hc->hc_HWInit)
@@ -720,7 +789,15 @@ ULONG HDA__Hidd_HDA__SendCommand(OOP_Class *cl, OOP_Object *o,
     hda_dma_todevice(&hc->hc_CORB[wp], 4);
     hda_writew(hc, HD_CORBWP, wp);
 
-    response = HDA_GetResponse(hc);
+    if (!HDA_GetResponse(hc, &response, &irq_seen))
+    {
+        hda_log(hc, "verb %08x: no response (irq %s, CORBWP %u CORBRP %04x "
+                "RIRBWP %04x rp %u RIRBSTS %02x INTSTS %08x GCTL %08x)",
+                msg->command, irq_seen ? "seen" : "none", wp,
+                hda_readw(hc, HD_CORBRP), hda_readw(hc, HD_RIRBWP),
+                hc->hc_RIRBReadPos, hda_readb(hc, HD_RIRBSTS),
+                hda_readl(hc, HD_INTSTS), hda_readl(hc, HD_GCTL));
+    }
 
     ReleaseSemaphore(&hc->hc_VerbLock);
 

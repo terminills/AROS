@@ -20,6 +20,7 @@ All Rights Reserved.
 #endif
 
 #include <exec/memory.h>
+#include <dos/var.h>
 
 #include <proto/expansion.h>
 #include <proto/dos.h>
@@ -42,6 +43,7 @@ struct DriverBase *AHIsubBase;
 
 static void parse_config_file(void);
 static int hex_char_to_int(char c);
+static BOOL logRequested = FALSE;
 
 
 /******************************************************************************
@@ -84,6 +86,21 @@ BOOL DriverInit(struct DriverBase *ahisubbase)
     // Parse the hdaudio.config file for QUERY/speaker overrides, if present
     parse_config_file();
 
+    /* A "LOG" line in the config or an HDAUDIO_LOG variable asks for the
+       init log in SYS:hdaudio.log; if that cannot be opened, carry on
+       without it */
+    if(!logRequested) {
+        char var[4];
+
+        if(GetVar("HDAUDIO_LOG", var, sizeof(var), GVF_GLOBAL_ONLY) >= 0) {
+            logRequested = TRUE;
+        }
+    }
+
+    if(logRequested) {
+        hda_log_open();
+    }
+
     /*
         Claim every controller that is not the audio function of a
         display adapter; those are handled by display-audio drivers
@@ -95,8 +112,12 @@ BOOL DriverInit(struct DriverBase *ahisubbase)
     count = ahi_hda_obtain_controllers(FALSE, 0, controllers, MAX_CARDS);
     if(count == 0) {
         D(bug("[HDAudio] No HDaudio controller found! :-(\n"));
+        hda_log("no controller came up: driver not loaded");
+        hda_log_close();
         return FALSE;
     }
+
+    hda_log("%u controller(s) up, probing codecs", count);
 
     /*** Allocate and init all cards ******************************************/
 
@@ -109,6 +130,7 @@ BOOL DriverInit(struct DriverBase *ahisubbase)
         for(i = 0; i < count; i++) {
             ahi_hda_release_controller(controllers[i]);
         }
+        hda_log_close();
         return FALSE;
     }
 
@@ -125,12 +147,17 @@ BOOL DriverInit(struct DriverBase *ahisubbase)
 
     if(card_no == 0) {
         D(bug("[HDAudio] No usable codec on any controller!\n"));
+        hda_log("no usable codec on any of the %u controller(s): "
+                "driver not loaded", count);
         FreeVec(card_base->driverdatas);
         card_base->driverdatas = NULL;
+        hda_log_close();
         return FALSE;
     }
 
     D(bug("[HDAudio] exit init (%d cards)\n", card_no));
+    hda_log("init done: %d card(s)", card_no);
+    hda_log_close();
     return TRUE;
 }
 
@@ -213,6 +240,8 @@ static void parse_config_file(void)
                 if(ret[5] == 'D') { // debug
                     setDumpAll();
                 }
+            } else if(Strnicmp(ret, "LOG", 3) == 0) {
+                logRequested = TRUE;
             } else if(Strnicmp(ret, "speaker=0x", 10) == 0) {
                 int speaker = 0;
                 char *tmp = (char *) AllocVec(16, MEMF_CLEAR);

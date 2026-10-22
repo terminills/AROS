@@ -26,11 +26,17 @@ PCI functions it wants to drive.
 
 #include <proto/exec.h>
 #include <proto/oop.h>
+#include <proto/dos.h>
+
+#include <dos/dos.h>
 
 #include <hidd/hidd.h>
 #include <hidd/pci.h>
 #include <hidd/hda.h>
 #include <hardware/pci.h>
+
+#include <exec/rawfmt.h>
+#include <stdarg.h>
 
 #include "hda_hidd.h"
 
@@ -42,6 +48,85 @@ OOP_AttrBase __IHidd_PCIDevice;
 
 static struct Library *HDAHiddBase;
 static OOP_Class *hdapciClass;
+
+/******************************************************************************
+** Init log *******************************************************************
+******************************************************************************/
+
+static BPTR hdaLogFile = BNULL;
+
+static void hda_log_line(CONST_STRPTR prefix, CONST_STRPTR line)
+{
+    LONG len;
+
+    if (!hdaLogFile)
+        return;
+
+    for (len = 0; prefix[len]; len++);
+    Write(hdaLogFile, (APTR)prefix, len);
+    for (len = 0; line[len]; len++);
+    Write(hdaLogFile, (APTR)line, len);
+    Write(hdaLogFile, "\n", 1);
+}
+
+BOOL hda_log_open(void)
+{
+    if (hdaLogFile)
+        return TRUE;
+
+    hdaLogFile = Open("SYS:hdaudio.log", MODE_READWRITE);
+    if (!hdaLogFile)
+        return FALSE;
+
+    Seek(hdaLogFile, 0, OFFSET_END);
+    hda_log_line("[hdaudio] ", "---- " DRIVER " init ----");
+
+    return TRUE;
+}
+
+void hda_log_close(void)
+{
+    if (hdaLogFile)
+    {
+        Close(hdaLogFile);
+        hdaLogFile = BNULL;
+    }
+}
+
+void hda_log(CONST_STRPTR fmt, ...)
+{
+    char line[256];
+    va_list ap;
+
+    if (!hdaLogFile)
+        return;
+
+    va_start(ap, fmt);
+    VNewRawDoFmt(fmt, RAWFMTFUNC_STRING, line, ap);
+    va_end(ap);
+
+    hda_log_line("[hdaudio] ", line);
+}
+
+/* The controller hidd's init steps arrive here, one line each */
+AROS_UFH3(static IPTR, HDALogHookFunc,
+          AROS_UFHA(struct Hook *, hook, A0),
+          AROS_UFHA(APTR, object, A2),
+          AROS_UFHA(CONST_STRPTR, line, A1))
+{
+    AROS_USERFUNC_INIT
+
+    hda_log_line("[hda]     ", line);
+
+    return 0;
+
+    AROS_USERFUNC_EXIT
+}
+
+static struct Hook hdaLogHook =
+{
+    .h_Entry = (HOOKFUNC)HDALogHookFunc
+};
 
 /******************************************************************************
 ** The PCI attachment subclass ************************************************
@@ -84,6 +169,7 @@ static void HDAPCI_Quirks(OOP_Object *dev, UWORD vendor, UWORD product)
         if (snoop)
         {
             D(bug("[" DRIVER "] Intel controller, enabling snoop\n"));
+            hda_log("quirk: Intel snoop (0x78 bit 11 cleared)");
             data = HIDD_PCIDevice_ReadConfigWord(dev, 0x78);
             HIDD_PCIDevice_WriteConfigWord(dev, 0x78, data & ~0x800);
         }
@@ -94,6 +180,7 @@ static void HDAPCI_Quirks(OOP_Object *dev, UWORD vendor, UWORD product)
                               product == 0x1487 || product == 0x15E3)))
     {
         D(bug("[" DRIVER "] ATI SB/AMD controller, enabling snoop\n"));
+        hda_log("quirk: ATI/AMD snoop (0x42 bits 0-2 = 2)");
         data = HIDD_PCIDevice_ReadConfigByte(dev, 0x42);
         HIDD_PCIDevice_WriteConfigByte(dev, 0x42, (data & ~0x07) | 0x02);
     }
@@ -101,6 +188,7 @@ static void HDAPCI_Quirks(OOP_Object *dev, UWORD vendor, UWORD product)
     if (vendor == 0x10DE)
     {
         D(bug("[" DRIVER "] NVidia controller, enabling snoop\n"));
+        hda_log("quirk: NVidia snoop (0x4c-0x4e)");
         data = HIDD_PCIDevice_ReadConfigByte(dev, 0x4E);
         HIDD_PCIDevice_WriteConfigByte(dev, 0x4E, data | 0x0F);
         data = HIDD_PCIDevice_ReadConfigByte(dev, 0x4D);
@@ -144,27 +232,55 @@ static APTR HDAPCI__Hidd_HDA__HWInit(OOP_Class *cl, OOP_Object *o,
 {
     struct HDAPCIData *hpd = OOP_INST_DATA(cl, o);
     OOP_Object *dev = hpd->pciDevice;
-    IPTR mmio = 0, val = 0, barsize = 0;
+    IPTR mmio = 0, val = 0, barsize = 0, bus = 0, devnr = 0, sub = 0;
+    IPTR revision = 0, intline = 0, pmcap = 0;
     UWORD vendor, product, command;
 
     OOP_GetAttr(dev, aHidd_PCIDevice_VendorID, &val);
     vendor = val;
     OOP_GetAttr(dev, aHidd_PCIDevice_ProductID, &val);
     product = val;
+    OOP_GetAttr(dev, aHidd_PCIDevice_Bus, &bus);
+    OOP_GetAttr(dev, aHidd_PCIDevice_Dev, &devnr);
+    OOP_GetAttr(dev, aHidd_PCIDevice_Sub, &sub);
+    OOP_GetAttr(dev, aHidd_PCIDevice_RevisionID, &revision);
+    OOP_GetAttr(dev, aHidd_PCIDevice_INTLine, &intline);
+    OOP_GetAttr(dev, aHidd_PCIDevice_CapabilityPowerManagement, &pmcap);
+    OOP_GetAttr(dev, aHidd_PCIDevice_Base0, &mmio);
+    OOP_GetAttr(dev, aHidd_PCIDevice_Size0, &barsize);
 
     D(bug("[" DRIVER "] PCI HDA controller %04x:%04x\n", vendor, product));
 
     command = HIDD_PCIDevice_ReadConfigWord(dev, PCICS_COMMAND);
+
+    hda_log("controller %02x:%02x.%u %04x:%04x rev %02x: BAR0 %p size %p, "
+            "IRQ %u, command %04x, PMCSR %04x (cap at %02x)",
+            (ULONG)bus, (ULONG)devnr, (ULONG)sub, vendor, product,
+            (ULONG)revision, (APTR)mmio, (APTR)barsize, (ULONG)intline,
+            command,
+            pmcap ? HIDD_PCIDevice_ReadConfigWord(dev, pmcap + 4) : 0,
+            (ULONG)pmcap);
+    hda_log("config before quirks: 0x42 %02x 0x44 %02x 0x78 %04x",
+            HIDD_PCIDevice_ReadConfigByte(dev, 0x42),
+            HIDD_PCIDevice_ReadConfigByte(dev, 0x44),
+            HIDD_PCIDevice_ReadConfigWord(dev, 0x78));
+
     command |= PCICMF_IODECODE | PCICMF_MEMDECODE | PCICMF_BUSMASTER;
     HIDD_PCIDevice_WriteConfigWord(dev, PCICS_COMMAND, command);
 
     HDAPCI_Quirks(dev, vendor, product);
 
-    OOP_GetAttr(dev, aHidd_PCIDevice_Base0, &mmio);
-    OOP_GetAttr(dev, aHidd_PCIDevice_Size0, &barsize);
+    hda_log("config after quirks:  0x42 %02x 0x44 %02x 0x78 %04x, "
+            "command %04x",
+            HIDD_PCIDevice_ReadConfigByte(dev, 0x42),
+            HIDD_PCIDevice_ReadConfigByte(dev, 0x44),
+            HIDD_PCIDevice_ReadConfigWord(dev, 0x78),
+            HIDD_PCIDevice_ReadConfigWord(dev, PCICS_COMMAND));
+
     if (!mmio)
     {
         D(bug("[" DRIVER "] No BAR0!\n"));
+        hda_log("no BAR0");
         return NULL;
     }
 
@@ -173,12 +289,14 @@ static APTR HDAPCI__Hidd_HDA__HWInit(OOP_Class *cl, OOP_Object *o,
     if (!mmio)
     {
         D(bug("[" DRIVER "] Failed to map BAR0!\n"));
+        hda_log("BAR0 could not be mapped");
         return NULL;
     }
 
     if (!HIDD_PCIDriver_AddInterrupt(hpd->pciDriver, dev, msg->controllerInt))
     {
         D(bug("[" DRIVER "] Failed to add interrupt handler\n"));
+        hda_log("interrupt handler for IRQ %u refused", (ULONG)intline);
         return NULL;
     }
     hpd->irqAdded = TRUE;
@@ -294,10 +412,18 @@ AROS_UFH3(static void, PCIEnumerator,
     AROS_USERFUNC_INIT
 
     struct pci_enum_ctx *ctx = (struct pci_enum_ctx *)hook->h_Data;
-    IPTR val = 0;
+    IPTR val = 0, vendor = 0, product = 0, bus = 0, devnr = 0, sub = 0;
+    CONST_STRPTR owner;
+    BOOL displayAudio;
 
     if (ctx->count >= MAX_CONTROLLERS)
         return;
+
+    OOP_GetAttr(device, aHidd_PCIDevice_VendorID, &vendor);
+    OOP_GetAttr(device, aHidd_PCIDevice_ProductID, &product);
+    OOP_GetAttr(device, aHidd_PCIDevice_Bus, &bus);
+    OOP_GetAttr(device, aHidd_PCIDevice_Dev, &devnr);
+    OOP_GetAttr(device, aHidd_PCIDevice_Sub, &sub);
 
     if (ctx->vendor)
     {
@@ -306,15 +432,30 @@ AROS_UFH3(static void, PCIEnumerator,
             return;
     }
 
-    if (device_is_display_audio(device) != ctx->displayAudio)
-        return;
+    displayAudio = device_is_display_audio(device);
 
-    /* Bind: claim the PCI function for this driver */
-    if (HIDD_PCIDevice_Obtain(device, DRIVER) != NULL)
+    if (displayAudio != ctx->displayAudio)
     {
-        D(bug("[" DRIVER "] device @ 0x%p already owned\n", device));
+        hda_log("found %02x:%02x.%u %04x:%04x: %s, not for this driver",
+                (ULONG)bus, (ULONG)devnr, (ULONG)sub, (ULONG)vendor,
+                (ULONG)product,
+                displayAudio ? "display audio" : "not display audio");
         return;
     }
+
+    /* Bind: claim the PCI function for this driver */
+    owner = HIDD_PCIDevice_Obtain(device, DRIVER);
+    if (owner != NULL)
+    {
+        D(bug("[" DRIVER "] device @ 0x%p already owned\n", device));
+        hda_log("found %02x:%02x.%u %04x:%04x: already owned by %s",
+                (ULONG)bus, (ULONG)devnr, (ULONG)sub, (ULONG)vendor,
+                (ULONG)product, owner);
+        return;
+    }
+
+    hda_log("found %02x:%02x.%u %04x:%04x: claimed", (ULONG)bus,
+            (ULONG)devnr, (ULONG)sub, (ULONG)vendor, (ULONG)product);
 
     ctx->devices[ctx->count++] = device;
 
@@ -357,18 +498,21 @@ ULONG ahi_hda_obtain_controllers(BOOL displayAudio, UWORD vendor,
     {
         struct TagItem tags[] =
         {
-            { aHidd_HDA_DeviceData, (IPTR)ctx.devices[i] },
-            { TAG_DONE,             0                    }
+            { aHidd_HDA_DeviceData, (IPTR)ctx.devices[i]                  },
+            { aHidd_HDA_LogHook,    hdaLogFile ? (IPTR)&hdaLogHook : 0    },
+            { TAG_DONE,             0                                     }
         };
         OOP_Object *ctrl;
 
         if (count < max &&
             (ctrl = OOP_NewObject(hdapciClass, NULL, tags)) != NULL)
         {
+            hda_log("controller object %p created", ctrl);
             controllers[count++] = ctrl;
         }
         else
         {
+            hda_log("controller bring-up failed, device released");
             HIDD_PCIDevice_Release(ctx.devices[i]);
         }
     }
