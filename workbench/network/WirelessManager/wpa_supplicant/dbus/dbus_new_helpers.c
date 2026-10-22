@@ -3,130 +3,67 @@
  * Copyright (c) 2006, Dan Williams <dcbw@redhat.com> and Red Hat, Inc.
  * Copyright (c) 2009, Witold Sowa <witold.sowa@gmail.com>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * Alternatively, this software may be distributed under the terms of BSD
- * license.
- *
- * See README and COPYING for more details.
+ * This software may be distributed under the terms of the BSD license.
+ * See README for more details.
  */
 
 #include "utils/includes.h"
 
 #include "utils/common.h"
 #include "utils/eloop.h"
+#include "drivers/driver.h"
 #include "dbus_common.h"
 #include "dbus_common_i.h"
 #include "dbus_new.h"
 #include "dbus_new_helpers.h"
+#include "dbus_new_handlers.h"
+#include "dbus_dict_helpers.h"
 
 
-/**
- * recursive_iter_copy - Reads arguments from one iterator and
- * writes to another recursively
- * @from: iterator to read from
- * @to: iterator to write to
- *
- * Copies one iterator's elements to another. If any element in
- * iterator is of container type, its content is copied recursively
- */
-static void recursive_iter_copy(DBusMessageIter *from, DBusMessageIter *to)
+static dbus_bool_t fill_dict_with_properties(
+	DBusMessageIter *dict_iter,
+	const struct wpa_dbus_property_desc *props,
+	const char *interface, void *user_data, DBusError *error)
 {
-
-	char *subtype = NULL;
-	int type;
-
-	/* iterate over iterator to copy */
-	while ((type = dbus_message_iter_get_arg_type(from)) !=
-	       DBUS_TYPE_INVALID) {
-
-		/* simply copy basic type entries */
-		if (dbus_type_is_basic(type)) {
-			if (dbus_type_is_fixed(type)) {
-				/*
-				 * According to DBus documentation all
-				 * fixed-length types are guaranteed to fit
-				 * 8 bytes
-				 */
-				dbus_uint64_t v;
-				dbus_message_iter_get_basic(from, &v);
-				dbus_message_iter_append_basic(to, type, &v);
-			} else {
-				char *v;
-				dbus_message_iter_get_basic(from, &v);
-				dbus_message_iter_append_basic(to, type, &v);
-			}
-		} else {
-			/* recursively copy container type entries */
-			DBusMessageIter write_subiter, read_subiter;
-
-			dbus_message_iter_recurse(from, &read_subiter);
-
-			if (type == DBUS_TYPE_VARIANT ||
-			    type == DBUS_TYPE_ARRAY) {
-				subtype = dbus_message_iter_get_signature(
-					&read_subiter);
-			}
-
-			dbus_message_iter_open_container(to, type, subtype,
-							 &write_subiter);
-
-			recursive_iter_copy(&read_subiter, &write_subiter);
-
-			dbus_message_iter_close_container(to, &write_subiter);
-			if (subtype)
-				dbus_free(subtype);
-		}
-
-		dbus_message_iter_next(from);
-	}
-}
-
-
-static unsigned int fill_dict_with_properties(
-	DBusMessageIter *dict_iter, const struct wpa_dbus_property_desc *props,
-	const char *interface, const void *user_data)
-{
-	DBusMessage *reply;
-	DBusMessageIter entry_iter, ret_iter;
-	unsigned int counter = 0;
+	DBusMessageIter entry_iter;
 	const struct wpa_dbus_property_desc *dsc;
 
 	for (dsc = props; dsc && dsc->dbus_property; dsc++) {
-		if (!os_strncmp(dsc->dbus_interface, interface,
-				WPAS_DBUS_INTERFACE_MAX) &&
-		    dsc->access != W && dsc->getter) {
-			reply = dsc->getter(NULL, user_data);
-			if (!reply)
-				continue;
+		/* Only return properties for the requested D-Bus interface */
+		if (os_strncmp(dsc->dbus_interface, interface,
+			       WPAS_DBUS_INTERFACE_MAX) != 0)
+			continue;
 
-			if (dbus_message_get_type(reply) ==
-			    DBUS_MESSAGE_TYPE_ERROR) {
-				dbus_message_unref(reply);
-				continue;
-			}
+		/* Skip write-only properties */
+		if (dsc->getter == NULL)
+			continue;
 
-			dbus_message_iter_init(reply, &ret_iter);
+		if (!dbus_message_iter_open_container(dict_iter,
+						      DBUS_TYPE_DICT_ENTRY,
+						      NULL, &entry_iter) ||
+		    !dbus_message_iter_append_basic(&entry_iter,
+						    DBUS_TYPE_STRING,
+						    &dsc->dbus_property))
+			goto error;
 
-			dbus_message_iter_open_container(dict_iter,
-							 DBUS_TYPE_DICT_ENTRY,
-							 NULL, &entry_iter);
-			dbus_message_iter_append_basic(
-				&entry_iter, DBUS_TYPE_STRING,
-				&dsc->dbus_property);
-
-			recursive_iter_copy(&ret_iter, &entry_iter);
-
-			dbus_message_iter_close_container(dict_iter,
-							  &entry_iter);
-			dbus_message_unref(reply);
-			counter++;
+		/* An error getting a property fails the request entirely */
+		if (!dsc->getter(dsc, &entry_iter, error, user_data)) {
+			wpa_printf(MSG_INFO,
+				   "dbus: %s dbus_interface=%s dbus_property=%s getter failed",
+				   __func__, dsc->dbus_interface,
+				   dsc->dbus_property);
+			return FALSE;
 		}
+
+		if (!dbus_message_iter_close_container(dict_iter, &entry_iter))
+			goto error;
 	}
 
-	return counter;
+	return TRUE;
+
+error:
+	dbus_set_error_const(error, DBUS_ERROR_NO_MEMORY, "no memory");
+	return FALSE;
 }
 
 
@@ -142,35 +79,38 @@ static unsigned int fill_dict_with_properties(
  * specified as argument. Returned message contains one dict argument
  * with properties names as keys and theirs values as values.
  */
-static DBusMessage * get_all_properties(
-	DBusMessage *message, char *interface,
-	struct wpa_dbus_object_desc *obj_dsc)
+static DBusMessage * get_all_properties(DBusMessage *message, char *interface,
+					struct wpa_dbus_object_desc *obj_dsc)
 {
-	/* Create and initialize the return message */
-	DBusMessage *reply = dbus_message_new_method_return(message);
+	DBusMessage *reply;
 	DBusMessageIter iter, dict_iter;
-	int props_num;
+	DBusError error;
+
+	reply = dbus_message_new_method_return(message);
+	if (reply == NULL)
+		return wpas_dbus_error_no_memory(message);
 
 	dbus_message_iter_init_append(reply, &iter);
-
-	dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY,
-					 DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING
-					 DBUS_TYPE_STRING_AS_STRING
-					 DBUS_TYPE_VARIANT_AS_STRING
-					 DBUS_DICT_ENTRY_END_CHAR_AS_STRING,
-					 &dict_iter);
-
-	props_num = fill_dict_with_properties(&dict_iter, obj_dsc->properties,
-					      interface, obj_dsc->user_data);
-
-	dbus_message_iter_close_container(&iter, &dict_iter);
-
-	if (props_num == 0) {
+	if (!wpa_dbus_dict_open_write(&iter, &dict_iter)) {
 		dbus_message_unref(reply);
-		reply = dbus_message_new_error(message,
-					       DBUS_ERROR_INVALID_ARGS,
-					       "No readable properties in "
-					       "this interface");
+		return wpas_dbus_error_no_memory(message);
+	}
+
+	dbus_error_init(&error);
+	if (!fill_dict_with_properties(&dict_iter, obj_dsc->properties,
+				       interface, obj_dsc->user_data, &error)) {
+		wpa_dbus_dict_close_write(&iter, &dict_iter);
+		dbus_message_unref(reply);
+		reply = wpas_dbus_reply_new_from_error(
+			message, &error, DBUS_ERROR_INVALID_ARGS,
+			"No readable properties in this interface");
+		dbus_error_free(&error);
+		return reply;
+	}
+
+	if (!wpa_dbus_dict_close_write(&iter, &dict_iter)) {
+		dbus_message_unref(reply);
+		return wpas_dbus_error_no_memory(message);
 	}
 
 	return reply;
@@ -193,8 +133,9 @@ static int is_signature_correct(DBusMessage *message,
 	for (arg = method_dsc->args; arg && arg->name; arg++) {
 		if (arg->dir == ARG_IN) {
 			size_t blen = registered_sig + MAX_SIG_LEN - pos;
+
 			ret = os_snprintf(pos, blen, "%s", arg->type);
-			if (ret < 0 || (size_t) ret >= blen)
+			if (os_snprintf_error(blen, ret))
 				return 0;
 			pos += ret;
 		}
@@ -219,15 +160,33 @@ static DBusMessage * properties_get(DBusMessage *message,
 				    const struct wpa_dbus_property_desc *dsc,
 				    void *user_data)
 {
-	if (os_strcmp(dbus_message_get_signature(message), "ss"))
+	DBusMessage *reply;
+	DBusMessageIter iter;
+	DBusError error;
+
+	if (os_strcmp(dbus_message_get_signature(message), "ss")) {
 		return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
 					      NULL);
+	}
 
-	if (dsc->access != W && dsc->getter)
-		return dsc->getter(message, user_data);
+	if (dsc->getter == NULL) {
+		return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
+					      "Property is write-only");
+	}
 
-	return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
-				      "Property is write-only");
+	reply = dbus_message_new_method_return(message);
+	dbus_message_iter_init_append(reply, &iter);
+
+	dbus_error_init(&error);
+	if (dsc->getter(dsc, &iter, &error, user_data) == FALSE) {
+		dbus_message_unref(reply);
+		reply = wpas_dbus_reply_new_from_error(
+			message, &error, DBUS_ERROR_FAILED,
+			"Failed to read property");
+		dbus_error_free(&error);
+	}
+
+	return reply;
 }
 
 
@@ -235,15 +194,38 @@ static DBusMessage * properties_set(DBusMessage *message,
 				    const struct wpa_dbus_property_desc *dsc,
 				    void *user_data)
 {
-	if (os_strcmp(dbus_message_get_signature(message), "ssv"))
+	DBusMessage *reply;
+	DBusMessageIter iter;
+	DBusError error;
+
+	if (os_strcmp(dbus_message_get_signature(message), "ssv")) {
 		return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
 					      NULL);
+	}
 
-	if (dsc->access != R && dsc->setter)
-		return dsc->setter(message, user_data);
+	if (dsc->setter == NULL) {
+		return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
+					      "Property is read-only");
+	}
 
-	return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
-				      "Property is read-only");
+	dbus_message_iter_init(message, &iter);
+	/* Skip the interface name and the property name */
+	dbus_message_iter_next(&iter);
+	dbus_message_iter_next(&iter);
+
+	/* Iter will now point to the property's new value */
+	dbus_error_init(&error);
+	if (dsc->setter(dsc, &iter, &error, user_data) == TRUE) {
+		/* Success */
+		reply = dbus_message_new_method_return(message);
+	} else {
+		reply = wpas_dbus_reply_new_from_error(
+			message, &error, DBUS_ERROR_FAILED,
+			"Failed to set property");
+		dbus_error_free(&error);
+	}
+
+	return reply;
 }
 
 
@@ -287,10 +269,13 @@ properties_get_or_set(DBusMessage *message, DBusMessageIter *iter,
 	}
 
 	if (os_strncmp(WPA_DBUS_PROPERTIES_GET, method,
-		       WPAS_DBUS_METHOD_SIGNAL_PROP_MAX) == 0)
+		       WPAS_DBUS_METHOD_SIGNAL_PROP_MAX) == 0) {
+		wpa_printf(MSG_MSGDUMP, "%s: Get(%s)", __func__, property);
 		return properties_get(message, property_dsc,
 				      obj_dsc->user_data);
+	}
 
+	wpa_printf(MSG_MSGDUMP, "%s: Set(%s)", __func__, property);
 	return properties_set(message, property_dsc, obj_dsc->user_data);
 }
 
@@ -312,8 +297,7 @@ static DBusMessage * properties_handler(DBusMessage *message,
 	    !os_strncmp(WPA_DBUS_PROPERTIES_GETALL, method,
 			WPAS_DBUS_METHOD_SIGNAL_PROP_MAX)) {
 		/* First argument: interface name (DBUS_TYPE_STRING) */
-		if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_STRING)
-		{
+		if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_STRING) {
 			return dbus_message_new_error(message,
 						      DBUS_ERROR_INVALID_ARGS,
 						      NULL);
@@ -369,8 +353,7 @@ static DBusMessage * msg_method_handler(DBusMessage *message,
 					      NULL);
 	}
 
-	return method_dsc->method_handler(message,
-					  obj_dsc->user_data);
+	return method_dsc->method_handler(message, obj_dsc->user_data);
 }
 
 
@@ -405,8 +388,9 @@ static DBusHandlerResult message_handler(DBusConnection *connection,
 	if (!method || !path || !msg_interface)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
-	wpa_printf(MSG_MSGDUMP, "dbus: %s.%s (%s)",
-		   msg_interface, method, path);
+	wpa_printf(MSG_MSGDUMP, "dbus: %s.%s (%s) [%s]",
+		   msg_interface, method, path,
+		   dbus_message_get_signature(message));
 
 	/* if message is introspection method call */
 	if (!os_strncmp(WPA_DBUS_INTROSPECTION_METHOD, method,
@@ -418,8 +402,7 @@ static DBusHandlerResult message_handler(DBusConnection *connection,
 #else /* CONFIG_CTRL_IFACE_DBUS_INTRO */
 		reply = dbus_message_new_error(
 			message, DBUS_ERROR_UNKNOWN_METHOD,
-			"wpa_supplicant was compiled without "
-			"introspection support.");
+			"wpa_supplicant was compiled without introspection support.");
 #endif /* CONFIG_CTRL_IFACE_DBUS_INTRO */
 	} else if (!os_strncmp(WPA_DBUS_PROPERTIES_INTERFACE, msg_interface,
 			     WPAS_DBUS_INTERFACE_MAX)) {
@@ -472,6 +455,7 @@ static void free_dbus_object_desc_cb(DBusConnection *connection, void *obj_dsc)
 	free_dbus_object_desc(obj_dsc);
 }
 
+
 /**
  * wpa_dbus_ctrl_iface_init - Initialize dbus control interface
  * @application_data: Pointer to application specific data structure
@@ -499,30 +483,28 @@ int wpa_dbus_ctrl_iface_init(struct wpas_dbus_priv *iface,
 	obj_desc->path = os_strdup(dbus_path);
 
 	/* Register the message handler for the global dbus interface */
-	if (!dbus_connection_register_object_path(iface->con,
-						  dbus_path, &wpa_vtable,
-						  obj_desc)) {
-		wpa_printf(MSG_ERROR, "dbus: Could not set up message "
-			   "handler");
+	if (!dbus_connection_register_object_path(iface->con, dbus_path,
+						  &wpa_vtable, obj_desc)) {
+		wpa_printf(MSG_ERROR, "dbus: Could not set up message handler");
 		return -1;
 	}
 
 	/* Register our service with the message bus */
 	dbus_error_init(&error);
-	switch (dbus_bus_request_name(iface->con, dbus_service,
-				      0, &error)) {
+	switch (dbus_bus_request_name(iface->con, dbus_service, 0, &error)) {
 	case DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER:
 		ret = 0;
 		break;
 	case DBUS_REQUEST_NAME_REPLY_EXISTS:
 	case DBUS_REQUEST_NAME_REPLY_IN_QUEUE:
 	case DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER:
-		wpa_printf(MSG_ERROR, "dbus: Could not request service name: "
-			   "already registered");
+		wpa_printf(MSG_ERROR,
+			   "dbus: Could not request service name: already registered");
 		break;
 	default:
-		wpa_printf(MSG_ERROR, "dbus: Could not request service name: "
-			   "%s %s", error.name, error.message);
+		wpa_printf(MSG_ERROR,
+			   "dbus: Could not request service name: %s %s",
+			   error.name, error.message);
 		break;
 	}
 	dbus_error_free(&error);
@@ -546,13 +528,12 @@ int wpa_dbus_ctrl_iface_init(struct wpas_dbus_priv *iface,
  *
  * Registers a new interface with dbus and assigns it a dbus object path.
  */
-int wpa_dbus_register_object_per_iface(
-	struct wpas_dbus_priv *ctrl_iface,
-	const char *path, const char *ifname,
-	struct wpa_dbus_object_desc *obj_desc)
+int wpa_dbus_register_object_per_iface(struct wpas_dbus_priv *ctrl_iface,
+				       const char *path, const char *ifname,
+				       struct wpa_dbus_object_desc *obj_desc)
 {
 	DBusConnection *con;
-
+	DBusError error;
 	DBusObjectPathVTable vtable = {
 		&free_dbus_object_desc_cb, &message_handler,
 		NULL, NULL, NULL, NULL
@@ -566,14 +547,22 @@ int wpa_dbus_register_object_per_iface(
 	obj_desc->connection = con;
 	obj_desc->path = os_strdup(path);
 
+	dbus_error_init(&error);
 	/* Register the message handler for the interface functions */
-	if (!dbus_connection_register_object_path(con, path, &vtable,
-						  obj_desc)) {
-		wpa_printf(MSG_ERROR, "dbus: Could not set up message "
-			   "handler for interface %s object %s", ifname, path);
+	if (!dbus_connection_try_register_object_path(con, path, &vtable,
+						      obj_desc, &error)) {
+		if (os_strcmp(error.name, DBUS_ERROR_OBJECT_PATH_IN_USE) == 0) {
+			wpa_printf(MSG_DEBUG, "dbus: %s", error.message);
+		} else {
+			wpa_printf(MSG_ERROR,
+				   "dbus: Could not set up message handler for interface %s object %s (error: %s message: %s)",
+				   ifname, path, error.name, error.message);
+		}
+		dbus_error_free(&error);
 		return -1;
 	}
 
+	dbus_error_free(&error);
 	return 0;
 }
 
@@ -597,12 +586,13 @@ int wpa_dbus_unregister_object_per_iface(
 
 	dbus_connection_get_object_path_data(con, path, (void **) &obj_desc);
 	if (!obj_desc) {
-		wpa_printf(MSG_ERROR, "dbus: %s: Could not obtain object's "
-			   "private data: %s", __func__, path);
-	} else {
-		eloop_cancel_timeout(flush_object_timeout_handler, con,
-				     obj_desc);
+		wpa_printf(MSG_ERROR,
+			   "dbus: %s: Could not obtain object's private data: %s",
+			   __func__, path);
+		return 0;
 	}
+
+	eloop_cancel_timeout(flush_object_timeout_handler, con, obj_desc);
 
 	if (!dbus_connection_unregister_object_path(con, path))
 		return -1;
@@ -611,14 +601,14 @@ int wpa_dbus_unregister_object_per_iface(
 }
 
 
-static void put_changed_properties(const struct wpa_dbus_object_desc *obj_dsc,
-				   const char *interface,
-				   DBusMessageIter *dict_iter)
+static dbus_bool_t put_changed_properties(
+	const struct wpa_dbus_object_desc *obj_dsc, const char *interface,
+	DBusMessageIter *dict_iter, int clear_changed)
 {
-	DBusMessage *getter_reply;
-	DBusMessageIter prop_iter, entry_iter;
+	DBusMessageIter entry_iter;
 	const struct wpa_dbus_property_desc *dsc;
 	int i;
+	DBusError error;
 
 	for (dsc = obj_dsc->properties, i = 0; dsc && dsc->dbus_property;
 	     dsc++, i++) {
@@ -627,43 +617,85 @@ static void put_changed_properties(const struct wpa_dbus_object_desc *obj_dsc,
 			continue;
 		if (os_strcmp(dsc->dbus_interface, interface) != 0)
 			continue;
-		obj_dsc->prop_changed_flags[i] = 0;
+		if (clear_changed)
+			obj_dsc->prop_changed_flags[i] = 0;
 
-		getter_reply = dsc->getter(NULL, obj_dsc->user_data);
-		if (!getter_reply ||
-		    dbus_message_get_type(getter_reply) ==
-		    DBUS_MESSAGE_TYPE_ERROR) {
-			wpa_printf(MSG_ERROR, "dbus: %s: Cannot get new value "
-				   "of property %s", __func__,
-				   dsc->dbus_property);
-			continue;
-		}
-
-		if (!dbus_message_iter_init(getter_reply, &prop_iter) ||
-		    !dbus_message_iter_open_container(dict_iter,
+		if (!dbus_message_iter_open_container(dict_iter,
 						      DBUS_TYPE_DICT_ENTRY,
 						      NULL, &entry_iter) ||
 		    !dbus_message_iter_append_basic(&entry_iter,
 						    DBUS_TYPE_STRING,
 						    &dsc->dbus_property))
-			goto err;
+			return FALSE;
 
-		recursive_iter_copy(&prop_iter, &entry_iter);
+		dbus_error_init(&error);
+		if (!dsc->getter(dsc, &entry_iter, &error, obj_dsc->user_data))
+		{
+			if (dbus_error_is_set(&error)) {
+				wpa_printf(MSG_ERROR,
+					   "dbus: %s: Cannot get new value of property %s: (%s) %s",
+					   __func__, dsc->dbus_property,
+					   error.name, error.message);
+			} else {
+				wpa_printf(MSG_ERROR,
+					   "dbus: %s: Cannot get new value of property %s",
+					   __func__, dsc->dbus_property);
+			}
+			dbus_error_free(&error);
+			return FALSE;
+		}
 
 		if (!dbus_message_iter_close_container(dict_iter, &entry_iter))
-			goto err;
-
-		dbus_message_unref(getter_reply);
+			return FALSE;
 	}
 
-	return;
-
-err:
-	wpa_printf(MSG_ERROR, "dbus: %s: Cannot construct signal", __func__);
+	return TRUE;
 }
 
 
-static void send_prop_changed_signal(
+static void do_send_prop_changed_signal(
+	DBusConnection *con, const char *path, const char *interface,
+	const struct wpa_dbus_object_desc *obj_dsc)
+{
+	DBusMessage *msg;
+	DBusMessageIter signal_iter, dict_iter;
+
+	msg = dbus_message_new_signal(path, DBUS_INTERFACE_PROPERTIES,
+				      "PropertiesChanged");
+	if (msg == NULL)
+		return;
+
+	dbus_message_iter_init_append(msg, &signal_iter);
+
+	if (!dbus_message_iter_append_basic(&signal_iter, DBUS_TYPE_STRING,
+					    &interface) ||
+	    /* Changed properties dict */
+	    !dbus_message_iter_open_container(&signal_iter, DBUS_TYPE_ARRAY,
+					      "{sv}", &dict_iter))
+		goto fail;
+	if (!put_changed_properties(obj_dsc, interface, &dict_iter, 0)) {
+		dbus_message_iter_close_container(&signal_iter, &dict_iter);
+		goto fail;
+	}
+	if (!dbus_message_iter_close_container(&signal_iter, &dict_iter) ||
+	    /* Invalidated properties array (empty) */
+	    !dbus_message_iter_open_container(&signal_iter, DBUS_TYPE_ARRAY,
+					      "s", &dict_iter) ||
+	    !dbus_message_iter_close_container(&signal_iter, &dict_iter))
+		goto fail;
+
+	dbus_connection_send(con, msg, NULL);
+
+out:
+	dbus_message_unref(msg);
+	return;
+fail:
+	wpa_printf(MSG_DEBUG, "dbus: %s: Failed to construct signal", __func__);
+	goto out;
+}
+
+
+static void do_send_deprecated_prop_changed_signal(
 	DBusConnection *con, const char *path, const char *interface,
 	const struct wpa_dbus_object_desc *obj_dsc)
 {
@@ -678,23 +710,45 @@ static void send_prop_changed_signal(
 
 	if (!dbus_message_iter_open_container(&signal_iter, DBUS_TYPE_ARRAY,
 					      "{sv}", &dict_iter))
-		goto err;
-
-	put_changed_properties(obj_dsc, interface, &dict_iter);
-
+		goto fail;
+	if (!put_changed_properties(obj_dsc, interface, &dict_iter, 1)) {
+		dbus_message_iter_close_container(&signal_iter, &dict_iter);
+		goto fail;
+	}
 	if (!dbus_message_iter_close_container(&signal_iter, &dict_iter))
-		goto err;
+		goto fail;
 
 	dbus_connection_send(con, msg, NULL);
 
 out:
 	dbus_message_unref(msg);
 	return;
-
-err:
-	wpa_printf(MSG_DEBUG, "dbus: %s: Failed to construct signal",
-		   __func__);
+fail:
+	wpa_printf(MSG_DEBUG, "dbus: %s: Failed to construct signal", __func__);
 	goto out;
+}
+
+
+static void send_prop_changed_signal(
+	DBusConnection *con, const char *path, const char *interface,
+	const struct wpa_dbus_object_desc *obj_dsc)
+{
+	/*
+	 * First, send property change notification on the standardized
+	 * org.freedesktop.DBus.Properties interface. This call will not
+	 * clear the property change bits, so that they are preserved for
+	 * the call that follows.
+	 */
+	do_send_prop_changed_signal(con, path, interface, obj_dsc);
+
+	/*
+	 * Now send PropertiesChanged on our own interface for backwards
+	 * compatibility. This is deprecated and will be removed in a future
+	 * release.
+	 */
+	do_send_deprecated_prop_changed_signal(con, path, interface, obj_dsc);
+
+	/* Property change bits have now been cleared. */
 }
 
 
@@ -703,8 +757,9 @@ static void flush_object_timeout_handler(void *eloop_ctx, void *timeout_ctx)
 	DBusConnection *con = eloop_ctx;
 	struct wpa_dbus_object_desc *obj_desc = timeout_ctx;
 
-	wpa_printf(MSG_DEBUG, "dbus: %s: Timeout - sending changed properties "
-		   "of object %s", __func__, obj_desc->path);
+	wpa_printf(MSG_MSGDUMP,
+		   "dbus: %s: Timeout - sending changed properties of object %s",
+		   __func__, obj_desc->path);
 	wpa_dbus_flush_object_changed_properties(con, obj_desc->path);
 }
 
@@ -774,7 +829,6 @@ void wpa_dbus_flush_object_changed_properties(DBusConnection *con,
 		return;
 	eloop_cancel_timeout(flush_object_timeout_handler, con, obj_desc);
 
-	dsc = obj_desc->properties;
 	for (dsc = obj_desc->properties, i = 0; dsc && dsc->dbus_property;
 	     dsc++, i++) {
 		if (obj_desc->prop_changed_flags == NULL ||
@@ -816,8 +870,9 @@ void wpa_dbus_mark_property_changed(struct wpas_dbus_priv *iface,
 	dbus_connection_get_object_path_data(iface->con, path,
 					     (void **) &obj_desc);
 	if (!obj_desc) {
-		wpa_printf(MSG_ERROR, "dbus: wpa_dbus_property_changed: "
-			   "could not obtain object's private data: %s", path);
+		wpa_printf(MSG_ERROR,
+			   "dbus: wpa_dbus_property_changed: could not obtain object's private data: %s",
+			   path);
 		return;
 	}
 
@@ -830,13 +885,14 @@ void wpa_dbus_mark_property_changed(struct wpas_dbus_priv *iface,
 		}
 
 	if (!dsc || !dsc->dbus_property) {
-		wpa_printf(MSG_ERROR, "dbus: wpa_dbus_property_changed: "
-			   "no property %s in object %s", property, path);
+		wpa_printf(MSG_ERROR,
+			   "dbus: wpa_dbus_property_changed: no property %s in object %s",
+			   property, path);
 		return;
 	}
 
 	if (!eloop_is_timeout_registered(flush_object_timeout_handler,
-					 iface->con, obj_desc->path)) {
+					 iface->con, obj_desc)) {
 		eloop_register_timeout(0, WPA_DBUS_SEND_PROP_CHANGED_TIMEOUT,
 				       flush_object_timeout_handler,
 				       iface->con, obj_desc);
@@ -849,27 +905,298 @@ void wpa_dbus_mark_property_changed(struct wpas_dbus_priv *iface,
  * @iface: dbus priv struct
  * @path: path to DBus object which properties will be obtained
  * @interface: interface name which properties will be obtained
- * @dict_iter: correct, open DBus dictionary iterator.
+ * @iter: DBus message iter at which to append property dictionary.
  *
  * Iterates over all properties registered with object and execute getters
  * of those, which are readable and which interface matches interface
  * specified as argument. Obtained properties values are stored in
  * dict_iter dictionary.
  */
-void wpa_dbus_get_object_properties(struct wpas_dbus_priv *iface,
-				    const char *path, const char *interface,
-				    DBusMessageIter *dict_iter)
+dbus_bool_t wpa_dbus_get_object_properties(struct wpas_dbus_priv *iface,
+					   const char *path,
+					   const char *interface,
+					   DBusMessageIter *iter)
 {
 	struct wpa_dbus_object_desc *obj_desc = NULL;
+	DBusMessageIter dict_iter;
+	DBusError error;
 
 	dbus_connection_get_object_path_data(iface->con, path,
 					     (void **) &obj_desc);
 	if (!obj_desc) {
-		wpa_printf(MSG_ERROR, "dbus: wpa_dbus_get_object_properties: "
-			   "could not obtain object's private data: %s", path);
-		return;
+		wpa_printf(MSG_ERROR,
+			   "dbus: %s: could not obtain object's private data: %s",
+			   __func__, path);
+		return FALSE;
 	}
 
-	fill_dict_with_properties(dict_iter, obj_desc->properties,
-				  interface, obj_desc->user_data);
+	if (!wpa_dbus_dict_open_write(iter, &dict_iter)) {
+		wpa_printf(MSG_ERROR, "dbus: %s: failed to open message dict",
+			   __func__);
+		return FALSE;
+	}
+
+	dbus_error_init(&error);
+	if (!fill_dict_with_properties(&dict_iter, obj_desc->properties,
+				       interface, obj_desc->user_data,
+				       &error)) {
+		wpa_printf(MSG_ERROR,
+			   "dbus: %s: failed to get object properties: (%s) %s",
+			   __func__,
+			   dbus_error_is_set(&error) ? error.name : "none",
+			   dbus_error_is_set(&error) ? error.message : "none");
+		dbus_error_free(&error);
+		wpa_dbus_dict_close_write(iter, &dict_iter);
+		return FALSE;
+	}
+
+	return wpa_dbus_dict_close_write(iter, &dict_iter);
+}
+
+/**
+ * wpas_dbus_new_decompose_object_path - Decompose an interface object path into parts
+ * @path: The dbus object path
+ * @sep: Separating part (e.g., "Networks" or "PersistentGroups")
+ * @item: (out) The part following the specified separator, if any
+ * Returns: The object path of the interface this path refers to
+ *
+ * For a given object path, decomposes the object path into object id and
+ * requested part, if those parts exist. The caller is responsible for freeing
+ * the returned value. The *item pointer points to that allocated value and must
+ * not be freed separately.
+ *
+ * As an example, path = "/fi/w1/wpa_supplicant1/Interfaces/1/Networks/0" and
+ * sep = "Networks" would result in "/fi/w1/wpa_supplicant1/Interfaces/1"
+ * getting returned and *items set to point to "0".
+ */
+char * wpas_dbus_new_decompose_object_path(const char *path, const char *sep,
+					   char **item)
+{
+	const unsigned int dev_path_prefix_len =
+		os_strlen(WPAS_DBUS_NEW_PATH_INTERFACES "/");
+	char *obj_path_only;
+	char *pos;
+	size_t sep_len;
+
+	*item = NULL;
+
+	/* Verify that this starts with our interface prefix */
+	if (os_strncmp(path, WPAS_DBUS_NEW_PATH_INTERFACES "/",
+		       dev_path_prefix_len) != 0)
+		return NULL; /* not our path */
+
+	/* Ensure there's something at the end of the path */
+	if ((path + dev_path_prefix_len)[0] == '\0')
+		return NULL;
+
+	obj_path_only = os_strdup(path);
+	if (obj_path_only == NULL)
+		return NULL;
+
+	pos = obj_path_only + dev_path_prefix_len;
+	pos = os_strchr(pos, '/');
+	if (pos == NULL)
+		return obj_path_only; /* no next item on the path */
+
+	 /* Separate network interface prefix from the path */
+	*pos++ = '\0';
+
+	sep_len = os_strlen(sep);
+	if (os_strncmp(pos, sep, sep_len) != 0 || pos[sep_len] != '/')
+		return obj_path_only; /* no match */
+
+	 /* return a pointer to the requested item */
+	*item = pos + sep_len + 1;
+	return obj_path_only;
+}
+
+
+/**
+ * wpas_dbus_reply_new_from_error - Create a new D-Bus error message from a
+ *   dbus error structure
+ * @message: The original request message for which the error is a reply
+ * @error: The error containing a name and a descriptive error cause
+ * @fallback_name: A generic error name if @error was not set
+ * @fallback_string: A generic error string if @error was not set
+ * Returns: A new D-Bus error message
+ *
+ * Given a DBusMessage structure, creates a new D-Bus error message using
+ * the error name and string contained in that structure.
+ */
+DBusMessage * wpas_dbus_reply_new_from_error(DBusMessage *message,
+					     DBusError *error,
+					     const char *fallback_name,
+					     const char *fallback_string)
+{
+	if (error && error->name && error->message) {
+		return dbus_message_new_error(message, error->name,
+					      error->message);
+	}
+	if (fallback_name && fallback_string) {
+		return dbus_message_new_error(message, fallback_name,
+					      fallback_string);
+	}
+	return NULL;
+}
+
+
+static double guard_interval_to_double(enum guard_interval value)
+{
+	switch (value) {
+	case GUARD_INTERVAL_0_4:
+		return 0.4;
+	case GUARD_INTERVAL_0_8:
+		return 0.8;
+	case GUARD_INTERVAL_1_6:
+		return 1.6;
+	case GUARD_INTERVAL_3_2:
+		return 3.2;
+	default:
+		return 0;
+	}
+}
+
+
+/**
+ * wpas_dbus_new_from_signal_information - Adds a wpa_signal_info
+ * to a DBusMessage.
+ * @msg: Pointer to message to append fields to
+ * @si: Pointer to wpa_signal_info to add to the message
+ * Returns: 0 on success, otherwise, an errorcode
+ *
+ * Adds all the pertinent fields from a wpa_signal_info to a DBusMessage.
+ * The same logic is useful in both responding to signal_poll calls, and
+ * sending signal_change signals.
+ */
+int wpas_dbus_new_from_signal_information(DBusMessageIter *iter,
+					  struct wpa_signal_info *si)
+{
+	DBusMessageIter iter_dict, variant_iter;
+
+	if (!dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT,
+					      "a{sv}", &variant_iter) ||
+	    !wpa_dbus_dict_open_write(&variant_iter, &iter_dict) ||
+	    !wpa_dbus_dict_append_int32(&iter_dict, "rssi",
+					si->data.signal) ||
+	    !wpa_dbus_dict_append_uint32(&iter_dict, "linkspeed",
+					si->data.current_tx_rate / 1000) ||
+	    !wpa_dbus_dict_append_int32(&iter_dict, "noise",
+					si->current_noise) ||
+	    !wpa_dbus_dict_append_uint32(&iter_dict, "frequency",
+					 si->frequency) ||
+	    (si->chanwidth != CHAN_WIDTH_UNKNOWN &&
+	     !wpa_dbus_dict_append_string(
+		     &iter_dict, "width",
+		     channel_width_to_string(si->chanwidth))) ||
+	    (si->center_frq1 > 0 && si->center_frq2 > 0 &&
+	     (!wpa_dbus_dict_append_int32(&iter_dict, "center-frq1",
+					  si->center_frq1) ||
+	      !wpa_dbus_dict_append_int32(&iter_dict, "center-frq2",
+					  si->center_frq2))) ||
+	    (si->data.avg_signal &&
+	     !wpa_dbus_dict_append_int32(&iter_dict, "avg-rssi",
+					 si->data.avg_signal)) ||
+	    (si->data.rx_bytes &&
+	     !wpa_dbus_dict_append_uint64(&iter_dict, "rx-bytes",
+					  si->data.rx_bytes)) ||
+	    (si->data.tx_bytes &&
+	     !wpa_dbus_dict_append_uint64(&iter_dict, "tx-bytes",
+					  si->data.tx_bytes)) ||
+	    (si->data.rx_packets &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "rx-packets",
+					  si->data.rx_packets)) ||
+	    (si->data.tx_packets &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "tx-packets",
+					  si->data.tx_packets)) ||
+	    (si->data.beacons_count &&
+	     !wpa_dbus_dict_append_uint64(&iter_dict, "beacons",
+					  si->data.beacons_count)) ||
+	    (si->data.current_rx_rate &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "linkrxspeed",
+					  si->data.current_rx_rate)) ||
+	    (si->data.current_rx_rate &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "linktxspeed",
+					  si->data.current_tx_rate)) ||
+	    (si->data.inactive_msec &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "inactive-time",
+					 si->data.inactive_msec)) ||
+	    (si->data.tx_retry_failed &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "retries-failed",
+					  si->data.tx_retry_failed)) ||
+	    (si->data.tx_retry_count &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "retries",
+					  si->data.tx_retry_count)) ||
+	    (si->data.last_ack_rssi &&
+	     !wpa_dbus_dict_append_int32(&iter_dict, "last-ack-rssi",
+					 si->data.last_ack_rssi)) ||
+	    (si->data.fcs_error_count &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "fcs-errors",
+					  si->data.fcs_error_count)) ||
+	    (si->data.beacon_loss_count &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "beacon-losses",
+					  si->data.beacon_loss_count)) ||
+	    (si->data.expected_throughput &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "expected-throughput",
+					  si->data.expected_throughput)) ||
+	    (si->data.rx_drop_misc &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "rx-drop-misc",
+					  si->data.rx_drop_misc)) ||
+	    (si->data.rx_mpdus &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "rx-mpdus",
+					  si->data.rx_mpdus)) ||
+	    (si->data.rx_hemcs &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "rx-he-mcs",
+					  si->data.rx_hemcs)) ||
+	    (si->data.tx_hemcs &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "tx-he-mcs",
+					  si->data.tx_hemcs)) ||
+	    (si->data.rx_vhtmcs &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "rx-vht-mcs",
+					  si->data.rx_vhtmcs)) ||
+	    (si->data.tx_vhtmcs &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "tx-vht-mcs",
+					  si->data.tx_vhtmcs)) ||
+	    (si->data.rx_mcs &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "rx-mcs",
+					  si->data.rx_mcs)) ||
+	    (si->data.tx_mcs &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "tx-mcs",
+					  si->data.tx_mcs)) ||
+	    (si->data.rx_he_nss &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "rx-he-nss",
+					  si->data.rx_he_nss)) ||
+	    (si->data.tx_he_nss &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "tx-he-nss",
+					  si->data.tx_he_nss)) ||
+	    (si->data.rx_vht_nss &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "rx-vht-nss",
+					  si->data.rx_vht_nss)) ||
+	    (si->data.tx_vht_nss &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "tx-vht-nss",
+					  si->data.tx_vht_nss)) ||
+	    (si->data.avg_beacon_signal &&
+	     !wpa_dbus_dict_append_int32(&iter_dict, "avg-beacon-rssi",
+					 si->data.avg_beacon_signal)) ||
+	    (si->data.avg_ack_signal &&
+	     !wpa_dbus_dict_append_int32(&iter_dict, "avg-ack-rssi",
+					 si->data.avg_ack_signal)) ||
+	    (si->data.rx_guard_interval &&
+	     !wpa_dbus_dict_append_double(
+		     &iter_dict, "rx-guard-interval",
+		     guard_interval_to_double(si->data.rx_guard_interval))) ||
+	    (si->data.tx_guard_interval &&
+	     !wpa_dbus_dict_append_double(
+		     &iter_dict, "tx-guard-interval",
+		     guard_interval_to_double(si->data.tx_guard_interval))) ||
+	    ((si->data.flags & STA_DRV_DATA_RX_HE_DCM) &&
+	     !wpa_dbus_dict_append_bool(&iter_dict, "rx-dcm",
+					si->data.rx_dcm)) ||
+	    ((si->data.flags & STA_DRV_DATA_TX_HE_DCM) &&
+	     !wpa_dbus_dict_append_bool(&iter_dict, "tx-dcm",
+					si->data.tx_dcm)) ||
+	    !wpa_dbus_dict_close_write(&variant_iter, &iter_dict) ||
+	    !dbus_message_iter_close_container(iter, &variant_iter))
+		return -ENOMEM;
+
+	return 0;
 }

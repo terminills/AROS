@@ -2,14 +2,8 @@
  * hostapd / EAP-Identity
  * Copyright (c) 2004-2006, Jouni Malinen <j@w1.fi>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * Alternatively, this software may be distributed under the terms of BSD
- * license.
- *
- * See README and COPYING for more details.
+ * This software may be distributed under the terms of the BSD license.
+ * See README for more details.
  */
 
 #include "includes.h"
@@ -85,8 +79,8 @@ static struct wpabuf * eap_identity_buildReq(struct eap_sm *sm, void *priv,
 }
 
 
-static Boolean eap_identity_check(struct eap_sm *sm, void *priv,
-				  struct wpabuf *respData)
+static bool eap_identity_check(struct eap_sm *sm, void *priv,
+			       struct wpabuf *respData)
 {
 	const u8 *pos;
 	size_t len;
@@ -95,10 +89,10 @@ static Boolean eap_identity_check(struct eap_sm *sm, void *priv,
 			       respData, &len);
 	if (pos == NULL) {
 		wpa_printf(MSG_INFO, "EAP-Identity: Invalid frame");
-		return TRUE;
+		return true;
 	}
 
-	return FALSE;
+	return false;
 }
 
 
@@ -108,6 +102,7 @@ static void eap_identity_process(struct eap_sm *sm, void *priv,
 	struct eap_identity_data *data = priv;
 	const u8 *pos;
 	size_t len;
+	char *buf;
 
 	if (data->pick_up) {
 		if (eap_identity_check(sm, data, respData)) {
@@ -125,8 +120,14 @@ static void eap_identity_process(struct eap_sm *sm, void *priv,
 		return; /* Should not happen - frame already validated */
 
 	wpa_hexdump_ascii(MSG_DEBUG, "EAP-Identity: Peer identity", pos, len);
+	buf = os_malloc(len * 4 + 1);
+	if (buf) {
+		printf_encode(buf, len * 4 + 1, pos, len);
+		eap_log_msg(sm, "EAP-Response/Identity '%s'", buf);
+		os_free(buf);
+	}
 	if (sm->identity)
-		sm->update_user = TRUE;
+		sm->update_user = true;
 	os_free(sm->identity);
 	sm->identity = os_malloc(len ? len : 1);
 	if (sm->identity == NULL) {
@@ -139,14 +140,14 @@ static void eap_identity_process(struct eap_sm *sm, void *priv,
 }
 
 
-static Boolean eap_identity_isDone(struct eap_sm *sm, void *priv)
+static bool eap_identity_isDone(struct eap_sm *sm, void *priv)
 {
 	struct eap_identity_data *data = priv;
 	return data->state != CONTINUE;
 }
 
 
-static Boolean eap_identity_isSuccess(struct eap_sm *sm, void *priv)
+static bool eap_identity_isSuccess(struct eap_sm *sm, void *priv)
 {
 	struct eap_identity_data *data = priv;
 	return data->state == SUCCESS;
@@ -156,7 +157,6 @@ static Boolean eap_identity_isSuccess(struct eap_sm *sm, void *priv)
 int eap_server_identity_register(void)
 {
 	struct eap_method *eap;
-	int ret;
 
 	eap = eap_server_method_alloc(EAP_SERVER_METHOD_INTERFACE_VERSION,
 				      EAP_VENDOR_IETF, EAP_TYPE_IDENTITY,
@@ -173,8 +173,5 @@ int eap_server_identity_register(void)
 	eap->isDone = eap_identity_isDone;
 	eap->isSuccess = eap_identity_isSuccess;
 
-	ret = eap_server_method_register(eap);
-	if (ret)
-		eap_server_method_free(eap);
-	return ret;
+	return eap_server_method_register(eap);
 }

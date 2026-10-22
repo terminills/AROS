@@ -67,6 +67,7 @@ struct subscr_addr {
 	char *domain_and_port; /* domain and port part of url */
 	char *path; /* "filepath" part of url (from "mem") */
 	struct sockaddr_in saddr; /* address for doing connect */
+	unsigned num_failures;
 };
 
 
@@ -91,31 +92,43 @@ struct subscription {
 	struct dl_list event_queue; /* Queued event messages. */
 	struct wps_event_ *current_event; /* non-NULL if being sent (not in q)
 					   */
+	int last_event_failed; /* Whether delivery of last event failed */
 
 	/* Information from SetSelectedRegistrar action */
 	u8 selected_registrar;
 	u16 dev_password_id;
 	u16 config_methods;
+	u8 authorized_macs[WPS_MAX_AUTHORIZED_MACS][ETH_ALEN];
 	struct wps_registrar *reg;
 };
 
 
+struct upnp_wps_device_interface {
+	struct dl_list list;
+	struct upnp_wps_device_ctx *ctx; /* callback table */
+	struct wps_context *wps;
+	void *priv;
+
+	struct dl_list peers; /* active UPnP peer sessions */
+};
+
 /*
- * Our instance data corresponding to one WiFi network interface
- * (multiple might share the same wired network interface!).
+ * Our instance data corresponding to the AP device. Note that there may be
+ * multiple wireless interfaces sharing the same UPnP device instance. Each
+ * such interface is stored in the list of struct upnp_wps_device_interface
+ * instances.
  *
  * This is known as an opaque struct declaration to users of the WPS UPnP code.
  */
 struct upnp_wps_device_sm {
-	struct upnp_wps_device_ctx *ctx; /* callback table */
-	struct wps_context *wps;
-	void *priv;
+	struct dl_list interfaces; /* struct upnp_wps_device_interface */
 	char *root_dir;
 	char *desc_url;
 	int started; /* nonzero if we are active */
 	u8 mac_addr[ETH_ALEN]; /* mac addr of network i.f. we use */
 	char *ip_addr_text; /* IP address of network i.f. we use */
 	unsigned ip_addr; /* IP address of network i.f. we use (host order) */
+	struct in_addr netmask;
 	int multicast_sd; /* send multicast messages over this socket */
 	int ssdp_sd; /* receive discovery UPD packets on socket */
 	int ssdp_sd_registered; /* nonzero if we must unregister */
@@ -130,9 +143,9 @@ struct upnp_wps_device_sm {
 				    */
 
 	char *wlanevent; /* the last WLANEvent data */
-
-	/* FIX: maintain separate structures for each UPnP peer */
-	struct upnp_wps_peer peer;
+	enum upnp_wps_wlanevent_type wlanevent_type;
+	os_time_t last_event_sec;
+	unsigned int num_events_in_sec;
 };
 
 /* wps_upnp.c */
@@ -144,9 +157,9 @@ struct subscription * subscription_renew(struct upnp_wps_device_sm *sm,
 void subscription_destroy(struct subscription *s);
 struct subscription * subscription_find(struct upnp_wps_device_sm *sm,
 					const u8 uuid[UUID_LEN]);
-int send_wpabuf(int fd, struct wpabuf *buf);
+void subscr_addr_delete(struct subscr_addr *a);
 int get_netif_info(const char *net_if, unsigned *ip_addr, char **ip_addr_text,
-		   u8 mac[ETH_ALEN]);
+		   struct in_addr *netmask, u8 mac[ETH_ALEN]);
 
 /* wps_upnp_ssdp.c */
 void msearchreply_state_machine_stop(struct advertisement_state_machine *a);
@@ -157,7 +170,7 @@ void ssdp_listener_stop(struct upnp_wps_device_sm *sm);
 int ssdp_listener_start(struct upnp_wps_device_sm *sm);
 int ssdp_listener_open(void);
 int add_ssdp_network(const char *net_if);
-int ssdp_open_multicast_sock(u32 ip_addr);
+int ssdp_open_multicast_sock(u32 ip_addr, const char *forced_ifname);
 int ssdp_open_multicast(struct upnp_wps_device_sm *sm);
 
 /* wps_upnp_web.c */
@@ -165,15 +178,17 @@ int web_listener_start(struct upnp_wps_device_sm *sm);
 void web_listener_stop(struct upnp_wps_device_sm *sm);
 
 /* wps_upnp_event.c */
-int event_add(struct subscription *s, const struct wpabuf *data);
-void event_delete_all(struct subscription *s);
-void event_send_all_later(struct upnp_wps_device_sm *sm);
-void event_send_stop_all(struct upnp_wps_device_sm *sm);
+int wps_upnp_event_add(struct subscription *s, const struct wpabuf *data,
+		       int probereq);
+void wps_upnp_event_delete_all(struct subscription *s);
+void wps_upnp_event_send_all_later(struct upnp_wps_device_sm *sm);
+void wps_upnp_event_send_stop_all(struct upnp_wps_device_sm *sm);
 
 /* wps_upnp_ap.c */
 int upnp_er_set_selected_registrar(struct wps_registrar *reg,
 				   struct subscription *s,
 				   const struct wpabuf *msg);
-void upnp_er_remove_notification(struct subscription *s);
+void upnp_er_remove_notification(struct wps_registrar *reg,
+				 struct subscription *s);
 
 #endif /* WPS_UPNP_I_H */

@@ -2,14 +2,8 @@
  * IEEE 802.1X-2004 Authenticator - EAPOL state machine (internal definitions)
  * Copyright (c) 2002-2009, Jouni Malinen <j@w1.fi>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * Alternatively, this software may be distributed under the terms of BSD
- * license.
- *
- * See README and COPYING for more details.
+ * This software may be distributed under the terms of the BSD license.
+ * See README for more details.
  */
 
 #ifndef EAPOL_AUTH_SM_I_H
@@ -49,23 +43,23 @@ struct eapol_state_machine {
 	int reAuthWhen;
 
 	/* global variables */
-	Boolean authAbort;
-	Boolean authFail;
+	bool authAbort;
+	bool authFail;
 	PortState authPortStatus;
-	Boolean authStart;
-	Boolean authTimeout;
-	Boolean authSuccess;
-	Boolean eapolEap;
-	Boolean initialize;
-	Boolean keyDone;
-	Boolean keyRun;
-	Boolean keyTxEnabled;
+	bool authStart;
+	bool authTimeout;
+	bool authSuccess;
+	bool eapolEap;
+	bool initialize;
+	bool keyDone;
+	bool keyRun;
+	bool keyTxEnabled;
 	PortTypes portControl;
-	Boolean portValid;
-	Boolean reAuthenticate;
+	bool portValid;
+	bool reAuthenticate;
 
 	/* Port Timers state machine */
-	/* 'Boolean tick' implicitly handled as registered timeout */
+	/* 'bool tick' implicitly handled as registered timeout */
 
 	/* Authenticator PAE state machine */
 	enum { AUTH_PAE_INITIALIZE, AUTH_PAE_DISCONNECTED, AUTH_PAE_CONNECTING,
@@ -73,8 +67,8 @@ struct eapol_state_machine {
 	       AUTH_PAE_ABORTING, AUTH_PAE_HELD, AUTH_PAE_FORCE_AUTH,
 	       AUTH_PAE_FORCE_UNAUTH, AUTH_PAE_RESTART } auth_pae_state;
 	/* variables */
-	Boolean eapolLogoff;
-	Boolean eapolStart;
+	bool eapolLogoff;
+	bool eapolStart;
 	PortTypes portMode;
 	unsigned int reAuthCount;
 	/* constants */
@@ -115,7 +109,7 @@ struct eapol_state_machine {
 	} reauth_timer_state;
 	/* constants */
 	unsigned int reAuthPeriod; /* default 3600 s */
-	Boolean reAuthEnabled;
+	bool reAuthEnabled;
 
 	/* Authenticator Key Transmit state machine */
 	enum { AUTH_KEY_TX_NO_KEY_TRANSMIT, AUTH_KEY_TX_KEY_TRANSMIT
@@ -124,14 +118,14 @@ struct eapol_state_machine {
 	/* Key Receive state machine */
 	enum { KEY_RX_NO_KEY_RECEIVE, KEY_RX_KEY_RECEIVE } key_rx_state;
 	/* variables */
-	Boolean rxKey;
+	bool rxKey;
 
 	/* Controlled Directions state machine */
 	enum { CTRL_DIR_FORCE_BOTH, CTRL_DIR_IN_OR_BOTH } ctrl_dir_state;
 	/* variables */
 	ControlledDirection adminControlledDirections;
 	ControlledDirection operControlledDirections;
-	Boolean operEdge;
+	bool operEdge;
 
 	/* Authenticator Statistics Table */
 	Counter dot1xAuthEapolFramesRx;
@@ -163,21 +157,24 @@ struct eapol_state_machine {
 			      * Authentication server */
 	u8 eap_type_supp; /* EAP type of the last EAP packet from Supplicant */
 	struct radius_class_data radius_class;
-
-	/* Keys for encrypting and signing EAPOL-Key frames */
-	u8 *eapol_key_sign;
-	size_t eapol_key_sign_len;
-	u8 *eapol_key_crypt;
-	size_t eapol_key_crypt_len;
+	struct wpabuf *radius_cui; /* Chargeable-User-Identity */
 
 	struct eap_sm *eap;
 
-	Boolean initializing; /* in process of initializing state machines */
-	Boolean changed;
+	bool initializing; /* in process of initializing state machines */
+	bool changed;
 
 	struct eapol_authenticator *eapol;
 
 	void *sta; /* station context pointer to use in callbacks */
+
+	int remediation;
+
+	u64 acct_multi_session_id;
+
+	unsigned int authenticated; /* The number of times authentication has
+				     * been completed successfully. */
+	bool stopped;
 };
 
 #endif /* EAPOL_AUTH_SM_I_H */

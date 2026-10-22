@@ -2,14 +2,8 @@
  * EAP-WSC server for Wi-Fi Protected Setup
  * Copyright (c) 2007-2008, Jouni Malinen <j@w1.fi>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * Alternatively, this software may be distributed under the terms of BSD
- * license.
- *
- * See README and COPYING for more details.
+ * This software may be distributed under the terms of the BSD license.
+ * See README for more details.
  */
 
 #include "includes.h"
@@ -18,6 +12,7 @@
 #include "eloop.h"
 #include "eap_i.h"
 #include "eap_common/eap_wsc_common.h"
+#include "p2p/p2p.h"
 #include "wps/wps.h"
 
 
@@ -108,10 +103,10 @@ static void * eap_wsc_init(struct eap_sm *sm)
 	data->registrar = registrar;
 
 	os_memset(&cfg, 0, sizeof(cfg));
-	cfg.wps = sm->wps;
+	cfg.wps = sm->cfg->wps;
 	cfg.registrar = registrar;
 	if (registrar) {
-		if (sm->wps == NULL || sm->wps->registrar == NULL) {
+		if (!sm->cfg->wps || !sm->cfg->wps->registrar) {
 			wpa_printf(MSG_INFO, "EAP-WSC: WPS Registrar not "
 				   "initialized");
 			os_free(data);
@@ -135,14 +130,24 @@ static void * eap_wsc_init(struct eap_sm *sm)
 	}
 	cfg.assoc_wps_ie = sm->assoc_wps_ie;
 	cfg.peer_addr = sm->peer_addr;
-	if (0 /* TODO: could provide option for forcing PSK format */)
-		 cfg.use_psk_key = 1;
+#ifdef CONFIG_P2P
+	if (sm->assoc_p2p_ie) {
+		if (!sm->cfg->wps->use_passphrase) {
+			wpa_printf(MSG_DEBUG,
+				   "EAP-WSC: Prefer PSK format for non-6 GHz P2P client");
+			cfg.use_psk_key = 1;
+		}
+		cfg.p2p_dev_addr = p2p_get_go_dev_addr(sm->assoc_p2p_ie);
+	}
+#endif /* CONFIG_P2P */
+	cfg.pbc_in_m1 = sm->cfg->pbc_in_m1;
 	data->wps = wps_init(&cfg);
 	if (data->wps == NULL) {
 		os_free(data);
 		return NULL;
 	}
-	data->fragment_size = WSC_FRAGMENT_SIZE;
+	data->fragment_size = sm->cfg->fragment_size > 0 ?
+		sm->cfg->fragment_size : WSC_FRAGMENT_SIZE;
 
 	return data;
 }
@@ -254,7 +259,7 @@ static struct wpabuf * eap_wsc_buildReq(struct eap_sm *sm, void *priv, u8 id)
 			}
 			data->out_used = 0;
 		}
-		/* pass through */
+		/* fall through */
 	case WAIT_FRAG_ACK:
 		return eap_wsc_build_msg(data, id);
 	case FRAG_ACK:
@@ -267,8 +272,8 @@ static struct wpabuf * eap_wsc_buildReq(struct eap_sm *sm, void *priv, u8 id)
 }
 
 
-static Boolean eap_wsc_check(struct eap_sm *sm, void *priv,
-			     struct wpabuf *respData)
+static bool eap_wsc_check(struct eap_sm *sm, void *priv,
+			  struct wpabuf *respData)
 {
 	const u8 *pos;
 	size_t len;
@@ -277,10 +282,10 @@ static Boolean eap_wsc_check(struct eap_sm *sm, void *priv,
 			       respData, &len);
 	if (pos == NULL || len < 2) {
 		wpa_printf(MSG_INFO, "EAP-WSC: Invalid frame");
-		return TRUE;
+		return true;
 	}
 
-	return FALSE;
+	return false;
 }
 
 
@@ -377,7 +382,7 @@ static void eap_wsc_process(struct eap_sm *sm, void *priv,
 		message_length = WPA_GET_BE16(pos);
 		pos += 2;
 
-		if (message_length < end - pos) {
+		if (message_length < end - pos || message_length > 50000) {
 			wpa_printf(MSG_DEBUG, "EAP-WSC: Invalid Message "
 				   "Length");
 			return;
@@ -459,17 +464,17 @@ static void eap_wsc_process(struct eap_sm *sm, void *priv,
 }
 
 
-static Boolean eap_wsc_isDone(struct eap_sm *sm, void *priv)
+static bool eap_wsc_isDone(struct eap_sm *sm, void *priv)
 {
 	struct eap_wsc_data *data = priv;
 	return data->state == FAIL;
 }
 
 
-static Boolean eap_wsc_isSuccess(struct eap_sm *sm, void *priv)
+static bool eap_wsc_isSuccess(struct eap_sm *sm, void *priv)
 {
 	/* EAP-WSC will always result in EAP-Failure */
-	return FALSE;
+	return false;
 }
 
 
@@ -485,7 +490,6 @@ static int eap_wsc_getTimeout(struct eap_sm *sm, void *priv)
 int eap_server_wsc_register(void)
 {
 	struct eap_method *eap;
-	int ret;
 
 	eap = eap_server_method_alloc(EAP_SERVER_METHOD_INTERFACE_VERSION,
 				      EAP_VENDOR_WFA, EAP_VENDOR_TYPE_WSC,
@@ -502,8 +506,5 @@ int eap_server_wsc_register(void)
 	eap->isSuccess = eap_wsc_isSuccess;
 	eap->getTimeout = eap_wsc_getTimeout;
 
-	ret = eap_server_method_register(eap);
-	if (ret)
-		eap_server_method_free(eap);
-	return ret;
+	return eap_server_method_register(eap);
 }

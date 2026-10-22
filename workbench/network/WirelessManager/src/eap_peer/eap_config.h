@@ -1,77 +1,18 @@
 /*
  * EAP peer configuration data
- * Copyright (c) 2003-2008, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2003-2019, Jouni Malinen <j@w1.fi>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * Alternatively, this software may be distributed under the terms of BSD
- * license.
- *
- * See README and COPYING for more details.
+ * This software may be distributed under the terms of the BSD license.
+ * See README for more details.
  */
 
 #ifndef EAP_CONFIG_H
 #define EAP_CONFIG_H
 
 /**
- * struct eap_peer_config - EAP peer configuration/credentials
+ * struct eap_peer_cert_config - EAP peer certificate configuration/credential
  */
-struct eap_peer_config {
-	/**
-	 * identity - EAP Identity
-	 *
-	 * This field is used to set the real user identity or NAI (for
-	 * EAP-PSK/PAX/SAKE/GPSK).
-	 */
-	u8 *identity;
-
-	/**
-	 * identity_len - EAP Identity length
-	 */
-	size_t identity_len;
-
-	/**
-	 * anonymous_identity -  Anonymous EAP Identity
-	 *
-	 * This field is used for unencrypted use with EAP types that support
-	 * different tunnelled identity, e.g., EAP-TTLS, in order to reveal the
-	 * real identity (identity field) only to the authentication server.
-	 *
-	 * If not set, the identity field will be used for both unencrypted and
-	 * protected fields.
-	 */
-	u8 *anonymous_identity;
-
-	/**
-	 * anonymous_identity_len - Length of anonymous_identity
-	 */
-	size_t anonymous_identity_len;
-
-	/**
-	 * password - Password string for EAP
-	 *
-	 * This field can include either the plaintext password (default
-	 * option) or a NtPasswordHash (16-byte MD4 hash of the unicode
-	 * presentation of the password) if flags field has
-	 * EAP_CONFIG_FLAGS_PASSWORD_NTHASH bit set to 1. NtPasswordHash can
-	 * only be used with authentication mechanism that use this hash as the
-	 * starting point for operation: MSCHAP and MSCHAPv2 (EAP-MSCHAPv2,
-	 * EAP-TTLS/MSCHAPv2, EAP-TTLS/MSCHAP, LEAP).
-	 *
-	 * In addition, this field is used to configure a pre-shared key for
-	 * EAP-PSK/PAX/SAKE/GPSK. The length of the PSK must be 16 for EAP-PSK
-	 * and EAP-PAX and 32 for EAP-SAKE. EAP-GPSK can use a variable length
-	 * PSK.
-	 */
-	u8 *password;
-
-	/**
-	 * password_len - Length of password field
-	 */
-	size_t password_len;
-
+struct eap_peer_cert_config {
 	/**
 	 * ca_cert - File path to CA certificate file (PEM/DER)
 	 *
@@ -101,7 +42,7 @@ struct eap_peer_config {
 	 * certificate store (My user account) is used, whereas computer store
 	 * (Computer account) is used when running wpasvc as a service.
 	 */
-	u8 *ca_cert;
+	char *ca_cert;
 
 	/**
 	 * ca_path - Directory path for CA certificate files (PEM)
@@ -112,7 +53,7 @@ struct eap_peer_config {
 	 * these certificates are added to the list of trusted CAs. ca_cert
 	 * may also be included in that case, but it is not required.
 	 */
-	u8 *ca_path;
+	char *ca_path;
 
 	/**
 	 * client_cert - File path to client certificate file (PEM/DER)
@@ -126,7 +67,7 @@ struct eap_peer_config {
 	 * Alternatively, a named configuration blob can be used by setting
 	 * this to blob://blob_name.
 	 */
-	u8 *client_cert;
+	char *client_cert;
 
 	/**
 	 * private_key - File path to client private key file (PEM/DER/PFX)
@@ -153,51 +94,71 @@ struct eap_peer_config {
 	 * Alternatively, a named configuration blob can be used by setting
 	 * this to blob://blob_name.
 	 */
-	u8 *private_key;
+	char *private_key;
 
 	/**
 	 * private_key_passwd - Password for private key file
 	 *
 	 * If left out, this will be asked through control interface.
 	 */
-	u8 *private_key_passwd;
-
-	/**
-	 * dh_file - File path to DH/DSA parameters file (in PEM format)
-	 *
-	 * This is an optional configuration file for setting parameters for an
-	 * ephemeral DH key exchange. In most cases, the default RSA
-	 * authentication does not use this configuration. However, it is
-	 * possible setup RSA to use ephemeral DH key exchange. In addition,
-	 * ciphers with DSA keys always use ephemeral DH keys. This can be used
-	 * to achieve forward secrecy. If the file is in DSA parameters format,
-	 * it will be automatically converted into DH params. Full path to the
-	 * file should be used since working directory may change when
-	 * wpa_supplicant is run in the background.
-	 *
-	 * Alternatively, a named configuration blob can be used by setting
-	 * this to blob://blob_name.
-	 */
-	u8 *dh_file;
+	char *private_key_passwd;
 
 	/**
 	 * subject_match - Constraint for server certificate subject
 	 *
 	 * This substring is matched against the subject of the authentication
-	 * server certificate. If this string is set, the server sertificate is
+	 * server certificate. If this string is set, the server certificate is
 	 * only accepted if it contains this string in the subject. The subject
 	 * string is in following format:
 	 *
 	 * /C=US/ST=CA/L=San Francisco/CN=Test AS/emailAddress=as@n.example.com
+	 *
+	 * Note: Since this is a substring match, this cannot be used securely
+	 * to do a suffix match against a possible domain name in the CN entry.
+	 * For such a use case, domain_suffix_match should be used instead.
 	 */
-	u8 *subject_match;
+	char *subject_match;
+
+	/**
+	 * check_cert_subject - Constraint for server certificate subject fields
+	 *
+	 * If check_cert_subject is set, the value of every field will be
+	 * checked against the DN of the subject in the authentication server
+	 * certificate. If the values do not match, the certificate verification
+	 * will fail, rejecting the server. This option allows wpa_supplicant to
+	 * match every individual field in the right order against the DN of the
+	 * subject in the server certificate.
+	 *
+	 * For example, check_cert_subject=C=US/O=XX/OU=ABC/OU=XYZ/CN=1234 will
+	 * check every individual DN field of the subject in the server
+	 * certificate. If OU=XYZ comes first in terms of the order in the
+	 * server certificate (DN field of server certificate
+	 * C=US/O=XX/OU=XYZ/OU=ABC/CN=1234), wpa_supplicant will reject the
+	 * server because the order of 'OU' is not matching the specified string
+	 * in check_cert_subject.
+	 *
+	 * This option also allows '*' as a wildcard. This option has some
+	 * limitation.
+	 * It can only be used as per the following example.
+	 *
+	 * For example, check_cert_subject=C=US/O=XX/OU=Production* and we have
+	 * two servers and DN of the subject in the first server certificate is
+	 * (C=US/O=XX/OU=Production Unit) and DN of the subject in the second
+	 * server is (C=US/O=XX/OU=Production Factory). In this case,
+	 * wpa_supplicant will allow both servers because the value of 'OU'
+	 * field in both server certificates matches 'OU' value in
+	 * 'check_cert_subject' up to 'wildcard'.
+	 *
+	 * (Allow all servers, e.g., check_cert_subject=*)
+	 */
+	char *check_cert_subject;
 
 	/**
 	 * altsubject_match - Constraint for server certificate alt. subject
 	 *
 	 * Semicolon separated string of entries to be matched against the
 	 * alternative subject name of the authentication server certificate.
-	 * If this string is set, the server sertificate is only accepted if it
+	 * If this string is set, the server certificate is only accepted if it
 	 * contains one of the entries in an alternative subject name
 	 * extension.
 	 *
@@ -208,102 +169,246 @@ struct eap_peer_config {
 	 *
 	 * Following types are supported: EMAIL, DNS, URI
 	 */
-	u8 *altsubject_match;
+	char *altsubject_match;
 
 	/**
-	 * ca_cert2 - File path to CA certificate file (PEM/DER) (Phase 2)
+	 * domain_suffix_match - Constraint for server domain name
 	 *
-	 * This file can have one or more trusted CA certificates. If ca_cert2
-	 * and ca_path2 are not included, server certificate will not be
-	 * verified. This is insecure and a trusted CA certificate should
-	 * always be configured. Full path to the file should be used since
-	 * working directory may change when wpa_supplicant is run in the
-	 * background.
+	 * If set, this semicolon deliminated list of FQDNs is used as suffix
+	 * match requirements for the server certificate in SubjectAltName
+	 * dNSName element(s). If a matching dNSName is found against any of the
+	 * specified values, this constraint is met. If no dNSName values are
+	 * present, this constraint is matched against SubjectName CN using same
+	 * suffix match comparison. Suffix match here means that the host/domain
+	 * name is compared case-insentively one label at a time starting from
+	 * the top-level domain and all the labels in domain_suffix_match shall
+	 * be included in the certificate. The certificate may include
+	 * additional sub-level labels in addition to the required labels.
 	 *
-	 * This field is like ca_cert, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication.
-	 *
-	 * Alternatively, a named configuration blob can be used by setting
-	 * this to blob://blob_name.
+	 * For example, domain_suffix_match=example.com would match
+	 * test.example.com but would not match test-example.com. Multiple
+	 * match options can be specified in following manner:
+	 * example.org;example.com.
 	 */
-	u8 *ca_cert2;
+	char *domain_suffix_match;
 
 	/**
-	 * ca_path2 - Directory path for CA certificate files (PEM) (Phase 2)
+	 * domain_match - Constraint for server domain name
 	 *
-	 * This path may contain multiple CA certificates in OpenSSL format.
-	 * Common use for this is to point to system trusted CA list which is
-	 * often installed into directory like /etc/ssl/certs. If configured,
-	 * these certificates are added to the list of trusted CAs. ca_cert
-	 * may also be included in that case, but it is not required.
+	 * If set, this FQDN is used as a full match requirement for the
+	 * server certificate in SubjectAltName dNSName element(s). If a
+	 * matching dNSName is found, this constraint is met. If no dNSName
+	 * values are present, this constraint is matched against SubjectName CN
+	 * using same full match comparison. This behavior is similar to
+	 * domain_suffix_match, but has the requirement of a full match, i.e.,
+	 * no subdomains or wildcard matches are allowed. Case-insensitive
+	 * comparison is used, so "Example.com" matches "example.com", but would
+	 * not match "test.Example.com".
 	 *
-	 * This field is like ca_path, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication.
+	 * More than one match string can be provided by using semicolons to
+	 * separate the strings (e.g., example.org;example.com). When multiple
+	 * strings are specified, a match with any one of the values is
+	 * considered a sufficient match for the certificate, i.e., the
+	 * conditions are ORed together.
 	 */
-	u8 *ca_path2;
+	char *domain_match;
 
 	/**
-	 * client_cert2 - File path to client certificate file
+	 * pin - PIN for USIM, GSM SIM, and smartcards
 	 *
-	 * This field is like client_cert, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication. Full path to the
-	 * file should be used since working directory may change when
-	 * wpa_supplicant is run in the background.
+	 * This field is used to configure PIN for SIM and smartcards for
+	 * EAP-SIM and EAP-AKA. In addition, this is used with EAP-TLS if a
+	 * smartcard is used for private key operations.
 	 *
-	 * Alternatively, a named configuration blob can be used by setting
-	 * this to blob://blob_name.
+	 * If left out, this will be asked through control interface.
 	 */
-	u8 *client_cert2;
+	char *pin;
 
 	/**
-	 * private_key2 - File path to client private key file
+	 * engine - Enable OpenSSL engine (e.g., for smartcard access)
 	 *
-	 * This field is like private_key, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication. Full path to the
-	 * file should be used since working directory may change when
-	 * wpa_supplicant is run in the background.
-	 *
-	 * Alternatively, a named configuration blob can be used by setting
-	 * this to blob://blob_name.
+	 * This is used if private key operations for EAP-TLS are performed
+	 * using a smartcard.
 	 */
-	u8 *private_key2;
+	int engine;
 
 	/**
-	 * private_key2_passwd -  Password for private key file
+	 * engine_id - Engine ID for OpenSSL engine
 	 *
-	 * This field is like private_key_passwd, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication.
+	 * "opensc" to select OpenSC engine or "pkcs11" to select PKCS#11
+	 * engine.
+	 *
+	 * This is used if private key operations for EAP-TLS are performed
+	 * using a smartcard.
 	 */
-	u8 *private_key2_passwd;
+	char *engine_id;
+
 
 	/**
-	 * dh_file2 - File path to DH/DSA parameters file (in PEM format)
+	 * key_id - Key ID for OpenSSL engine
 	 *
-	 * This field is like dh_file, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication. Full path to the
-	 * file should be used since working directory may change when
-	 * wpa_supplicant is run in the background.
-	 *
-	 * Alternatively, a named configuration blob can be used by setting
-	 * this to blob://blob_name.
+	 * This is used if private key operations for EAP-TLS are performed
+	 * using a smartcard.
 	 */
-	u8 *dh_file2;
+	char *key_id;
 
 	/**
-	 * subject_match2 - Constraint for server certificate subject
+	 * cert_id - Cert ID for OpenSSL engine
 	 *
-	 * This field is like subject_match, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication.
+	 * This is used if the certificate operations for EAP-TLS are performed
+	 * using a smartcard.
 	 */
-	u8 *subject_match2;
+	char *cert_id;
 
 	/**
-	 * altsubject_match2 - Constraint for server certificate alt. subject
+	 * ca_cert_id - CA Cert ID for OpenSSL engine
 	 *
-	 * This field is like altsubject_match, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication.
+	 * This is used if the CA certificate for EAP-TLS is on a smartcard.
 	 */
-	u8 *altsubject_match2;
+	char *ca_cert_id;
+
+	/**
+	 * ocsp - Whether to use/require OCSP to check server certificate
+	 *
+	 * 0 = do not use OCSP stapling (TLS certificate status extension)
+	 * 1 = try to use OCSP stapling, but not require response
+	 * 2 = require valid OCSP stapling response
+	 */
+	int ocsp;
+};
+
+/**
+ * struct eap_peer_config - EAP peer configuration/credentials
+ */
+struct eap_peer_config {
+	/**
+	 * identity - EAP Identity
+	 *
+	 * This field is used to set the real user identity or NAI (for
+	 * EAP-PSK/PAX/SAKE/GPSK).
+	 */
+	u8 *identity;
+
+	/**
+	 * identity_len - EAP Identity length
+	 */
+	size_t identity_len;
+
+	/**
+	 * anonymous_identity -  Anonymous EAP Identity
+	 *
+	 * This field is used for unencrypted use with EAP types that support
+	 * different tunnelled identity, e.g., EAP-TTLS, in order to reveal the
+	 * real identity (identity field) only to the authentication server.
+	 *
+	 * If not set, the identity field will be used for both unencrypted and
+	 * protected fields.
+	 *
+	 * This field can also be used with EAP-SIM/AKA/AKA' to store the
+	 * pseudonym identity.
+	 */
+	u8 *anonymous_identity;
+
+	/**
+	 * anonymous_identity_len - Length of anonymous_identity
+	 */
+	size_t anonymous_identity_len;
+
+	u8 *imsi_identity;
+	size_t imsi_identity_len;
+
+	/**
+	 * imsi_privacy_cert - IMSI privacy certificate
+	 *
+	 * This field is used with EAP-SIM/AKA/AKA' to encrypt the permanent
+	 * identity (IMSI) to improve privacy. The referenced PEM-encoded
+	 * X.509v3 certificate needs to include a 2048-bit RSA public key and
+	 * this is from the operator who authenticates the SIM/USIM.
+	 */
+	char *imsi_privacy_cert;
+
+	/**
+	 * imsi_privacy_attr - IMSI privacy attribute
+	 *
+	 * This field is used to help the EAP-SIM/AKA/AKA' server to identify
+	 * the used certificate (and as such, the matching private key). This
+	 * is set to an attribute in name=value format if the operator needs
+	 * this information.
+	 */
+	char *imsi_privacy_attr;
+
+	/**
+	 * machine_identity - EAP Identity for machine credential
+	 *
+	 * This field is used to set the machine identity or NAI for cases where
+	 * and explicit machine credential (instead of or in addition to a user
+	 * credential (from %identity) is needed.
+	 */
+	u8 *machine_identity;
+
+	/**
+	 * machine_identity_len - EAP Identity length for machine credential
+	 */
+	size_t machine_identity_len;
+
+	/**
+	 * password - Password string for EAP
+	 *
+	 * This field can include either the plaintext password (default
+	 * option) or a NtPasswordHash (16-byte MD4 hash of the unicode
+	 * presentation of the password) if flags field has
+	 * EAP_CONFIG_FLAGS_PASSWORD_NTHASH bit set to 1. NtPasswordHash can
+	 * only be used with authentication mechanism that use this hash as the
+	 * starting point for operation: MSCHAP and MSCHAPv2 (EAP-MSCHAPv2,
+	 * EAP-TTLS/MSCHAPv2, EAP-TTLS/MSCHAP, LEAP).
+	 *
+	 * In addition, this field is used to configure a pre-shared key for
+	 * EAP-PSK/PAX/SAKE/GPSK. The length of the PSK must be 16 for EAP-PSK
+	 * and EAP-PAX and 32 for EAP-SAKE. EAP-GPSK can use a variable length
+	 * PSK.
+	 */
+	u8 *password;
+
+	/**
+	 * password_len - Length of password field
+	 */
+	size_t password_len;
+
+	/**
+	 * machine_password - Password string for EAP machine credential
+	 *
+	 * This field is used when machine credential based on username/password
+	 * is needed instead of a user credential (from %password). See
+	 * %password for more details on the format.
+	 */
+	u8 *machine_password;
+
+	/**
+	 * machine_password_len - Length of machine credential password field
+	 */
+	size_t machine_password_len;
+
+	/**
+	 * cert - Certificate parameters for Phase 1
+	 */
+	struct eap_peer_cert_config cert;
+
+	/**
+	 * phase2_cert - Certificate parameters for Phase 2
+	 *
+	 * This is like cert, but used for Phase 2 (inside
+	 * EAP-TTLS/PEAP/FAST/TEAP tunnel) authentication.
+	 */
+	struct eap_peer_cert_config phase2_cert;
+
+	/**
+	 * machine_cert - Certificate parameters for Phase 2 machine credential
+	 *
+	 * This is like cert, but used for Phase 2 (inside EAP-TEAP tunnel)
+	 * authentication with machine credentials (while phase2_cert is used
+	 * for user credentials).
+	 */
+	struct eap_peer_cert_config machine_cert;
 
 	/**
 	 * eap_methods - Allowed EAP methods
@@ -366,8 +471,26 @@ struct eap_peer_config {
 	 * 1 = use cryptobinding if server supports it
 	 * 2 = require cryptobinding
 	 *
+	 * phase2_auth option can be used to control Phase 2 (i.e., within TLS
+	 * tunnel) behavior for PEAP:
+	 * 0 = do not require Phase 2 authentication
+	 * 1 = require Phase 2 authentication when client certificate
+	 *  (private_key/client_cert) is no used and TLS session resumption was
+	 *  not used (default)
+	 * 2 = require Phase 2 authentication in all cases
+	 *
 	 * EAP-WSC (WPS) uses following options: pin=Device_Password and
 	 * uuid=Device_UUID
+	 *
+	 * For wired IEEE 802.1X authentication, "allow_canned_success=1" can be
+	 * used to configure a mode that allows EAP-Success (and EAP-Failure)
+	 * without going through authentication step. Some switches use such
+	 * sequence when forcing the port to be authorized/unauthorized or as a
+	 * fallback option if the authentication server is unreachable. By
+	 * default, wpa_supplicant discards such frames to protect against
+	 * potential attacks by rogue devices, but this option can be used to
+	 * disable that protection for cases where the server/authenticator does
+	 * not need to be authenticated.
 	 */
 	char *phase1;
 
@@ -375,9 +498,18 @@ struct eap_peer_config {
 	 * phase2 - Phase2 (inner authentication with TLS tunnel) parameters
 	 *
 	 * String with field-value pairs, e.g., "auth=MSCHAPV2" for EAP-PEAP or
-	 * "autheap=MSCHAPV2 autheap=MD5" for EAP-TTLS.
+	 * "autheap=MSCHAPV2 autheap=MD5" for EAP-TTLS. "mschapv2_retry=0" can
+	 * be used to disable MSCHAPv2 password retry in authentication failure
+	 * cases.
 	 */
 	char *phase2;
+
+	/**
+	 * machine_phase2 - Phase2 parameters for machine credentials
+	 *
+	 * See phase2 for more details.
+	 */
+	char *machine_phase2;
 
 	/**
 	 * pcsc - Parameters for PC/SC smartcard interface for USIM and GSM SIM
@@ -389,123 +521,6 @@ struct eap_peer_config {
 	 * This field is used for EAP-SIM and EAP-AKA.
 	 */
 	char *pcsc;
-
-	/**
-	 * pin - PIN for USIM, GSM SIM, and smartcards
-	 *
-	 * This field is used to configure PIN for SIM and smartcards for
-	 * EAP-SIM and EAP-AKA. In addition, this is used with EAP-TLS if a
-	 * smartcard is used for private key operations.
-	 *
-	 * If left out, this will be asked through control interface.
-	 */
-	char *pin;
-
-	/**
-	 * engine - Enable OpenSSL engine (e.g., for smartcard access)
-	 *
-	 * This is used if private key operations for EAP-TLS are performed
-	 * using a smartcard.
-	 */
-	int engine;
-
-	/**
-	 * engine_id - Engine ID for OpenSSL engine
-	 *
-	 * "opensc" to select OpenSC engine or "pkcs11" to select PKCS#11
-	 * engine.
-	 *
-	 * This is used if private key operations for EAP-TLS are performed
-	 * using a smartcard.
-	 */
-	char *engine_id;
-
-	/**
-	 * engine2 - Enable OpenSSL engine (e.g., for smartcard) (Phase 2)
-	 *
-	 * This is used if private key operations for EAP-TLS are performed
-	 * using a smartcard.
-	 *
-	 * This field is like engine, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication.
-	 */
-	int engine2;
-
-
-	/**
-	 * pin2 - PIN for USIM, GSM SIM, and smartcards (Phase 2)
-	 *
-	 * This field is used to configure PIN for SIM and smartcards for
-	 * EAP-SIM and EAP-AKA. In addition, this is used with EAP-TLS if a
-	 * smartcard is used for private key operations.
-	 *
-	 * This field is like pin2, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication.
-	 *
-	 * If left out, this will be asked through control interface.
-	 */
-	char *pin2;
-
-	/**
-	 * engine2_id - Engine ID for OpenSSL engine (Phase 2)
-	 *
-	 * "opensc" to select OpenSC engine or "pkcs11" to select PKCS#11
-	 * engine.
-	 *
-	 * This is used if private key operations for EAP-TLS are performed
-	 * using a smartcard.
-	 *
-	 * This field is like engine_id, but used for phase 2 (inside
-	 * EAP-TTLS/PEAP/FAST tunnel) authentication.
-	 */
-	char *engine2_id;
-
-
-	/**
-	 * key_id - Key ID for OpenSSL engine
-	 *
-	 * This is used if private key operations for EAP-TLS are performed
-	 * using a smartcard.
-	 */
-	char *key_id;
-
-	/**
-	 * cert_id - Cert ID for OpenSSL engine
-	 *
-	 * This is used if the certificate operations for EAP-TLS are performed
-	 * using a smartcard.
-	 */
-	char *cert_id;
-
-	/**
-	 * ca_cert_id - CA Cert ID for OpenSSL engine
-	 *
-	 * This is used if the CA certificate for EAP-TLS is on a smartcard.
-	 */
-	char *ca_cert_id;
-
-	/**
-	 * key2_id - Key ID for OpenSSL engine (phase2)
-	 *
-	 * This is used if private key operations for EAP-TLS are performed
-	 * using a smartcard.
-	 */
-	char *key2_id;
-
-	/**
-	 * cert2_id - Cert ID for OpenSSL engine (phase2)
-	 *
-	 * This is used if the certificate operations for EAP-TLS are performed
-	 * using a smartcard.
-	 */
-	char *cert2_id;
-
-	/**
-	 * ca_cert2_id - CA Cert ID for OpenSSL engine (phase2)
-	 *
-	 * This is used if the CA certificate for EAP-TLS is on a smartcard.
-	 */
-	char *ca_cert2_id;
 
 	/**
 	 * otp - One-time-password
@@ -564,6 +579,15 @@ struct eap_peer_config {
 	 * information.
 	 */
 	int pending_req_passphrase;
+
+	/**
+	 * pending_req_sim - Pending SIM request
+	 *
+	 * This field should not be set in configuration step. It is only used
+	 * internally when control interface is used to request needed
+	 * information.
+	 */
+	int pending_req_sim;
 
 	/**
 	 * pending_req_otp - Whether there is a pending OTP request
@@ -625,6 +649,9 @@ struct eap_peer_config {
 	int fragment_size;
 
 #define EAP_CONFIG_FLAGS_PASSWORD_NTHASH BIT(0)
+#define EAP_CONFIG_FLAGS_EXT_PASSWORD BIT(1)
+#define EAP_CONFIG_FLAGS_MACHINE_PASSWORD_NTHASH BIT(2)
+#define EAP_CONFIG_FLAGS_EXT_MACHINE_PASSWORD BIT(3)
 	/**
 	 * flags - Network configuration flags (bitfield)
 	 *
@@ -632,8 +659,61 @@ struct eap_peer_config {
 	 * for the network parameters.
 	 * bit 0 = password is represented as a 16-byte NtPasswordHash value
 	 *         instead of plaintext password
+	 * bit 1 = password is stored in external storage; the value in the
+	 *         password field is the name of that external entry
+	 * bit 2 = machine password is represented as a 16-byte NtPasswordHash
+	 *         value instead of plaintext password
+	 * bit 3 = machine password is stored in external storage; the value in
+	 *         the password field is the name of that external entry
 	 */
 	u32 flags;
+
+	/**
+	 * external_sim_resp - Response from external SIM processing
+	 *
+	 * This field should not be set in configuration step. It is only used
+	 * internally when control interface is used to request external
+	 * SIM/USIM processing.
+	 */
+	char *external_sim_resp;
+
+	/**
+	 * sim_num - User selected SIM identifier
+	 *
+	 * This variable is used for identifying which SIM is used if the system
+	 * has more than one.
+	 */
+	int sim_num;
+
+	/**
+	 * openssl_ciphers - OpenSSL cipher string
+	 *
+	 * This is an OpenSSL specific configuration option for configuring the
+	 * ciphers for this connection. If not set, the default cipher suite
+	 * list is used.
+	 */
+	char *openssl_ciphers;
+
+	/**
+	 * erp - Whether EAP Re-authentication Protocol (ERP) is enabled
+	 */
+	int erp;
+
+	/**
+	 * pending_ext_cert_check - External server certificate check status
+	 *
+	 * This field should not be set in configuration step. It is only used
+	 * internally when control interface is used to request external
+	 * validation of server certificate chain.
+	 */
+	enum {
+		NO_CHECK = 0,
+		PENDING_CHECK,
+		EXT_CERT_CHECK_GOOD,
+		EXT_CERT_CHECK_BAD,
+	} pending_ext_cert_check;
+
+	int teap_anon_dh;
 };
 
 

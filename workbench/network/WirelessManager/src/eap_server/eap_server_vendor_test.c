@@ -2,14 +2,8 @@
  * hostapd / Test method for vendor specific (expanded) EAP type
  * Copyright (c) 2005-2007, Jouni Malinen <j@w1.fi>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * Alternatively, this software may be distributed under the terms of BSD
- * license.
- *
- * See README and COPYING for more details.
+ * This software may be distributed under the terms of the BSD license.
+ * See README for more details.
  */
 
 #include "includes.h"
@@ -18,7 +12,7 @@
 #include "eap_i.h"
 
 
-#define EAP_VENDOR_ID 0xfffefd
+#define EAP_VENDOR_ID EAP_VENDOR_HOSTAP
 #define EAP_VENDOR_TYPE 0xfcfbfaf9
 
 
@@ -94,8 +88,8 @@ static struct wpabuf * eap_vendor_test_buildReq(struct eap_sm *sm, void *priv,
 }
 
 
-static Boolean eap_vendor_test_check(struct eap_sm *sm, void *priv,
-				     struct wpabuf *respData)
+static bool eap_vendor_test_check(struct eap_sm *sm, void *priv,
+				  struct wpabuf *respData)
 {
 	const u8 *pos;
 	size_t len;
@@ -103,10 +97,10 @@ static Boolean eap_vendor_test_check(struct eap_sm *sm, void *priv,
 	pos = eap_hdr_validate(EAP_VENDOR_ID, EAP_VENDOR_TYPE, respData, &len);
 	if (pos == NULL || len < 1) {
 		wpa_printf(MSG_INFO, "EAP-VENDOR-TEST: Invalid frame");
-		return TRUE;
+		return true;
 	}
 
-	return FALSE;
+	return false;
 }
 
 
@@ -136,7 +130,7 @@ static void eap_vendor_test_process(struct eap_sm *sm, void *priv,
 }
 
 
-static Boolean eap_vendor_test_isDone(struct eap_sm *sm, void *priv)
+static bool eap_vendor_test_isDone(struct eap_sm *sm, void *priv)
 {
 	struct eap_vendor_test_data *data = priv;
 	return data->state == SUCCESS;
@@ -164,7 +158,7 @@ static u8 * eap_vendor_test_getKey(struct eap_sm *sm, void *priv, size_t *len)
 }
 
 
-static Boolean eap_vendor_test_isSuccess(struct eap_sm *sm, void *priv)
+static bool eap_vendor_test_isSuccess(struct eap_sm *sm, void *priv)
 {
 	struct eap_vendor_test_data *data = priv;
 	return data->state == SUCCESS;
@@ -174,7 +168,6 @@ static Boolean eap_vendor_test_isSuccess(struct eap_sm *sm, void *priv)
 int eap_server_vendor_test_register(void)
 {
 	struct eap_method *eap;
-	int ret;
 
 	eap = eap_server_method_alloc(EAP_SERVER_METHOD_INTERFACE_VERSION,
 				      EAP_VENDOR_ID, EAP_VENDOR_TYPE,
@@ -191,8 +184,5 @@ int eap_server_vendor_test_register(void)
 	eap->getKey = eap_vendor_test_getKey;
 	eap->isSuccess = eap_vendor_test_isSuccess;
 
-	ret = eap_server_method_register(eap);
-	if (ret)
-		eap_server_method_free(eap);
-	return ret;
+	return eap_server_method_register(eap);
 }
