@@ -1,11 +1,6 @@
-BINALL=wpa_supplicant wpa_cli
+BINALL=wpa_supplicant
 
 ALL = $(BINALL)
-ALL += systemd/wpa_supplicant.service
-ALL += systemd/wpa_supplicant@.service
-ALL += systemd/wpa_supplicant-nl80211@.service
-ALL += systemd/wpa_supplicant-wired@.service
-ALL += dbus/fi.w1.wpa_supplicant1.service
 
 EXTRA_TARGETS=dynamic_eap_methods
 
@@ -78,10 +73,15 @@ mkconfig:
 $(DESTDIR)$(BINDIR)/%: %
 	install -D $(<) $(@)
 
+ifeq ($(CONFIG_OS), amiga)
+install: all
+	cp wpa_supplicant $(BINDIR)/WirelessManager
+else
 install: $(addprefix $(DESTDIR)$(BINDIR)/,$(BINALL))
 	$(MAKE) -C ../src install
 ifndef CONFIG_NO_WPA_PASSPHRASE
 	install -D wpa_passphrase $(DESTDIR)/$(BINDIR)/wpa_passphrase
+endif
 endif
 
 ifdef CONFIG_BUILD_PASN_SO
@@ -134,6 +134,13 @@ endif
 
 ifeq ($(CONFIG_OS), internal)
 CFLAGS += -DOS_NO_C_LIB_DEFINES
+endif
+
+ifeq ($(CONFIG_OS), amiga)
+# AmigaOS/MorphOS/AROS: no sockets, the SANA-II device is the only I/O
+CONFIG_ELOOP=eloop_amiga
+CONFIG_L2_PACKET=sana2
+CONFIG_MAIN=main_amiga
 endif
 
 OBJS += ../src/utils/os_$(CONFIG_OS).o
@@ -1668,6 +1675,13 @@ endif
 
 ifdef NEED_ECC
 CFLAGS += -DCONFIG_ECC
+endif
+
+# Big numbers and elliptic curves (SAE) from mbed TLS, for the internal
+# crypto backend which has neither
+ifdef CONFIG_EC_MBEDTLS
+OBJS += ../src/crypto/crypto_mbedtls_ec.o
+LIBS += -lmbedcrypto
 endif
 
 ifdef CONFIG_NO_RANDOM_POOL

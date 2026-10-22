@@ -1,8 +1,7 @@
 
 include $(SRCDIR)/config/aros.cfg
 
-WMSUBDIRS :=	patches				\
-		src
+WMSUBDIRS :=	src
 
 .PHONY : wirelessmanager-copydirs
 
@@ -24,4 +23,3 @@ $(GENDIR)/$(CURDIR)/.dirs-copied : $(WMSRCFILES)
 	@$(TOUCH) $@
 
 #MM- workbench-network-wirelessmanager-setup : wirelessmanager-copydirs
-

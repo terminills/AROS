@@ -2,7 +2,12 @@
 include $(SRCDIR)/config/aros.cfg
 
 #MM- workbench-network : workbench-network-wirelessmanager
-#MM workbench-network-wirelessmanager : workbench-network-wirelessmanager-setup
+#MM workbench-network-wirelessmanager : workbench-network-wirelessmanager-setup linklibs-mbedcrypto
+
+# The elliptic curves for SAE come from the SDK's libmbedcrypto, which was
+# built with the AROS configuration; the same configuration has to be seen
+# here or the big number and point structures would not match.
+WM_MBEDTLS_CFLAGS := -I$(SRCDIR)/workbench/libs/mbedtls -DMBEDTLS_CONFIG_FILE='\"mbedtls_aros_config.h\"'
 
 workbench-network-wirelessmanager-touchfileflag := $(GENDIR)/$(CURDIR)/.files-touched
 
@@ -17,7 +22,7 @@ workbench-network-wirelessmanager-touchfileflag := $(GENDIR)/$(CURDIR)/.files-to
 # the AROS headers arrive through the sysroot, which -MMD leaves out.
 %build_with_configure mmake=workbench-network-wirelessmanager\
     	install_env="BINDIR=$(AROS_C)" use_build_env=yes \
-    	extracflags="$(OPTIMIZATION_CFLAGS) -MD"
+    	extracflags="$(OPTIMIZATION_CFLAGS) -MD $(WM_MBEDTLS_CFLAGS)"
 
 # The install stamp gates on .configured alone, so once the port is installed
 # its recipe - and the "make -q" inside it that consults the depfiles - never
