@@ -336,6 +336,8 @@ static BOOL HDA_InitCORB(struct HDAData *hc)
 {
     UBYTE sizereg;
     APTR phys;
+    BOOL rst_seen;
+    int i;
 
     /* 4.4.1.3 Initialize the CORB */
     hda_clearb(hc, HD_CORBCTL, HD_CORBRUN);
@@ -372,13 +374,34 @@ static BOOL HDA_InitCORB(struct HDAData *hc)
 #endif
 
     hda_writew(hc, HD_CORBWP, 0);
+
+    /* 3.3.21: reset the hardware read pointer, wait for the bit to
+       take, then clear it and wait for the clear */
+    hda_writew(hc, HD_CORBRP, HD_CORBRPRST);
+    for (i = 0; i < 1000; i++)
+    {
+        if (hda_readw(hc, HD_CORBRP) & HD_CORBRPRST)
+            break;
+        if ((i % 100) == 99)
+            hda_usleep(100);
+    }
+    rst_seen = (i < 1000);
+    hda_writew(hc, HD_CORBRP, 0);
+    for (i = 0; i < 1000; i++)
+    {
+        if (!(hda_readw(hc, HD_CORBRP) & HD_CORBRPRST))
+            break;
+        if ((i % 100) == 99)
+            hda_usleep(100);
+    }
+
     hda_setb(hc, HD_CORBCTL, HD_CORBRUN);
 
     hda_log(hc, "CORB: CORBSIZE %02x -> %u entries at %p, base %08x:%08x, "
-            "CORBRP %04x CORBCTL %02x", sizereg, hc->hc_CORBEntries,
-            hc->hc_CORB, hda_readl(hc, HD_CORB_HIGH),
+            "CORBRP %04x (reset bit %s) CORBCTL %02x", sizereg,
+            hc->hc_CORBEntries, hc->hc_CORB, hda_readl(hc, HD_CORB_HIGH),
             hda_readl(hc, HD_CORB_LOW), hda_readw(hc, HD_CORBRP),
-            hda_readb(hc, HD_CORBCTL));
+            rst_seen ? "seen" : "never read back", hda_readb(hc, HD_CORBCTL));
 
     return TRUE;
 }
@@ -424,6 +447,9 @@ static BOOL HDA_InitRIRB(struct HDAData *hc)
 #else
     hda_writel(hc, HD_RIRB_HIGH, 0);
 #endif
+
+    /* 3.3.28: reset the hardware write pointer (self-clearing bit) */
+    hda_writew(hc, HD_RIRBWP, HD_RIRBWPRST);
 
     /* Interrupt for every response */
     hda_writew(hc, HD_RINTCNT, 1);
