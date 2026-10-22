@@ -90,9 +90,10 @@ static void HDAPCI_Quirks(OOP_Object *dev, UWORD vendor, UWORD product)
     }
 
     if ((vendor == 0x1002 && (product == 0x437B || product == 0x4383)) ||
-        (vendor == 0x1022 && product == 0x780D))
+        (vendor == 0x1022 && (product == 0x780D || product == 0x1457 ||
+                              product == 0x1487 || product == 0x15E3)))
     {
-        D(bug("[" DRIVER "] ATI SB/AMD Hudson controller, enabling snoop\n"));
+        D(bug("[" DRIVER "] ATI SB/AMD controller, enabling snoop\n"));
         data = HIDD_PCIDevice_ReadConfigByte(dev, 0x42);
         HIDD_PCIDevice_WriteConfigByte(dev, 0x42, (data & ~0x07) | 0x02);
     }
