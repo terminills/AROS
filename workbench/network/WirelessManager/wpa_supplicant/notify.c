@@ -27,6 +27,10 @@
 #include "sme.h"
 #include "notify.h"
 
+#ifdef __AROS__
+void aros_publish_state(const char *state);
+#endif
+
 int wpas_notify_supplicant_initialized(struct wpa_global *global)
 {
 #ifdef CONFIG_CTRL_IFACE_DBUS_NEW
@@ -87,6 +91,9 @@ void wpas_notify_state_changed(struct wpa_supplicant *wpa_s,
 			       enum wpa_states new_state,
 			       enum wpa_states old_state)
 {
+#ifdef __AROS__
+	aros_publish_state(wpa_supplicant_state_txt(new_state));
+#endif
 	if (wpa_s->p2p_mgmt)
 		return;
 

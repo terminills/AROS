@@ -437,3 +437,11 @@ int inet_pton(int af, const char *src, void *dst)
 	}
 	return inet_aton(src, dst) ? 1 : 0;
 }
+
+/* The connection state for other programs: ENV:WirelessManager/State holds
+ * wpa_supplicant's state name, written on every change. */
+void aros_publish_state(const char *state)
+{
+	SetVar((CONST_STRPTR)"WirelessManager/State", (CONST_STRPTR)state, -1,
+	       GVF_GLOBAL_ONLY | LV_VAR);
+}
