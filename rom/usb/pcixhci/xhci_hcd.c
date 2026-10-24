@@ -3595,6 +3595,42 @@ static AROS_INTH1(xhciIntCode, struct PCIController *, hc)
                     }
                 }
 
+                /*
+                 * The event's TRB Transfer Length is the residual of the TRB
+                 * it points at, not of the TD (xHCI 4.11.5.2). A TD split
+                 * over several TRBs - a transfer crossing a 64 KB boundary -
+                 * that ends with a short packet in an earlier TRB leaves the
+                 * later TRBs untouched, so sum the TRBs up to the event's one
+                 * and hand the completion a residual for the whole TD.
+                 */
+                if(req && have_idx &&
+                   ((trbe_ccode == TRB_CC_SUCCESS) || (trbe_ccode == TRB_CC_SHORT_PACKET))) {
+                    struct pciusbXHCIIODevPrivate *dp =
+                        (struct pciusbXHCIIODevPrivate *)req->iouh_DriverPrivate1;
+
+                    if(dp && (dp->dpTxSTRB != (UWORD)-1) && (dp->dpTxETRB != (UWORD)-1) &&
+                       ((ULONG)dp->dpTxETRB != last)) {
+                        ULONG idx = dp->dpTxSTRB, done = 0, n = 0;
+                        BOOL inrange = FALSE;
+
+                        while(n++ < XHCI_EVENT_RING_TRBS) {
+                            ULONG tflags = AROS_LE2LONG(ring->ring[idx].flags);
+
+                            if((tflags & TRB_FLAG_TYPE_MASK) != TRBF_FLAG_TRTYPE_LINK)
+                                done += AROS_LE2LONG(ring->ring[idx].tparams) & 0x1FFFF;
+                            if(idx == last) {
+                                inrange = TRUE;
+                                break;
+                            }
+                            if(idx == (ULONG)dp->dpTxETRB)
+                                break;
+                            idx = ring_advance_idx(idx);
+                        }
+                        if(inrange && (done >= event_rem) && (done <= req->iouh_Length))
+                            event_rem = req->iouh_Length - (done - event_rem);
+                    }
+                }
+
                 doCompletion = xhciIntWorkProcess(hc, req, event_rem, trbe_ccode);
                 break;
             }
