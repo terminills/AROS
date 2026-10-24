@@ -81,10 +81,12 @@ struct App
     UBYTE *display;
     ULONG display_size;
     ULONG frame_width, frame_height;
+    ULONG requested_width, requested_height;
     char status[160];
 };
 
-enum { MENU_QUIT = 1, MENU_NEXT, MENU_PREVIOUS, MENU_PAUSE, MENU_SNAPSHOT };
+enum { MENU_QUIT = 1, MENU_NEXT, MENU_PREVIOUS, MENU_PAUSE, MENU_SNAPSHOT,
+       MENU_SIZE_DEFAULT, MENU_SIZE_VGA, MENU_SIZE_SVGA, MENU_SIZE_HD, MENU_SIZE_FHD };
 static struct NewMenu menu_spec[] = {
     { NM_TITLE, (STRPTR)"Project", NULL, 0, 0, NULL },
     { NM_ITEM, (STRPTR)"Save snapshot...", (STRPTR)"S", 0, 0, (APTR)MENU_SNAPSHOT },
@@ -94,6 +96,12 @@ static struct NewMenu menu_spec[] = {
     { NM_ITEM, (STRPTR)"Previous input", (STRPTR)"P", 0, 0, (APTR)MENU_PREVIOUS },
     { NM_TITLE, (STRPTR)"Capture", NULL, 0, 0, NULL },
     { NM_ITEM, (STRPTR)"Pause", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)MENU_PAUSE },
+    { NM_TITLE, (STRPTR)"Requested size", NULL, 0, 0, NULL },
+    { NM_ITEM, (STRPTR)"Input default", NULL, 0, 0, (APTR)MENU_SIZE_DEFAULT },
+    { NM_ITEM, (STRPTR)"640 x 480 (nearest native)", NULL, 0, 0, (APTR)MENU_SIZE_VGA },
+    { NM_ITEM, (STRPTR)"800 x 600 (nearest native)", NULL, 0, 0, (APTR)MENU_SIZE_SVGA },
+    { NM_ITEM, (STRPTR)"1280 x 720 (nearest native)", NULL, 0, 0, (APTR)MENU_SIZE_HD },
+    { NM_ITEM, (STRPTR)"1920 x 1080 (nearest native)", NULL, 0, 0, (APTR)MENU_SIZE_FHD },
     { NM_END, NULL, NULL, 0, 0, NULL }
 };
 
@@ -420,6 +428,19 @@ static BOOL process_events(struct App *app)
                 else if (action == MENU_NEXT) select_input(app, app->input + 1);
                 else if (action == MENU_PREVIOUS && app->input_count)
                     select_input(app, app->input ? app->input - 1 : app->input_count - 1);
+                else if (action >= MENU_SIZE_DEFAULT && action <= MENU_SIZE_FHD)
+                {
+                    static const ULONG sizes[][2] = {
+                        {0,0}, {640,480}, {800,600}, {1280,720}, {1920,1080}
+                    };
+                    ULONG index = action - MENU_SIZE_DEFAULT;
+                    app->requested_width = sizes[index][0];
+                    app->requested_height = sizes[index][1];
+                    free_frame(app->last_frame);
+                    app->last_frame = NULL;
+                    app->frame_width = app->frame_height = 0;
+                    set_status(app, "capture size changed; awaiting frame");
+                }
                 else if (action == MENU_PAUSE)
                 {
                     app->paused = (item->Flags & CHECKED) != 0;
@@ -555,10 +576,18 @@ int main(int argc, char **argv)
             continue;
         }
         memset(&digitize, 0, sizeof(digitize));
-        digitize.dim.x2 = maximum.max_width;
-        digitize.dim.y2 = maximum.max_height;
-        digitize.dim.dst_width = maximum.max_width;
-        digitize.dim.dst_height = maximum.max_height;
+        digitize.dim.x2 = digitize.dim.dst_width =
+            app.requested_width ? app.requested_width : maximum.max_width;
+        digitize.dim.y2 = digitize.dim.dst_height =
+            app.requested_height ? app.requested_height : maximum.max_height;
+        call_vhi(VHI_METHOD_PERFORM, VHI_CHECK_DIGITIZE_SIZE,
+                 &digitize.dim, &error, app.vhi_handle);
+        if (error || !digitize.dim.dst_width || !digitize.dim.dst_height)
+        {
+            set_status(&app, error ? vhi_error(error) : "requested size unavailable");
+            Delay(2);
+            continue;
+        }
         image = (struct vhi_image *)call_vhi(VHI_METHOD_PERFORM,
                                              VHI_DIGITIZE_PICTURE,
                                              &digitize, &error,
