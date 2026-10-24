@@ -139,6 +139,22 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
                     DDA_DescriptorLength, &len, TAG_END);
         if (!p || len < 3 || p[0] > len || p[0] < 3) continue;
         if (p[2] == UDST_VIDEO_STREAM_FORMAT_UNCOMPRESSED) {
+            if (p[0] >= 27) {
+                char guid[48];
+                IPTR vsnum = 0;
+                ULONG k;
+                /* Raw descriptor byte order avoids guessing GUID aliases or
+                 * treating a monochrome stream as packed YUY2. */
+                for (k = 0; k < 16; k++)
+                    snprintf(guid + 3*k, sizeof(guid) - 3*k,
+                             k == 15 ? "%02lx" : "%02lx:", (unsigned long)p[5+k]);
+                psdGetAttrs(PGA_INTERFACE, nch->ncu_VSInterface,
+                            IFA_InterfaceNum, &vsnum, TAG_END);
+                UVCLOG(LOGF_Flag_Type_Information,
+                       "'%s': VC %lu VS %lu uncompressed format %lu GUID bytes %s bpp %lu frames %lu default frame %lu",
+                       nch->ncu_Name, (IPTR)nch->ncu_IfNum, vsnum,
+                       (IPTR)p[3], guid, (IPTR)p[21], (IPTR)p[4], (IPTR)p[22]);
+            }
             format = (p[0] >= 27 && !memcmp(p+5, yuy2, 16) && p[21] == 16)
                 ? p[3] : 0;
         } else if (p[2] == UDST_VIDEO_STREAM_FORMAT_MJPEG) {
