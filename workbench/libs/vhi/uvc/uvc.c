@@ -49,6 +49,38 @@ static BOOL uvc_info(struct UvcHandle *uh, ULONG index, struct UVCCameraInfo *in
     IPTR args[2] = { index, (IPTR)info };
     return uvc_class(uh, UVCM_INFO, args) != 0;
 }
+/* Select the nearest native size; ties retain descriptor order. The default
+ * is preserved for unspecified dimensions and older classes without modes. */
+static LONG uvc_native_size(struct UvcHandle *uh, ULONG *width, ULONG *height)
+{
+    IPTR args[4] = { uh->uh_CameraId, 0, 0, 0 };
+    ULONG count, i, wanted_w = *width, wanted_h = *height;
+    unsigned long long best_distance = ~0ULL;
+    LONG selected = -1;
+    *width = uh->uh_Width;
+    *height = uh->uh_Height;
+    if (!uh->uh_Input || !wanted_w || !wanted_h) return -1;
+    count = uvc_class(uh, UVCM_MODECOUNT, args);
+    /* Bound enumeration even if a mismatched class returns a bogus count. */
+    if (count > 256) return -1;
+    for (i = 0; i < count; i++) {
+        struct UVCModeInfo mode;
+        unsigned long long distance;
+        args[1] = i; args[2] = (IPTR)&mode; args[3] = sizeof(mode);
+        if (!uvc_class(uh, UVCM_MODEINFO, args) ||
+            mode.pixel_format != UVC_MODE_YUY2 || !mode.width || !mode.height ||
+            mode.width > 1920 || mode.height > 1080) continue;
+        distance = (unsigned long long)(wanted_w > mode.width ?
+            wanted_w - mode.width : mode.width - wanted_w) +
+            (wanted_h > mode.height ? wanted_h - mode.height : mode.height - wanted_h);
+        if (distance < best_distance) {
+            best_distance = distance;
+            selected = i;
+            *width = mode.width; *height = mode.height;
+        }
+    }
+    return selected;
+}
 static STRPTR uvc_input_name(struct UvcHandle *uh, ULONG index)
 {
     struct UVCCameraInfo info;
@@ -241,9 +273,11 @@ AROS_LH5(IPTR, vhi_api,
                     if (attr)
                     {
                         struct vhi_dimensions *dim = (struct vhi_dimensions *)attr;
+                        ULONG width = dim->dst_width, height = dim->dst_height;
+                        uvc_native_size(uh, &width, &height);
                         dim->x1 = dim->y1 = 0;
-                        dim->x2 = dim->dst_width = uh->uh_Width;
-                        dim->y2 = dim->dst_height = uh->uh_Height;
+                        dim->x2 = dim->dst_width = width;
+                        dim->y2 = dim->dst_height = height;
                     }
                     break;
                 case VHI_DIGITIZE_PICTURE:
@@ -251,6 +285,9 @@ AROS_LH5(IPTR, vhi_api,
                     struct vhi_image *img;
                     APTR pixels;
                     struct vhi_digitize *dig = attr;
+                    ULONG width = dig ? dig->dim.dst_width : 0;
+                    ULONG height = dig ? dig->dim.dst_height : 0;
+                    LONG mode_index;
                     /* This driver returns public AllocVec storage only. Do not
                      * let a caller release it through a different allocator. */
                     if (dig && dig->custom_memhandling) {
@@ -258,18 +295,21 @@ AROS_LH5(IPTR, vhi_api,
                         break;
                     }
 
+                    mode_index = uvc_native_size(uh, &width, &height);
                     img = AllocVec(sizeof(struct vhi_image),
                                    MEMF_PUBLIC | MEMF_CLEAR);
                     if (!img) { err = VHI_ERR_OUT_OF_MEMORY; break; }
                     if (!uh->uh_Input) pixels = uvc_grab_testpattern(uh);
                     else {
-                        ULONG bytes = uh->uh_Width * uh->uh_Height * 3;
-                        IPTR args[3];
+                        ULONG bytes = width * height * 3;
+                        IPTR args[4];
                         pixels = AllocVec(bytes, MEMF_PUBLIC);
                         args[0] = uh->uh_CameraId;
                         args[1] = (IPTR)pixels;
                         args[2] = bytes;
-                        if (pixels && uvc_class(uh, UVCM_GRAB, args) != bytes) {
+                        args[3] = mode_index;
+                        if (pixels && uvc_class(uh, mode_index >= 0 ?
+                            UVCM_GRABMODE : UVCM_GRAB, args) != bytes) {
                             FreeVec(pixels);
                             pixels = NULL;
                         }
@@ -290,8 +330,8 @@ AROS_LH5(IPTR, vhi_api,
                     }
                     uh->uh_FrameSeq++;
                     img->chunky = pixels;
-                    img->width = uh->uh_Width;
-                    img->height = uh->uh_Height;
+                    img->width = width;
+                    img->height = height;
                     img->type = VHI_RGB_24;
                     img->scaled = FALSE;
                     result = (IPTR)img;   /* driver-allocated; consumer frees */
