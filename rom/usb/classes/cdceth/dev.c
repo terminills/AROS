@@ -974,7 +974,16 @@ WORD cmdGetSpecialStats(struct NepClassEth *ncp, struct IOSana2Req *ioreq)
             record->Type   = S2SS_ETHERNET_RETRIES;
             record->Count  = ncp->ncp_Retries;
             record->String = "retries";
-            //record++;
+            record++;
+
+            if(maxcount--)
+            {
+                stats->RecordCountSupplied++;
+
+                record->Type   = (S2WireType_Ethernet << 16) | 0x8000;
+                record->Count  = ncp->ncp_TxPadded;
+                record->String = "padded full-packet frames";
+            }
         }
     }
 

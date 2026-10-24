@@ -5,7 +5,7 @@
  *----------------------------------------------------------------------------
  *                         Includes for cdceth class
  *----------------------------------------------------------------------------
- *                   Copyright (C) 2025, The AROS Development Team.
+ *                   Copyright (C) 2025-2026, The AROS Development Team.
  */
 
 #include "common.h"
@@ -245,6 +245,7 @@ struct NepClassEth
     struct PsdEndpoint *ncp_EPOut;        /* Endpoint 1 */
     struct PsdPipe     *ncp_EPOutPipe;    /* Endpoint 1 pipe */
     IPTR                ncp_EPOutMaxPktSize; /* Endpoint 1 max pkt size */
+    ULONG               ncp_TxPadded;       /* frames given a pad byte to end a full last packet */
     struct PsdEndpoint *ncp_EPIn;         /* Endpoint 2 */
     struct PsdPipe     *ncp_EPInPipe;     /* Endpoint 2 pipe */
     struct MsgPort     *ncp_DevMsgPort;   /* Message Port for IOParReq */

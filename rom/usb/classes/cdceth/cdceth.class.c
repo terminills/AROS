@@ -782,7 +782,10 @@ AROS_UFH0(void, nEthTask)
             {
                 ioreq = (struct IOSana2Req *) RemHead(&ncp->ncp_WriteQueue);
                 Permit();
-                nWritePacket(ncp, ioreq);
+                if(!nWritePacket(ncp, ioreq))
+                {
+                    ReplyMsg((struct Message *) ioreq);
+                }
                 Forbid();
             }
             Permit();
@@ -1669,6 +1672,15 @@ BOOL nWritePacket(struct NepClassEth *ncp, struct IOSana2Req *ioreq)
     }
 
     cdceth_finalize_tx(ncp, buf, payload_offset, payload_len, total_len);
+
+    /* A transfer that fills its last packet exactly has no end marker: the
+       device keeps waiting for more. One extra byte makes the last packet short. */
+    if(ncp->ncp_EPOutMaxPktSize && !(total_len % ncp->ncp_EPOutMaxPktSize) &&
+       (total_len < ncp->ncp_WriteBufSize))
+    {
+        buf[total_len++] = 0;
+        ncp->ncp_TxPadded++;
+    }
 
     KPRINTF(20, ("PktOut[%ld] %ld\n", ncp->ncp_WriteBufNum, (long) payload_len));
 
