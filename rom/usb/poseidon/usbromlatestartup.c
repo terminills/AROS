@@ -58,6 +58,8 @@ AROS_UFH3(static IPTR, usbromstartup_late,
             psdAddClass("bootmouse.class", 0);
             psdAddClass("bootkeyboard.class", 0);
         }
+        /* a wired network before the boot volume: the class is in the boot package */
+        psdAddClass("cdceth.class", 0);
 
         D(bug("[USBROMStartup] %s: Binding classes...\n", __func__));
 
