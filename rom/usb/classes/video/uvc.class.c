@@ -601,34 +601,37 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
                 firsthdrlen = actual < sizeof(firsthdr) ? actual : sizeof(firsthdr);
                 memcpy(firsthdr, p, firsthdrlen);
             }
-            if (actual < 2 || p[0] < 2 || p[0] > actual) hdrbad++;
-            else {
-                if (p[1] & 2) eof++;
-                if (p[1] & 0x40) damaged++;
-            }
-            if (actual >= 12 && p[0] == 12 && (p[1] & 0x08)) {
-                /* SCR present: bytes 10-11 carry the 1 ms frame number; a
-                 * jump of more than one between consecutive payloads means
-                 * microframes went by without a transfer to land in. */
-                UWORD sof = (p[10] | ((UWORD)p[11] << 8)) & 0x7FF;
-                if (havesof) {
-                    UWORD d = (sof - lastsof) & 0x7FF;
-                    if (d > 1 && d < 1024) { sofgaps++; sofskip += d - 1; }
+            /* Continuation bytes in bulk transfers are pixels, not headers. */
+            if (!nch->ncu_IsBulk) {
+                if (actual < 2 || p[0] < 2 || p[0] > actual) hdrbad++;
+                else {
+                    if (p[1] & 2) eof++;
+                    if (p[1] & 0x40) damaged++;
                 }
-                lastsof = sof;
-                havesof = TRUE;
-            }
-            if (actual >= 12 && p[0] == 12) {
-                ULONG k, n = hdrcount < 128 ? hdrcount : 128;
-                for (k = 1; k <= n; k++) {
-                    if (!memcmp(hdrring[(hdrcount - k) % 128], p, 12)) {
-                        if (dups < 4) { dupdist[dups] = k; dupslot[dups] = packets; }
-                        dups++;
-                        break;
+                if (actual >= 12 && p[0] == 12 && (p[1] & 0x08)) {
+                    /* SCR present: bytes 10-11 carry the 1 ms frame number; a
+                     * jump of more than one between consecutive payloads means
+                     * microframes went by without a transfer to land in. */
+                    UWORD sof = (p[10] | ((UWORD)p[11] << 8)) & 0x7FF;
+                    if (havesof) {
+                        UWORD d = (sof - lastsof) & 0x7FF;
+                        if (d > 1 && d < 1024) { sofgaps++; sofskip += d - 1; }
                     }
+                    lastsof = sof;
+                    havesof = TRUE;
                 }
-                memcpy(hdrring[hdrcount % 128], p, 12);
-                hdrcount++;
+                if (actual >= 12 && p[0] == 12) {
+                    ULONG k, n = hdrcount < 128 ? hdrcount : 128;
+                    for (k = 1; k <= n; k++) {
+                        if (!memcmp(hdrring[(hdrcount - k) % 128], p, 12)) {
+                            if (dups < 4) { dupdist[dups] = k; dupslot[dups] = packets; }
+                            dups++;
+                            break;
+                        }
+                    }
+                    memcpy(hdrring[hdrcount % 128], p, 12);
+                    hdrcount++;
+                }
             }
         }
         if (frame.used > maxframe) maxframe = frame.used;
@@ -647,6 +650,16 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
 
 out:
     if (raised) SetTaskPri(me, oldpri);
+    if (frame.used > maxframe) maxframe = frame.used;
+    if (nch->ncu_IsBulk) {
+        hdrbad = frame.badhdr;
+        eof = frame.eofs;
+        damaged = frame.errbit;
+        if (!result && bulk.data)
+            UVCLOG(LOGF_Flag_Type_Information, "grab id=%lu bulk boundary state: synchronized %lu, pending payload %lu of %lu bytes",
+                   (IPTR)nch->ncu_Id, (IPTR)bulk.synchronized,
+                   (IPTR)bulk.used, (IPTR)bulk.capacity);
+    }
     if (timer && timersent && CheckIO((struct IORequest *)timer)) timedout = TRUE;
     if (!result) {
         nh->nh_FramesFailed++;
@@ -657,7 +670,7 @@ out:
                (IPTR)hdrbad, (IPTR)eof, (IPTR)damaged, (IPTR)maxframe, (IPTR)expected,
                (IPTR)firsterr, (IPTR)oversize, (IPTR)nh->nh_FramesOK, (IPTR)nh->nh_FramesFailed);
         if (firsthdrlen)
-            UVCLOG(LOGF_Flag_Type_Information, "grab id=%lu first payload header: %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx",
+            UVCLOG(LOGF_Flag_Type_Information, "grab id=%lu first transfer bytes: %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx",
                    (IPTR)nch->ncu_Id, (IPTR)firsthdr[0], (IPTR)firsthdr[1], (IPTR)firsthdr[2],
                    (IPTR)firsthdr[3], (IPTR)firsthdr[4], (IPTR)firsthdr[5], (IPTR)firsthdr[6],
                    (IPTR)firsthdr[7], (IPTR)firsthdr[8], (IPTR)firsthdr[9], (IPTR)firsthdr[10],
