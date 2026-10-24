@@ -91,7 +91,8 @@ AROS_LH3(DEVBASETYPEPTR, devOpen,
 
         if(!ioreq->ios2_Req.io_Unit)
         {
-            ioreq->ios2_Req.io_Error = IOERR_OPENFAIL;
+            if(ioreq->ios2_Req.io_Error != IOERR_UNITBUSY)
+                ioreq->ios2_Req.io_Error = IOERR_OPENFAIL;
             KPRINTF(20, ("devOpen: could not open unit!\n"));
         } else {
             ncp->ncp_OpenFlags |= flags;
