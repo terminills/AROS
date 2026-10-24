@@ -96,6 +96,15 @@
                             count++;
                         }
                         break;
+
+                    case GSLI_68KRELOCS:
+                        if ((tag->ti_Data) && (segfound->ln_Type == SEGTYPE_HUNK))
+                        {
+                            IPTR *storage = (IPTR *)tag->ti_Data;
+                            *storage = (IPTR)&((struct HunkSegNode *)segfound)->hsn_Relocs;
+                            count++;
+                        }
+                        break;
                 }
             }
 
