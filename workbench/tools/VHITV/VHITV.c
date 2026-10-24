@@ -20,6 +20,7 @@
 #include <aros/debug.h>
 #include <intuition/intuition.h>
 #include <libraries/gadtools.h>
+#include <libraries/asl.h>
 #include <graphics/rastport.h>
 #include <cybergraphx/cybergraphics.h>
 
@@ -28,6 +29,7 @@
 #include <proto/intuition.h>
 #include <proto/graphics.h>
 #include <proto/gadtools.h>
+#include <proto/asl.h>
 #include <proto/cybergraphics.h>
 
 #include <vhi/vhi.h>
@@ -41,6 +43,7 @@ struct GfxBase *GfxBase = NULL;
 struct Library *CyberGfxBase = NULL;
 struct Library *VHIBase = NULL;
 struct Library *GadToolsBase = NULL;
+struct Library *AslBase = NULL;
 
 /* VHI drivers are selected at runtime and all implement the same first LVO.
  * Do not include the generated proto/vhi.h inline here: its AROS_LIBREQ marks
@@ -67,6 +70,7 @@ struct App
     struct Menu *menus;
     APTR visual_info;
     BOOL paused;
+    struct vhi_image *last_frame;
     APTR vhi_handle;
     ULONG input_count;
     ULONG input;
@@ -77,9 +81,10 @@ struct App
     char status[160];
 };
 
-enum { MENU_QUIT = 1, MENU_NEXT, MENU_PREVIOUS, MENU_PAUSE };
+enum { MENU_QUIT = 1, MENU_NEXT, MENU_PREVIOUS, MENU_PAUSE, MENU_SNAPSHOT };
 static struct NewMenu menu_spec[] = {
     { NM_TITLE, (STRPTR)"Project", NULL, 0, 0, NULL },
+    { NM_ITEM, (STRPTR)"Save snapshot...", (STRPTR)"S", 0, 0, (APTR)MENU_SNAPSHOT },
     { NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)MENU_QUIT },
     { NM_TITLE, (STRPTR)"Input", NULL, 0, 0, NULL },
     { NM_ITEM, (STRPTR)"Next input", (STRPTR)"N", 0, 0, (APTR)MENU_NEXT },
@@ -245,6 +250,8 @@ static void select_input(struct App *app, ULONG input)
     if (app->input_name)
         FreeVec(app->input_name);
     app->input_name = (!error) ? name : NULL;
+    free_frame(app->last_frame);
+    app->last_frame = NULL;
     app->input = input;
     app->frame_width = app->frame_height = 0;
     SetAPen(app->window->RPort, 0);
@@ -319,6 +326,70 @@ static void render_frame(struct App *app, const struct vhi_image *image)
     set_status(app, "live - N/P changes input, Q quits");
 }
 
+/* Export the captured image, not the scaled window preview. */
+static void save_snapshot(struct App *app)
+{
+    struct FileRequester *request;
+    struct vhi_image *image = app->last_frame;
+    UBYTE *row = NULL;
+    BPTR file = 0, existing;
+    ULONG x, y;
+    char path[1024], header[80];
+    int header_size;
+    BOOL ok = FALSE;
+    if (!image || !image->width || !image->height)
+    {
+        set_status(app, "no captured frame to save");
+        return;
+    }
+    request = AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_Window, (IPTR)app->window,
+        ASLFR_TitleText, (IPTR)"Save snapshot as PPM",
+        ASLFR_DoSaveMode, TRUE,
+        ASLFR_InitialFile, (IPTR)"snapshot.ppm", TAG_DONE);
+    if (!request) { set_status(app, "file requester unavailable"); return; }
+    if (!AslRequest(request, NULL)) goto done;
+    if (strlen(request->fr_Drawer) >= sizeof(path)) goto failed;
+    strcpy(path, request->fr_Drawer);
+    if (!request->fr_File[0] || !AddPart(path, request->fr_File, sizeof(path)))
+        goto failed;
+    existing = Lock(path, ACCESS_READ);
+    if (existing)
+    {
+        struct EasyStruct confirm = { sizeof(struct EasyStruct), 0,
+            (STRPTR)"Replace snapshot?", (STRPTR)"The selected file exists.",
+            (STRPTR)"Replace|Cancel" };
+        UnLock(existing);
+        if (!EasyRequestArgs(app->window, &confirm, NULL, NULL)) goto done;
+    }
+    if (image->width > 0x7fffffffUL / 3) goto failed;
+    row = AllocVec(image->width * 3, MEMF_PUBLIC);
+    if (!row) goto failed;
+    /* Reject unsupported formats before opening or replacing the file. */
+    if (!source_rgb(image, 0, 0, row, row + 1, row + 2)) goto failed;
+    file = Open(path, MODE_NEWFILE);
+    if (!file) goto failed;
+    header_size = snprintf(header, sizeof(header), "P6\n%lu %lu\n255\n",
+        (unsigned long)image->width, (unsigned long)image->height);
+    if (header_size <= 0 || header_size >= sizeof(header) ||
+        Write(file, header, header_size) != header_size) goto failed;
+    for (y = 0; y < image->height; y++)
+    {
+        for (x = 0; x < image->width; x++)
+            if (!source_rgb(image, x, y, row + x*3, row + x*3+1,
+                            row + x*3+2)) goto failed;
+        if (Write(file, row, image->width * 3) != image->width * 3)
+            goto failed;
+    }
+    ok = Close(file); file = 0;
+failed:
+    set_status(app, ok ? "snapshot saved (PPM)" : "snapshot save failed");
+done:
+    if (file) Close(file);
+    if (row) FreeVec(row);
+    FreeAslRequest(request);
+}
+
 static BOOL process_events(struct App *app)
 {
     struct IntuiMessage *message;
@@ -342,6 +413,7 @@ static BOOL process_events(struct App *app)
                 code = item->NextSelect;
                 action = (ULONG)(IPTR)GTMENUITEM_USERDATA(item);
                 if (action == MENU_QUIT) running = FALSE;
+                else if (action == MENU_SNAPSHOT) save_snapshot(app);
                 else if (action == MENU_NEXT) select_input(app, app->input + 1);
                 else if (action == MENU_PREVIOUS && app->input_count)
                     select_input(app, app->input ? app->input - 1 : app->input_count - 1);
@@ -356,6 +428,8 @@ static BOOL process_events(struct App *app)
         {
             if (code == 'q' || code == 'Q')
                 running = FALSE;
+            else if (code == 's' || code == 'S')
+                save_snapshot(app);
             else if (code == 'n' || code == 'N')
                 select_input(app, app->input + 1);
             else if ((code == 'p' || code == 'P') && app->input_count)
@@ -395,7 +469,8 @@ int main(int argc, char **argv)
     CyberGfxBase = OpenLibrary((CONST_STRPTR)"cybergraphics.library", 0);
     VHIBase = OpenLibrary((CONST_STRPTR)driver, 0);
     GadToolsBase = OpenLibrary("gadtools.library", 39);
-    if (!IntuitionBase || !GfxBase || !CyberGfxBase || !VHIBase || !GadToolsBase)
+    AslBase = OpenLibrary("asl.library", 39);
+    if (!IntuitionBase || !GfxBase || !CyberGfxBase || !VHIBase || !GadToolsBase || !AslBase)
     {
         printf("VHITV: could not open required libraries or %s\n", driver);
         goto cleanup;
@@ -486,7 +561,12 @@ int main(int argc, char **argv)
                                              &digitize, &error,
                                              app.vhi_handle);
         if (image && !error)
+        {
             render_frame(&app, image);
+            free_frame(app.last_frame);
+            app.last_frame = image;
+            image = NULL;
+        }
         else
             set_status(&app, vhi_error(error));
         free_frame(image);
@@ -496,6 +576,7 @@ int main(int argc, char **argv)
     result = RETURN_OK;
 
 cleanup:
+    free_frame(app.last_frame);
     if (app.input_name) FreeVec(app.input_name);
     if (app.display) FreeVec(app.display);
     if (app.window && app.menus) ClearMenuStrip(app.window);
@@ -509,6 +590,7 @@ cleanup:
     }
     if (VHIBase) CloseLibrary(VHIBase);
     if (GadToolsBase) CloseLibrary(GadToolsBase);
+    if (AslBase) CloseLibrary(AslBase);
     if (CyberGfxBase) CloseLibrary(CyberGfxBase);
     if (GfxBase) CloseLibrary((struct Library *)GfxBase);
     if (IntuitionBase) CloseLibrary((struct Library *)IntuitionBase);
