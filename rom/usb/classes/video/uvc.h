@@ -78,6 +78,11 @@ struct NepUVCBase
     UWORD                nh_Flags;         /* various flags */
 
     struct Library      *nh_UtilityBase;   /* Utility base */
+
+    APTR                 nh_LogResBase;    /* log.resource, NULL if absent */
+    APTR                 nh_LogRHandle;    /* our log provider handle */
+    ULONG                nh_FramesOK;      /* grabs that produced a frame */
+    ULONG                nh_FramesFailed;  /* grabs that did not */
 };
 
 #endif /* UVC_H */

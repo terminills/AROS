@@ -5,12 +5,26 @@
 #include <string.h>
 
 /* A complete uncompressed frame must have one FID, no ERR payloads, an EOF,
- * and exactly the negotiated byte count. Never publish partial frames. */
+ * and exactly the negotiated byte count. Never publish partial frames.
+ * The counters record why frames were rejected, for the grab diagnostics. */
+#define UVC_EOF_SAMPLES 6
 struct uvc_payload {
     unsigned char *data;
     size_t capacity, used;
     unsigned int fid;
-    int have_fid, damaged;
+    int have_fid, damaged, saw_eof;
+    /* diagnostics */
+    unsigned long fidflips;              /* FID toggles seen */
+    unsigned long badhdr;                /* header length invalid */
+    unsigned long errbit;                /* payloads with the ERR bit */
+    unsigned long overshoot;             /* data beyond the frame's capacity */
+    unsigned long afterEOF;              /* data after EOF with the same FID */
+    unsigned long hdr2, hdr12, hdrother; /* header length histogram */
+    unsigned long eofs;                  /* EOF payloads seen */
+    size_t raw;                          /* data bytes seen for this FID, clipped or not */
+    size_t eofused[UVC_EOF_SAMPLES];     /* frame bytes kept at the first EOFs */
+    size_t eofraw[UVC_EOF_SAMPLES];      /* data bytes the device sent for those frames */
+    unsigned char eofstate[UVC_EOF_SAMPLES]; /* 0 ok, 1 damaged, 2 short */
 };
 static int uvc_payload_feed(struct uvc_payload *s,
                            const unsigned char *p, size_t len)
@@ -19,26 +33,44 @@ static int uvc_payload_feed(struct uvc_payload *s,
     unsigned int fid;
     if (len < 2 || p[0] < 2 || p[0] > len) {
         s->damaged = 1;
+        s->badhdr++;
         return 0;
     }
+    if (p[0] == 2) s->hdr2++;
+    else if (p[0] == 12) s->hdr12++;
+    else s->hdrother++;
     fid = p[1] & 1;
     if (!s->have_fid || fid != s->fid) {
+        if (s->have_fid) s->fidflips++;
         s->fid = fid;
         s->have_fid = 1;
         s->used = 0;
+        s->raw = 0;
         s->damaged = 0;
+        s->saw_eof = 0;
+    } else if (s->saw_eof && len > p[0]) {
+        /* data for this FID after its EOF payload */
+        s->afterEOF++;
     }
-    if (p[1] & 0x40) s->damaged = 1;
+    if (p[1] & 0x40) { s->damaged = 1; s->errbit++; }
     n = len - p[0];
-    if (n > s->capacity - s->used) s->damaged = 1;
+    s->raw += n;
+    if (n > s->capacity - s->used) { s->damaged = 1; s->overshoot++; }
     if (!s->damaged) {
         memcpy(s->data + s->used, p + p[0], n);
         s->used += n;
     }
     if (p[1] & 2) {
         int complete = !s->damaged && s->used == s->capacity;
+        if (s->eofs < UVC_EOF_SAMPLES) {
+            s->eofused[s->eofs] = s->used;
+            s->eofraw[s->eofs] = s->raw;
+            s->eofstate[s->eofs] = complete ? 0 : (s->damaged ? 1 : 2);
+        }
+        s->eofs++;
         /* Reject additional payloads with the same FID after EOF. */
         s->damaged = 1;
+        s->saw_eof = 1;
         return complete;
     }
     return 0;

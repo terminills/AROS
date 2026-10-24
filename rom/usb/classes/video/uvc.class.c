@@ -15,6 +15,19 @@
 #include <devices/uvc_capture.h>
 #include "uvc_payload.h"
 
+#define __LOG_LIBBASE (nh->nh_LogResBase)
+#include <proto/log.h>
+#include <resources/log.h>
+
+/* Diagnostics go to log.resource (System/LogView, or LogDump to a file) as
+ * well as the debug channel: a machine without a serial port has no other
+ * way to show why a grab failed. */
+#define UVCLOG(type, fmt, ...) do { \
+    if (nh->nh_LogRHandle) \
+        logAddEntry(((type) | 20), nh->nh_LogRHandle, "", __func__, 0, fmt, ##__VA_ARGS__); \
+    bug("uvc.class: " fmt "\n", ##__VA_ARGS__); \
+} while (0)
+
 /* /// "Lib Stuff" */
 static const STRPTR libname = MOD_NAME_STRING;
 
@@ -28,6 +41,9 @@ static int libInit(LIBBASETYPEPTR nh)
     InitSemaphore(&nh->nh_Lock);
     nh->nh_NextId = 0;
     nh->nh_UtilityBase = OpenLibrary("utility.library", 39);
+    nh->nh_LogResBase = OpenResource("log.resource");
+    if (nh->nh_LogResBase)
+        nh->nh_LogRHandle = logInitialise(&nh->nh_Library.lib_Node);
 
 #define	UtilityBase	nh->nh_UtilityBase
 
@@ -45,6 +61,8 @@ static int libInit(LIBBASETYPEPTR nh)
 static int libExpunge(LIBBASETYPEPTR nh)
 {
     KPRINTF(10, ("libExpunge nh: 0x%08lx\n", nh));
+    if (nh->nh_LogRHandle)
+        logFinalise(nh->nh_LogRHandle);
     CloseLibrary((struct Library *) UtilityBase);
     return(TRUE);
 }
@@ -56,19 +74,62 @@ ADD2EXPUNGELIB(libExpunge, 0)
 /* Only YUY2 is accepted here: other uncompressed GUIDs have different layouts.
  * Prefer the smallest advertised mode, bounded to VGA for USB bandwidth and
  * memory use. The bDefaultFrameInterval belongs to that exact frame. */
+#define UVC_MAX_FRAMES 32
+/* Isochronous transfers in flight. Each covers one 125 us service interval
+ * and the controller drops whatever arrives while its ring is empty, so this
+ * is how long the refilling task may be away: 112 x 125 us = 14 ms. The
+ * endpoint ring holds 128 entries. */
+#define UVC_SLOTS 112
+struct uvc_frame_cand {
+    UWORD w, h;
+    UBYTE format, frame;
+    ULONG interval;   /* slowest advertised interval of at least 10 fps */
+    ULONG defint;     /* the frame descriptor's own default interval */
+    ULONG maxbuf;     /* dwMaxVideoFrameBufferSize from the descriptor */
+};
+
 static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
 {
+    struct NepUVCBase *nh = nch->ncu_ClsBase;
     struct Library *ps = OpenLibrary("poseidon.library", 4);
     APTR dd = NULL;
+    ULONG alts_with_iso = 0;
     UBYTE format = 0;
-    ULONG best = 0;
+    struct uvc_frame_cand cand[UVC_MAX_FRAMES];
+    ULONG ncand = 0;
+    LONG chosen = -1;
+    const char *reason = "";
+    IPTR superspeed = FALSE;
+    ULONG altcap;
     static const UBYTE yuy2[16] = {
         'Y','U','Y','2',0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71
     };
     if (!ps) return FALSE;
-    nch->ncu_VSInterface = psdFindInterface(nch->ncu_Device, NULL,
-        IFA_Class, VIDEO_CLASSCODE, IFA_SubClass, VIDEO_STREAM_SUBCLASS,
-        TAG_END);
+    /* The VideoControl header (CS_INTERFACE subtype 1) names the streaming
+     * interfaces that belong to this control interface (baInterfaceNr). A
+     * device with two camera functions, such as an RGB and an IR module,
+     * has two of each; take ours, not the first one on the device. */
+    while ((dd = psdFindDescriptor(nch->ncu_Device, dd,
+        DDA_DescriptorType, UDT_CS_INTERFACE,
+        DDA_Interface, nch->ncu_Interface, TAG_END))) {
+        UBYTE *p = NULL;
+        IPTR len = 0;
+        ULONG i;
+        psdGetAttrs(PGA_DESCRIPTOR, dd, DDA_DescriptorData, &p,
+                    DDA_DescriptorLength, &len, TAG_END);
+        if (!p || len < 13 || p[0] > len || p[2] != 0x01) continue;
+        for (i = 0; i < p[11] && 12 + i < p[0] && !nch->ncu_VSInterface; i++)
+            nch->ncu_VSInterface = psdFindInterface(nch->ncu_Device, NULL,
+                IFA_InterfaceNum, p[12 + i],
+                IFA_Class, VIDEO_CLASSCODE, IFA_SubClass, VIDEO_STREAM_SUBCLASS,
+                TAG_END);
+        break;
+    }
+    dd = NULL;
+    if (!nch->ncu_VSInterface)
+        nch->ncu_VSInterface = psdFindInterface(nch->ncu_Device, NULL,
+            IFA_Class, VIDEO_CLASSCODE, IFA_SubClass, VIDEO_STREAM_SUBCLASS,
+            TAG_END);
     if (!nch->ncu_VSInterface) goto done;
     while ((dd = psdFindDescriptor(nch->ncu_Device, dd,
         DDA_DescriptorType, UDT_CS_INTERFACE,
@@ -101,19 +162,27 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
                         interval = candidate;
                 }
             }
-            if (w && h && !(w & 1) && w <= 640 && h <= 480 && interval &&
-                (!best || w*h < best)) {
-                best = w*h;
-                nch->ncu_Width = w;
-                nch->ncu_Height = h;
-                nch->ncu_FormatIndex = format;
-                nch->ncu_FrameIndex = p[3];
-                nch->ncu_Interval = interval;
-                nch->ncu_MaxFrameBuf = best * 2;
+            if (w && h && !(w & 1) && w <= 1920 && h <= 1080 && interval &&
+                ncand < UVC_MAX_FRAMES) {
+                cand[ncand].w = w;
+                cand[ncand].h = h;
+                cand[ncand].format = format;
+                cand[ncand].frame = p[3];
+                cand[ncand].interval = interval;
+                cand[ncand].defint = p[21] | ((ULONG)p[22] << 8) |
+                                     ((ULONG)p[23] << 16) | ((ULONG)p[24] << 24);
+                cand[ncand].maxbuf = p[17] | ((ULONG)p[18] << 8) |
+                                     ((ULONG)p[19] << 16) | ((ULONG)p[20] << 24);
+                ncand++;
             }
         }
     }
-    if (best) {
+    /* The stream endpoint: a bulk IN on the interface itself, or the
+     * isochronous IN alternate with the most bandwidth the bus allows
+     * (3 x 1024 per microframe at high speed, 48 x 1024 at SuperSpeed). */
+    psdGetAttrs(PGA_DEVICE, nch->ncu_Device, DA_IsSuperspeed, &superspeed, TAG_END);
+    altcap = superspeed ? 49152 : 3072;
+    {
         struct List *alts = NULL;
         struct Node *node;
         nch->ncu_StreamEP = psdFindEndpoint(nch->ncu_VSInterface, NULL,
@@ -131,40 +200,138 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
                 psdGetAttrs(PGA_ENDPOINT, ep, EA_MaxPktSize, &raw,
                             EA_NumTransMuFrame, &transactions, TAG_END);
                 bytes = raw * transactions;
-                if (bytes > nch->ncu_StreamMaxPkt && bytes <= 3072) {
+                alts_with_iso++;
+                if (bytes > nch->ncu_StreamMaxPkt && bytes <= altcap) {
                     nch->ncu_StreamEP = ep;
                     nch->ncu_StreamAltIf = (APTR)node;
                     nch->ncu_StreamMaxPkt = bytes;
                 }
             }
         }
-        nch->ncu_HaveStream = nch->ncu_StreamEP != NULL;
     }
+    if (ncand && nch->ncu_StreamEP) {
+        /* Negotiate rather than assume: ask the device for its default
+         * probe (GET_DEF) and take that frame when it is one of ours and the
+         * stream endpoint can carry it; otherwise the largest frame that fits. */
+        struct MsgPort *mp = CreateMsgPort();
+        APTR pipe = mp ? psdAllocPipe(nch->ncu_Device, mp, NULL) : NULL;
+        UBYTE probe[26];
+        IPTR vsnum = 0;
+        LONG ioerr = -1, dflt = -1;
+        ULONG devinterval = 0, i;
+        /* bytes per second the stream endpoint carries: 8000 service
+         * intervals per second at high and super speed */
+        ULONG budget = nch->ncu_IsBulk ? 0xFFFFFFFFUL : (ULONG)nch->ncu_StreamMaxPkt * 8000UL;
+        psdGetAttrs(PGA_INTERFACE, nch->ncu_VSInterface, IFA_InterfaceNum, &vsnum, TAG_END);
+        memset(probe, 0, sizeof(probe));
+        if (pipe) {
+            psdPipeSetup(pipe, URTF_IN|URTF_CLASS|URTF_INTERFACE,
+                         UVUDR_GET_DEF, UVVSCS_PROBE_CONTROL << 8, vsnum);
+            ioerr = psdDoPipe(pipe, probe, sizeof(probe));
+            if (ioerr == 0 && psdGetPipeActual(pipe) < 8) ioerr = -2;
+            psdFreePipe(pipe);
+        }
+        if (mp) DeleteMsgPort(mp);
+        if (ioerr == 0) {
+            devinterval = probe[4] | ((ULONG)probe[5] << 8) |
+                          ((ULONG)probe[6] << 16) | ((ULONG)probe[7] << 24);
+            for (i = 0; i < ncand; i++)
+                if (cand[i].format == probe[2] && cand[i].frame == probe[3]) dflt = i;
+        }
+        if (dflt >= 0) {
+            ULONG size = cand[dflt].maxbuf ? cand[dflt].maxbuf : (ULONG)cand[dflt].w * cand[dflt].h * 2;
+            ULONG ival = devinterval ? devinterval : cand[dflt].defint;
+            ULONG fps = ival ? 10000000UL / ival : 30;
+            if (!fps) fps = 1;
+            if (size <= budget / fps) {
+                chosen = dflt;
+                cand[dflt].interval = ival;
+                reason = "device default";
+            } else {
+                UVCLOG(LOGF_Flag_Type_Information, "'%s': device default %lux%lu at %lu fps needs %lu bytes/s, stream endpoint carries %lu; choosing the largest frame that fits",
+                       nch->ncu_Name, (IPTR)cand[dflt].w, (IPTR)cand[dflt].h, (IPTR)fps,
+                       (IPTR)(size * fps), (IPTR)budget);
+            }
+        } else if (ioerr == 0) {
+            UVCLOG(LOGF_Flag_Type_Information, "'%s': device default is format %lu frame %lu, not one of its YUY2 frames; choosing the largest YUY2 frame that fits",
+                   nch->ncu_Name, (IPTR)probe[2], (IPTR)probe[3]);
+        } else {
+            UVCLOG(LOGF_Flag_Type_Warn, "'%s': GET_DEF probe failed (%ld); choosing the largest YUY2 frame that fits",
+                   nch->ncu_Name, (IPTR)ioerr);
+        }
+        if (chosen < 0) {
+            ULONG bestarea = 0;
+            for (i = 0; i < ncand; i++) {
+                ULONG size = cand[i].maxbuf ? cand[i].maxbuf : (ULONG)cand[i].w * cand[i].h * 2;
+                ULONG fps = cand[i].interval ? 10000000UL / cand[i].interval : 10;
+                ULONG area = (ULONG)cand[i].w * cand[i].h;
+                if (!fps) fps = 1;
+                if (size <= budget / fps && area > bestarea) {
+                    bestarea = area;
+                    chosen = i;
+                }
+            }
+            reason = "largest frame the stream endpoint carries";
+        }
+        if (chosen >= 0) {
+            nch->ncu_Width = cand[chosen].w;
+            nch->ncu_Height = cand[chosen].h;
+            nch->ncu_FormatIndex = cand[chosen].format;
+            nch->ncu_FrameIndex = cand[chosen].frame;
+            nch->ncu_Interval = cand[chosen].interval;
+            nch->ncu_MaxFrameBuf = (ULONG)cand[chosen].w * cand[chosen].h * 2;
+            if (cand[chosen].maxbuf > nch->ncu_MaxFrameBuf && cand[chosen].maxbuf <= 4 * nch->ncu_MaxFrameBuf)
+                nch->ncu_MaxFrameBuf = cand[chosen].maxbuf;
+        }
+    }
+    nch->ncu_HaveStream = chosen >= 0 && nch->ncu_StreamEP != NULL;
 done:
+    if (!nch->ncu_VSInterface)
+        UVCLOG(LOGF_Flag_Type_Warn, "'%s': no VideoStreaming interface", nch->ncu_Name);
+    else if (!ncand)
+        UVCLOG(LOGF_Flag_Type_Warn, "'%s': no uncompressed YUY2 frame up to 1920x1080", nch->ncu_Name);
+    else if (!nch->ncu_StreamEP)
+        UVCLOG(LOGF_Flag_Type_Warn, "'%s': %lu YUY2 frames but no bulk IN or isochronous IN alternate up to %lu bytes (%lu isochronous alternates)",
+               nch->ncu_Name, (IPTR)ncand, (IPTR)altcap, (IPTR)alts_with_iso);
+    else if (!nch->ncu_HaveStream)
+        UVCLOG(LOGF_Flag_Type_Warn, "'%s': none of %lu YUY2 frames fits the %s stream endpoint (%lu bytes/interval)",
+               nch->ncu_Name, (IPTR)ncand, nch->ncu_IsBulk ? "bulk" : "isochronous", (IPTR)nch->ncu_StreamMaxPkt);
+    else
+        UVCLOG(LOGF_Flag_Type_Information, "'%s': YUY2 %lux%lu format %lu frame %lu interval %lu (%s; %lu YUY2 frames offered), %s, largest alternate %lu bytes/interval (%lu isochronous alternates), frame buffer %lu",
+               nch->ncu_Name, (IPTR)nch->ncu_Width, (IPTR)nch->ncu_Height,
+               (IPTR)nch->ncu_FormatIndex, (IPTR)nch->ncu_FrameIndex, (IPTR)nch->ncu_Interval, reason, (IPTR)ncand,
+               nch->ncu_IsBulk ? "bulk" : "isochronous", (IPTR)nch->ncu_StreamMaxPkt, (IPTR)alts_with_iso,
+               (IPTR)nch->ncu_MaxFrameBuf);
     CloseLibrary(ps);
     return nch->ncu_HaveStream;
 }
 
 /* Every transfer shares a deadline for the whole grab, including controls.
  * A submitted pipe is collected exactly once, also after abort. */
-static LONG uvc_transfer(struct Library *ps, APTR pipe, APTR data, ULONG size,
-                         struct MsgPort *mp, struct timerequest *timer)
+static LONG uvc_transfer(struct NepUVCBase *nh, struct Library *ps, APTR pipe,
+                         APTR data, ULONG size, struct MsgPort *mp,
+                         struct timerequest *timer, const char *what)
 {
     LONG err;
-    if (CheckIO((struct IORequest *)timer)) return -1;
+    if (CheckIO((struct IORequest *)timer)) {
+        UVCLOG(LOGF_Flag_Type_Warn, "%s: not sent, grab deadline already passed", what);
+        return -1;
+    }
     psdSendPipe(pipe, data, size);
     while (!psdCheckPipe(pipe) && !CheckIO((struct IORequest *)timer))
         Wait((1UL << mp->mp_SigBit) |
              (1UL << timer->tr_node.io_Message.mn_ReplyPort->mp_SigBit));
     if (!psdCheckPipe(pipe)) psdAbortPipe(pipe);
     err = psdWaitPipe(pipe);
-    if (err) bug("uvc.class: transfer error=%ld actual=%lu requested=%lu\n",
-                 (IPTR)err, (IPTR)psdGetPipeActual(pipe), (IPTR)size);
+    if (err)
+        UVCLOG(LOGF_Flag_Type_Warn, "%s: transfer error %ld, actual %lu of %lu%s", what,
+               (IPTR)err, (IPTR)psdGetPipeActual(pipe), (IPTR)size,
+               CheckIO((struct IORequest *)timer) ? " (grab deadline passed)" : "");
     return CheckIO((struct IORequest *)timer) ? -1 : err;
 }
 
-static BOOL uvc_alt(struct Library *ps, APTR control, APTR interface,
-                    struct MsgPort *mp, struct timerequest *timer)
+static BOOL uvc_alt(struct NepUVCBase *nh, struct Library *ps, APTR control,
+                    APTR interface, struct MsgPort *mp, struct timerequest *timer)
 {
     IPTR number = 0, alternate = 0;
     UBYTE current[8] = {0};
@@ -172,34 +339,72 @@ static BOOL uvc_alt(struct Library *ps, APTR control, APTR interface,
                 IFA_AlternateNum, &alternate, TAG_END);
     psdPipeSetup(control, URTF_STANDARD|URTF_INTERFACE,
                  USR_SET_INTERFACE, alternate, number);
-    if (uvc_transfer(ps, control, NULL, 0, mp, timer)) return FALSE;
+    if (uvc_transfer(nh, ps, control, NULL, 0, mp, timer, "SET_INTERFACE")) return FALSE;
     psdPipeSetup(control, URTF_IN|URTF_STANDARD|URTF_INTERFACE,
                  USR_GET_INTERFACE, 0, number);
-    if (uvc_transfer(ps, control, current, 1, mp, timer) ||
-        psdGetPipeActual(control) != 1 || current[0] != alternate) return FALSE;
-    return psdSetAltInterface(NULL, interface);
+    if (uvc_transfer(nh, ps, control, current, 1, mp, timer, "GET_INTERFACE")) return FALSE;
+    if (psdGetPipeActual(control) != 1 || current[0] != alternate) {
+        UVCLOG(LOGF_Flag_Type_Warn, "interface %lu: asked for alternate %lu, device reports %lu (%lu bytes)",
+               number, alternate, (IPTR)current[0], (IPTR)psdGetPipeActual(control));
+        return FALSE;
+    }
+    if (!psdSetAltInterface(NULL, interface)) {
+        UVCLOG(LOGF_Flag_Type_Warn, "interface %lu alternate %lu: psdSetAltInterface failed (host controller endpoint setup)",
+               number, alternate);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
 {
+    struct NepUVCBase *nh = nch->ncu_ClsBase;
     struct Library *ps = NULL;
     struct MsgPort *mp = NULL, *tp = NULL;
     struct timerequest *timer = NULL;
-    APTR control = NULL, pipes[64] = {0};
+    APTR control = NULL, pipes[UVC_SLOTS] = {0};
     APTR streamalt = nch->ncu_StreamAltIf, streamep = nch->ncu_StreamEP;
     ULONG streamsize = nch->ncu_StreamMaxPkt;
-    BOOL pending[64] = {0};
+    BOOL pending[UVC_SLOTS] = {0};
+    struct Task *me = FindTask(NULL);
+    BYTE oldpri = me->tc_Node.ln_Pri;
+    BOOL raised = FALSE;
+    ULONG sofgaps = 0, sofskip = 0;
+    UWORD lastsof = 0;
+    BOOL havesof = FALSE;
+    /* Length check: every buffer is filled with a marker before it is sent;
+     * afterwards the last non-marker byte says how much the controller
+     * really wrote, to compare with the length it reported. */
+    ULONG lenover = 0, lenunder = 0, lenoverbytes = 0, lenunderbytes = 0;
+    ULONG lensample[4][2] = {{0}};
+    ULONG lensamples = 0;
     ULONG slots = 0, slot = 0;
-    UBYTE *raw = NULL, *payload = NULL;
+    UBYTE *raw = NULL, *payload = NULL, *payloadraw = NULL;
+    ULONG stride = 0;
     UBYTE probe[26];
     IPTR ifnum = 0;
-    ULONG result = 0, maxpayload = 0, size, i, packets = 0;
+    ULONG result = 0, maxpayload = 0, maxvideoframe = 0, expected = 0, size, i, packets = 0;
     ULONG eof = 0, damaged = 0, maxframe = 0;
+    ULONG nonzero = 0, totalbytes = 0, hdrbad = 0, oversize = 0;
+    LONG firsterr = 0;
+    IPTR altnum = 0;
+    UBYTE firsthdr[12] = {0};
+    ULONG firsthdrlen = 0, szhist[6] = {0}, largest = 0;
+    /* Replay detector: a 12-byte header carries PTS and a source clock
+     * sample, so two payloads with identical headers are the same payload
+     * seen twice. Remember the last 128 and how far back the twin was. */
+    UBYTE (*hdrring)[12] = NULL;
+    ULONG hdrcount = 0, dups = 0, dupdist[4] = {0}, dupslot[4] = {0};
     const char *stage = "allocate";
-    BOOL timeropen = FALSE, timersent = FALSE, active = FALSE;
+    BOOL timeropen = FALSE, timersent = FALSE, active = FALSE, timedout = FALSE;
     struct uvc_payload frame = {0};
     if (!nch->ncu_HaveStream || !rgb ||
-        capacity < (ULONG)nch->ncu_Width*nch->ncu_Height*3) return 0;
+        capacity < (ULONG)nch->ncu_Width*nch->ncu_Height*3) {
+        UVCLOG(LOGF_Flag_Type_Warn, "grab id=%lu refused: stream %lu, buffer %lu of %lu bytes",
+               (IPTR)nch->ncu_Id, (IPTR)nch->ncu_HaveStream, (IPTR)capacity,
+               (IPTR)nch->ncu_Width*nch->ncu_Height*3);
+        return 0;
+    }
     ps = OpenLibrary("poseidon.library", 4);
     if (!ps || !(mp = CreateMsgPort()) || !(tp = CreateMsgPort())) goto out;
     timer = (struct timerequest *)CreateIORequest(tp, sizeof(*timer));
@@ -218,28 +423,43 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     memset(probe, 0, sizeof(probe));
     psdPipeSetup(control, URTF_IN|URTF_CLASS|URTF_INTERFACE,
                  UVUDR_GET_CUR, UVVSCS_PROBE_CONTROL << 8, ifnum);
-    if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer) ||
-        psdGetPipeActual(control) != sizeof(probe)) goto out;
+    if (uvc_transfer(nh, ps, control, probe, sizeof(probe), mp, timer, "GET_CUR probe (default)")) goto out;
+    if (psdGetPipeActual(control) != sizeof(probe)) {
+        UVCLOG(LOGF_Flag_Type_Warn, "GET_CUR probe returned %lu bytes, expected %lu",
+               (IPTR)psdGetPipeActual(control), (IPTR)sizeof(probe));
+        goto out;
+    }
     stage = "probe-set";
     probe[0] = 1; probe[1] = 0;
     probe[2] = nch->ncu_FormatIndex; probe[3] = nch->ncu_FrameIndex;
     for (i=0; i<4; ++i) probe[4+i] = nch->ncu_Interval >> (8*i);
     psdPipeSetup(control, URTF_OUT|URTF_CLASS|URTF_INTERFACE,
                  UVUDR_SET_CUR, UVVSCS_PROBE_CONTROL << 8, ifnum);
-    if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer)) goto out;
+    if (uvc_transfer(nh, ps, control, probe, sizeof(probe), mp, timer, "SET_CUR probe")) goto out;
     psdPipeSetup(control, URTF_IN|URTF_CLASS|URTF_INTERFACE,
                  UVUDR_GET_CUR, UVVSCS_PROBE_CONTROL << 8, ifnum);
-    if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer) ||
-        psdGetPipeActual(control) != sizeof(probe) ||
-        probe[2] != nch->ncu_FormatIndex || probe[3] != nch->ncu_FrameIndex) goto out;
+    if (uvc_transfer(nh, ps, control, probe, sizeof(probe), mp, timer, "GET_CUR probe (negotiated)")) goto out;
+    if (psdGetPipeActual(control) != sizeof(probe) ||
+        probe[2] != nch->ncu_FormatIndex || probe[3] != nch->ncu_FrameIndex) {
+        UVCLOG(LOGF_Flag_Type_Warn, "probe came back as format %lu frame %lu (%lu bytes); asked for format %lu frame %lu",
+               (IPTR)probe[2], (IPTR)probe[3], (IPTR)psdGetPipeActual(control),
+               (IPTR)nch->ncu_FormatIndex, (IPTR)nch->ncu_FrameIndex);
+        goto out;
+    }
     stage = "probe-validate";
+    maxvideoframe = probe[18] | ((ULONG)probe[19]<<8) |
+                    ((ULONG)probe[20]<<16) | ((ULONG)probe[21]<<24);
     maxpayload = probe[22] | ((ULONG)probe[23]<<8) |
                  ((ULONG)probe[24]<<16) | ((ULONG)probe[25]<<24);
     if (maxpayload < 2 || maxpayload > 1024*1024 ||
-        (!nch->ncu_IsBulk && maxpayload > nch->ncu_StreamMaxPkt)) goto out;
+        (!nch->ncu_IsBulk && maxpayload > nch->ncu_StreamMaxPkt)) {
+        UVCLOG(LOGF_Flag_Type_Warn, "device wants %lu bytes per payload, more than the largest alternate (%lu bytes/interval)",
+               (IPTR)maxpayload, (IPTR)nch->ncu_StreamMaxPkt);
+        goto out;
+    }
     psdPipeSetup(control, URTF_OUT|URTF_CLASS|URTF_INTERFACE,
                  UVUDR_SET_CUR, UVVSCS_COMMIT_CONTROL << 8, ifnum);
-    if (uvc_transfer(ps, control, probe, sizeof(probe), mp, timer)) goto out;
+    if (uvc_transfer(nh, ps, control, probe, sizeof(probe), mp, timer, "SET_CUR commit")) goto out;
     if (!nch->ncu_IsBulk) {
         struct List *alts = NULL;
         struct Node *node;
@@ -264,25 +484,47 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     stage = "alternate";
     /* psdSetAltInterface updates Poseidon's selected-interface bookkeeping. */
     if (!nch->ncu_IsBulk) {
+        psdGetAttrs(PGA_INTERFACE, streamalt, IFA_AlternateNum, &altnum, TAG_END);
         /* SET_INTERFACE can succeed even if its confirming GET times out. */
         active = TRUE;
-        if (!uvc_alt(ps, control, streamalt, mp, timer)) goto out;
+        if (!uvc_alt(nh, ps, control, streamalt, mp, timer)) goto out;
     }
     size = nch->ncu_IsBulk ? maxpayload : streamsize;
-    raw = AllocVec(nch->ncu_MaxFrameBuf, MEMF_PUBLIC);
-    slots = nch->ncu_IsBulk ? 2 : 64;
-    payload = AllocVec(size * slots, MEMF_PUBLIC);
-    if (!raw || !payload) goto out;
+    /* The frame is as large as the device committed to, not as large as
+     * the geometry implies; the picture is the first width*height*2 bytes. */
+    expected = nch->ncu_MaxFrameBuf;
+    if (maxvideoframe > expected && maxvideoframe <= 4 * (ULONG)nch->ncu_Width * nch->ncu_Height * 2)
+        expected = maxvideoframe;
+    raw = AllocVec(expected, MEMF_PUBLIC);
+    slots = nch->ncu_IsBulk ? 2 : UVC_SLOTS;
+    /* One transfer buffer per slot, laid out so that no transfer crosses a
+     * 64 KB boundary: a power-of-two stride from a 64 KB aligned base. The
+     * host controller driver splits a crossing transfer into two TRBs and
+     * then reports a short payload's length against the wrong one. */
+    stride = 1024;
+    while (stride < size) stride <<= 1;
+    if (stride > 65536) stride = size;
+    payloadraw = AllocVec(stride * slots + 65536, MEMF_PUBLIC);
+    payload = payloadraw ? (UBYTE *)(((IPTR)payloadraw + 65535) & ~(IPTR)65535) : NULL;
+    hdrring = AllocVec(128 * 12, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!raw || !payload || !hdrring) goto out;
     for (i=0; i<slots; ++i) {
         pipes[i] = psdAllocPipe(nch->ncu_Device, mp, streamep);
         if (!pipes[i]) goto out;
         psdSetAttrs(PGA_PIPE, pipes[i], PPA_AllowRuntPackets, TRUE,
                     PPA_NakTimeout, TRUE, PPA_NakTimeoutTime, 1000, TAG_END);
-        psdSendPipe(pipes[i], payload + i*size, size);
+        memset(payload + i*stride, 0xA5, size);
+        psdSendPipe(pipes[i], payload + i*stride, size);
         pending[i] = TRUE;
     }
     stage = "payload";
-    frame.data = raw; frame.capacity = nch->ncu_MaxFrameBuf;
+    frame.data = raw; frame.capacity = expected;
+    /* Refilling the ring is time-critical; run above ordinary tasks while
+     * streaming, the way a kernel capture driver completes in softirq. */
+    if (oldpri < 10) {
+        SetTaskPri(me, 10);
+        raised = TRUE;
+    }
     while (!CheckIO((struct IORequest *)timer)) {
         ULONG actual;
         LONG error;
@@ -292,33 +534,132 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
         error = psdWaitPipe(pipes[slot]);
         pending[slot] = FALSE;
         if (error) {
-            bug("uvc.class: payload error=%ld\n", (IPTR)error);
+            firsterr = error;
+            stage = "payload-error";
             break;
         }
         packets++;
         actual = psdGetPipeActual(pipes[slot]);
-        if (actual > size) break;
-        if (actual >= 2) {
-            UBYTE *p = payload + slot*size;
-            if (p[1] & 2) eof++;
-            if (p[1] & 0x40) damaged++;
+        if (actual > size) {
+            oversize = actual;
+            stage = "payload-oversize";
+            break;
+        }
+        {
+            UBYTE *b = payload + slot*stride;
+            ULONG filled = size;
+            while (filled && b[filled - 1] == 0xA5) filled--;
+            if (actual + 4 < filled) {
+                lenunder++; lenunderbytes += filled - actual;
+            } else if (filled + 4 < actual) {
+                lenover++; lenoverbytes += actual - filled;
+            }
+            if ((actual + 4 < filled || filled + 4 < actual) && lensamples < 4) {
+                lensample[lensamples][0] = actual;
+                lensample[lensamples][1] = filled;
+                lensamples++;
+            }
+        }
+        if (actual) {
+            UBYTE *p = payload + slot*stride;
+            nonzero++;
+            totalbytes += actual;
+            if (actual > largest) largest = actual;
+            szhist[actual < 1024 ? 0 : actual == 1024 ? 1 : actual < 2048 ? 2 :
+                   actual == 2048 ? 3 : actual < 3072 ? 4 : 5]++;
+            if (!firsthdrlen) {
+                firsthdrlen = actual < sizeof(firsthdr) ? actual : sizeof(firsthdr);
+                memcpy(firsthdr, p, firsthdrlen);
+            }
+            if (actual < 2 || p[0] < 2 || p[0] > actual) hdrbad++;
+            else {
+                if (p[1] & 2) eof++;
+                if (p[1] & 0x40) damaged++;
+            }
+            if (actual >= 12 && p[0] == 12 && (p[1] & 0x08)) {
+                /* SCR present: bytes 10-11 carry the 1 ms frame number; a
+                 * jump of more than one between consecutive payloads means
+                 * microframes went by without a transfer to land in. */
+                UWORD sof = (p[10] | ((UWORD)p[11] << 8)) & 0x7FF;
+                if (havesof) {
+                    UWORD d = (sof - lastsof) & 0x7FF;
+                    if (d > 1 && d < 1024) { sofgaps++; sofskip += d - 1; }
+                }
+                lastsof = sof;
+                havesof = TRUE;
+            }
+            if (actual >= 12 && p[0] == 12) {
+                ULONG k, n = hdrcount < 128 ? hdrcount : 128;
+                for (k = 1; k <= n; k++) {
+                    if (!memcmp(hdrring[(hdrcount - k) % 128], p, 12)) {
+                        if (dups < 4) { dupdist[dups] = k; dupslot[dups] = packets; }
+                        dups++;
+                        break;
+                    }
+                }
+                memcpy(hdrring[hdrcount % 128], p, 12);
+                hdrcount++;
+            }
         }
         if (frame.used > maxframe) maxframe = frame.used;
-        if (actual && uvc_payload_feed(&frame, payload + slot*size, actual)) {
-            uvc_yuy2_rgb(raw, rgb, nch->ncu_MaxFrameBuf);
+        if (actual && uvc_payload_feed(&frame, payload + slot*stride, actual)) {
+            uvc_yuy2_rgb(raw, rgb, (ULONG)nch->ncu_Width * nch->ncu_Height * 2);
             result = (ULONG)nch->ncu_Width*nch->ncu_Height*3;
             break;
         }
-        psdSendPipe(pipes[slot], payload + slot*size, size);
+        memset(payload + slot*stride, 0xA5, size);
+        psdSendPipe(pipes[slot], payload + slot*stride, size);
         pending[slot] = TRUE;
         slot = (slot + 1) % slots;
     }
 
 out:
-    if (!result) bug("uvc.class: grab id=%lu failed stage=%s packets=%lu bytes=%lu maxpayload=%lu\n",
-        (IPTR)nch->ncu_Id, stage, (IPTR)packets, (IPTR)frame.used, (IPTR)maxpayload);
-    if (!result) bug("uvc.class: EOF=%lu ERR=%lu maxframe=%lu expected=%lu\n",
-        (IPTR)eof, (IPTR)damaged, (IPTR)maxframe, (IPTR)nch->ncu_MaxFrameBuf);
+    if (raised) SetTaskPri(me, oldpri);
+    if (timer && timersent && CheckIO((struct IORequest *)timer)) timedout = TRUE;
+    if (!result) {
+        nh->nh_FramesFailed++;
+        UVCLOG(LOGF_Flag_Type_Error, "grab id=%lu '%s' failed at %s%s: %s alt %lu, %lu bytes/transfer, device maxpayload %lu maxframe %lu; %lu transfers done, %lu with data, %lu bytes, %lu bad headers, %lu EOF, %lu ERR, longest frame %lu of %lu; first error %ld, oversize %lu (ok %lu, failed %lu)",
+               (IPTR)nch->ncu_Id, nch->ncu_Name, stage, timedout ? " (3 s deadline)" : "",
+               nch->ncu_IsBulk ? "bulk" : "isochronous", altnum, (IPTR)size, (IPTR)maxpayload,
+               (IPTR)maxvideoframe, (IPTR)packets, (IPTR)nonzero, (IPTR)totalbytes,
+               (IPTR)hdrbad, (IPTR)eof, (IPTR)damaged, (IPTR)maxframe, (IPTR)expected,
+               (IPTR)firsterr, (IPTR)oversize, (IPTR)nh->nh_FramesOK, (IPTR)nh->nh_FramesFailed);
+        if (firsthdrlen)
+            UVCLOG(LOGF_Flag_Type_Information, "grab id=%lu first payload header: %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx",
+                   (IPTR)nch->ncu_Id, (IPTR)firsthdr[0], (IPTR)firsthdr[1], (IPTR)firsthdr[2],
+                   (IPTR)firsthdr[3], (IPTR)firsthdr[4], (IPTR)firsthdr[5], (IPTR)firsthdr[6],
+                   (IPTR)firsthdr[7], (IPTR)firsthdr[8], (IPTR)firsthdr[9], (IPTR)firsthdr[10],
+                   (IPTR)firsthdr[11]);
+        if (nonzero)
+            UVCLOG(LOGF_Flag_Type_Information, "grab id=%lu payloads: headers 2-byte %lu, 12-byte %lu, other %lu, bad %lu; FID toggles %lu, ERR %lu, over capacity %lu, after EOF %lu; EOF frames %lu, first frames kept/sent %lu%s/%lu %lu%s/%lu %lu%s/%lu %lu%s/%lu %lu%s/%lu %lu%s/%lu",
+                   (IPTR)nch->ncu_Id, (IPTR)frame.hdr2, (IPTR)frame.hdr12, (IPTR)frame.hdrother,
+                   (IPTR)frame.badhdr, (IPTR)frame.fidflips, (IPTR)frame.errbit, (IPTR)frame.overshoot,
+                   (IPTR)frame.afterEOF, (IPTR)frame.eofs,
+                   (IPTR)frame.eofused[0], frame.eofstate[0] == 1 ? "d" : frame.eofstate[0] == 2 ? "s" : "", (IPTR)frame.eofraw[0],
+                   (IPTR)frame.eofused[1], frame.eofstate[1] == 1 ? "d" : frame.eofstate[1] == 2 ? "s" : "", (IPTR)frame.eofraw[1],
+                   (IPTR)frame.eofused[2], frame.eofstate[2] == 1 ? "d" : frame.eofstate[2] == 2 ? "s" : "", (IPTR)frame.eofraw[2],
+                   (IPTR)frame.eofused[3], frame.eofstate[3] == 1 ? "d" : frame.eofstate[3] == 2 ? "s" : "", (IPTR)frame.eofraw[3],
+                   (IPTR)frame.eofused[4], frame.eofstate[4] == 1 ? "d" : frame.eofstate[4] == 2 ? "s" : "", (IPTR)frame.eofraw[4],
+                   (IPTR)frame.eofused[5], frame.eofstate[5] == 1 ? "d" : frame.eofstate[5] == 2 ? "s" : "", (IPTR)frame.eofraw[5]);
+        if (nonzero)
+            UVCLOG(LOGF_Flag_Type_Information, "grab id=%lu transfer sizes: empty %lu, 1-1023 %lu, 1024 %lu, 1025-2047 %lu, 2048 %lu, 2049-3071 %lu, 3072+ %lu; largest %lu; replayed payloads %lu (first at transfer %lu, twin %lu back); SOF gaps %lu, ~%lu ms of stream missed, %lu slots",
+                   (IPTR)nch->ncu_Id, (IPTR)(packets - nonzero), (IPTR)szhist[0], (IPTR)szhist[1],
+                   (IPTR)szhist[2], (IPTR)szhist[3], (IPTR)szhist[4], (IPTR)szhist[5], (IPTR)largest,
+                   (IPTR)dups, (IPTR)dupslot[0], (IPTR)dupdist[0], (IPTR)sofgaps, (IPTR)sofskip, (IPTR)slots);
+        UVCLOG(LOGF_Flag_Type_Information, "grab id=%lu reported length vs bytes written: over-reported %lu transfers (%lu bytes), under-reported %lu (%lu bytes); samples reported/written %lu/%lu %lu/%lu %lu/%lu %lu/%lu",
+               (IPTR)nch->ncu_Id, (IPTR)lenover, (IPTR)lenoverbytes, (IPTR)lenunder, (IPTR)lenunderbytes,
+               (IPTR)lensample[0][0], (IPTR)lensample[0][1], (IPTR)lensample[1][0], (IPTR)lensample[1][1],
+               (IPTR)lensample[2][0], (IPTR)lensample[2][1], (IPTR)lensample[3][0], (IPTR)lensample[3][1]);
+    } else {
+        nh->nh_FramesOK++;
+        if (nh->nh_FramesOK <= 3 || (nh->nh_FramesOK % 500) == 0 || dups)
+            UVCLOG(LOGF_Flag_Type_Information, "grab id=%lu '%s' frame %lu: %lux%lu via %s alt %lu, %lu transfers, %lu with data, %lu bytes, %lu EOF, %lu replayed, SOF gaps %lu (~%lu ms missed) (failed so far %lu)",
+                   (IPTR)nch->ncu_Id, nch->ncu_Name, (IPTR)nh->nh_FramesOK,
+                   (IPTR)nch->ncu_Width, (IPTR)nch->ncu_Height,
+                   nch->ncu_IsBulk ? "bulk" : "isochronous", altnum, (IPTR)packets,
+                   (IPTR)nonzero, (IPTR)totalbytes, (IPTR)eof, (IPTR)dups, (IPTR)sofgaps, (IPTR)sofskip,
+                   (IPTR)nh->nh_FramesFailed);
+    }
     for (i=0; i<slots; ++i) {
         if (pending[i]) {
             psdAbortPipe(pipes[i]);
@@ -333,8 +674,9 @@ out:
         timer->tr_time.tv_secs = 1;
         timer->tr_time.tv_micro = 0;
         SendIO((struct IORequest *)timer);
-        if (!uvc_alt(ps, control, nch->ncu_VSInterface, mp, timer))
-            bug("uvc.class: failed to restore idle alternate setting\n");
+        if (!uvc_alt(nh, ps, control, nch->ncu_VSInterface, mp, timer))
+            UVCLOG(LOGF_Flag_Type_Warn, "grab id=%lu: failed to restore the idle alternate setting",
+                   (IPTR)nch->ncu_Id);
     }
     if (control) psdFreePipe(control);
     if (timersent) {
@@ -345,7 +687,7 @@ out:
     if (timer) DeleteIORequest((struct IORequest *)timer);
     if (tp) DeleteMsgPort(tp);
     if (mp) DeleteMsgPort(mp);
-    FreeVec(payload); FreeVec(raw);
+    FreeVec(payloadraw); FreeVec(raw); FreeVec(hdrring);
     if (ps) CloseLibrary(ps);
     return result;
 }
@@ -503,9 +845,9 @@ struct NepClassUVC * usbForceInterfaceBinding(struct NepUVCBase *nh, struct PsdI
             nch->ncu_Id = ++nh->nh_NextId;
             AddTail(&nh->nh_Cameras, &nch->ncu_Node);
             ReleaseSemaphore(&nh->nh_Lock);
-            bug("uvc.class: bound id=%lu YUY2 %lux%lu %s\n",
-                (IPTR)nch->ncu_Id, (IPTR)nch->ncu_Width,
-                (IPTR)nch->ncu_Height, devname);
+            UVCLOG(LOGF_Flag_Type_Information, "bound id=%lu '%s' (interface %lu, hub port %lu) YUY2 %lux%lu",
+                   (IPTR)nch->ncu_Id, devname, (IPTR)ifnum, (IPTR)hubport,
+                   (IPTR)nch->ncu_Width, (IPTR)nch->ncu_Height);
             CloseLibrary(ps);
             return(nch);
         }
