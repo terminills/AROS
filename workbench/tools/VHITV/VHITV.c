@@ -38,6 +38,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const char version[] __attribute__((used)) =
+    "$VER: VHITV 1.1 (24.10.2026)";
+
 struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase *GfxBase = NULL;
 struct Library *CyberGfxBase = NULL;
