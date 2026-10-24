@@ -1038,17 +1038,6 @@ struct NepClassEth * nAllocEth(void)
             KPRINTF(5, ("Selected CDC interface %p in config %p (alt %ld) class/sub/proto %ld/%ld/%ld\n",
                         (void *) best_if, (void *) best_cfg, altifnum, ifcls, ifsub, ifproto));
             ncp->ncp_ControlInterface = ctrl_if;
-            if(best_cfg && (cur_cfg != best_cfg))
-            {
-                KPRINTF(5, ("Switching device to configuration %p\n", (void *) best_cfg));
-                psdSetAttrs(PGA_DEVICE, ncp->ncp_Device,
-                            DA_Config, best_cfg,
-                            TAG_END);
-            }
-
-            psdSetAttrs(PGA_INTERFACE, best_if,
-                        IFA_AlternateNum, altifnum,
-                        TAG_END);
         }
 
         if(!(ncp->ncp_Interface && ncp->ncp_EPIn && ncp->ncp_EPOut))
@@ -1086,6 +1075,28 @@ struct NepClassEth * nAllocEth(void)
         {
             if((ncp->ncp_EP0Pipe = psdAllocPipe(ncp->ncp_Device, ncp->ncp_TaskMsgPort, NULL)))
             {
+                /* The chosen configuration and alternate setting take effect
+                 * only through the control pipe: the data interface of a
+                 * dongle that enumerates in its vendor configuration lives
+                 * in another configuration, and an ECM data interface has
+                 * its endpoints in alternate setting 1. */
+                if(best_cfg && (cur_cfg != best_cfg))
+                {
+                    IPTR cfgnum = 0;
+
+                    psdGetAttrs(PGA_CONFIG, best_cfg, CA_ConfigNum, &cfgnum, TAG_END);
+                    KPRINTF(5, ("Switching device to configuration %ld\n", cfgnum));
+                    if(!psdSetDeviceConfig(ncp->ncp_EP0Pipe, (UWORD) cfgnum))
+                    {
+                        psdAddErrorMsg(RETURN_WARN, (STRPTR) libname,
+                                       "Could not select configuration %ld for the CDC Ethernet interface.", cfgnum);
+                    }
+                }
+                if(best_if && !psdSetAltInterface(ncp->ncp_EP0Pipe, best_if))
+                {
+                    psdAddErrorMsg(RETURN_WARN, (STRPTR) libname,
+                                   "Could not select alternate setting %ld of the CDC Ethernet data interface.", altifnum);
+                }
                 if((ncp->ncp_EPOutPipe = psdAllocPipe(ncp->ncp_Device, ncp->ncp_TaskMsgPort, ncp->ncp_EPOut)))
                 {
                     /* Allow continuous retries without aborting on NAK timeouts. */
