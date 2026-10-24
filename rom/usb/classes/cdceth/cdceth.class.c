@@ -1117,7 +1117,12 @@ struct NepClassEth * nAllocEth(void)
                         cdceth_log_pipe_attrs(ncp->ncp_EPInPipe, FALSE, FALSE, 5000, TRUE);
                         ncp->ncp_Task = thistask;
 
-                        if(nInitCDC(ncp))
+                        if(!nInitCDC(ncp))
+                        {
+                            psdAddErrorMsg(RETURN_FAIL, (STRPTR) libname,
+                                           "CDC Ethernet initialisation failed, not binding.");
+                        }
+                        else
                         {
                             cdceth_dump_interface(ncp);
                             cdceth_set_packet_filter(ncp, cdceth_build_packet_filter(ncp));
@@ -1312,6 +1317,8 @@ static BOOL cdceth_load_mac(struct NepClassEth *ncp)
                             TAG_END);
     if(!pdd)
     {
+        psdAddErrorMsg(RETURN_WARN, (STRPTR) libname,
+                       "No Ethernet functional descriptor on the CDC control interface.");
         return(FALSE);
     }
 
@@ -1321,6 +1328,8 @@ static BOOL cdceth_load_mac(struct NepClassEth *ncp)
 
     if(!ethdesc || !ethdesc->iMACAddress)
     {
+        psdAddErrorMsg(RETURN_WARN, (STRPTR) libname,
+                       "The Ethernet functional descriptor names no MAC address string.");
         return(FALSE);
     }
 
@@ -1334,9 +1343,16 @@ static BOOL cdceth_load_mac(struct NepClassEth *ncp)
             psdFreeVec(macstr);
             return(TRUE);
         }
+        psdAddErrorMsg(RETURN_WARN, (STRPTR) libname,
+                       "MAC address string %ld (\"%s\") is not twelve hex digits.",
+                       (LONG) ethdesc->iMACAddress, macstr);
         psdFreeVec(macstr);
+        return(FALSE);
     }
 
+    psdAddErrorMsg(RETURN_WARN, (STRPTR) libname,
+                   "Could not read MAC address string %ld from the device.",
+                   (LONG) ethdesc->iMACAddress);
     return(FALSE);
 }
 /* \\\ */
