@@ -67,6 +67,7 @@ struct App
     STRPTR input_name;
     UBYTE *display;
     ULONG display_size;
+    ULONG frame_width, frame_height;
     char status[160];
 };
 
@@ -188,9 +189,14 @@ static void set_status(struct App *app, const char *detail)
 {
     const char *name = app->input_name ? (const char *)app->input_name :
                                          "unknown input";
-    snprintf(app->status, sizeof(app->status), "%lu/%lu %s - %s",
+    char mode[40] = "";
+    if (app->frame_width && app->frame_height)
+        snprintf(mode, sizeof(mode), " %lux%lu",
+                 (unsigned long)app->frame_width,
+                 (unsigned long)app->frame_height);
+    snprintf(app->status, sizeof(app->status), "%lu/%lu %s%s - %s",
              (unsigned long)(app->input + 1),
-             (unsigned long)app->input_count, name, detail);
+             (unsigned long)app->input_count, name, mode, detail);
     SetWindowTitles(app->window, (CONST_STRPTR)app->status,
                     (CONST_STRPTR)-1);
     draw_status(app);
@@ -222,6 +228,7 @@ static void select_input(struct App *app, ULONG input)
         FreeVec(app->input_name);
     app->input_name = (!error) ? name : NULL;
     app->input = input;
+    app->frame_width = app->frame_height = 0;
     SetAPen(app->window->RPort, 0);
     RectFill(app->window->RPort, app->window->BorderLeft,
              app->window->BorderTop + STATUS_HEIGHT,
@@ -289,6 +296,8 @@ static void render_frame(struct App *app, const struct vhi_image *image)
              app->window->Height - app->window->BorderBottom - 1);
     WritePixelArray(app->display, 0, 0, width * 3, rp,
                     dest_x, dest_y, width, height, RECTFMT_RGB);
+    app->frame_width = image->width;
+    app->frame_height = image->height;
     set_status(app, "live - N/P changes input, Q quits");
 }
 
@@ -397,16 +406,26 @@ int main(int argc, char **argv)
     }
 
     select_input(&app, initial_input);
-    memset(&digitize, 0, sizeof(digitize));
-    digitize.dim.x2 = maximum.max_width;
-    digitize.dim.y2 = maximum.max_height;
-    digitize.dim.dst_width = maximum.max_width;
-    digitize.dim.dst_height = maximum.max_height;
-
     while (running)
     {
         struct vhi_image *image;
+        /* Input changes may select a different native capture geometry. */
         error = 0;
+        memset(&maximum, 0, sizeof(maximum));
+        call_vhi(VHI_METHOD_GET, VHI_MAXIMUM_SIZE, &maximum, &error,
+                 app.vhi_handle);
+        if (error || !maximum.max_width || !maximum.max_height)
+        {
+            set_status(&app, error ? vhi_error(error) : "capture size unavailable");
+            running = process_events(&app);
+            Delay(2);
+            continue;
+        }
+        memset(&digitize, 0, sizeof(digitize));
+        digitize.dim.x2 = maximum.max_width;
+        digitize.dim.y2 = maximum.max_height;
+        digitize.dim.dst_width = maximum.max_width;
+        digitize.dim.dst_height = maximum.max_height;
         image = (struct vhi_image *)call_vhi(VHI_METHOD_PERFORM,
                                              VHI_DIGITIZE_PICTURE,
                                              &digitize, &error,
