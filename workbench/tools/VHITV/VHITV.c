@@ -19,6 +19,7 @@
 #include <aros/libcall.h>
 #include <aros/debug.h>
 #include <intuition/intuition.h>
+#include <libraries/gadtools.h>
 #include <graphics/rastport.h>
 #include <cybergraphx/cybergraphics.h>
 
@@ -26,6 +27,7 @@
 #include <proto/dos.h>
 #include <proto/intuition.h>
 #include <proto/graphics.h>
+#include <proto/gadtools.h>
 #include <proto/cybergraphics.h>
 
 #include <vhi/vhi.h>
@@ -38,6 +40,7 @@ struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase *GfxBase = NULL;
 struct Library *CyberGfxBase = NULL;
 struct Library *VHIBase = NULL;
+struct Library *GadToolsBase = NULL;
 
 /* VHI drivers are selected at runtime and all implement the same first LVO.
  * Do not include the generated proto/vhi.h inline here: its AROS_LIBREQ marks
@@ -61,6 +64,9 @@ static IPTR call_vhi(ULONG method, ULONG submethod, APTR attr,
 struct App
 {
     struct Window *window;
+    struct Menu *menus;
+    APTR visual_info;
+    BOOL paused;
     APTR vhi_handle;
     ULONG input_count;
     ULONG input;
@@ -69,6 +75,18 @@ struct App
     ULONG display_size;
     ULONG frame_width, frame_height;
     char status[160];
+};
+
+enum { MENU_QUIT = 1, MENU_NEXT, MENU_PREVIOUS, MENU_PAUSE };
+static struct NewMenu menu_spec[] = {
+    { NM_TITLE, (STRPTR)"Project", NULL, 0, 0, NULL },
+    { NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)MENU_QUIT },
+    { NM_TITLE, (STRPTR)"Input", NULL, 0, 0, NULL },
+    { NM_ITEM, (STRPTR)"Next input", (STRPTR)"N", 0, 0, (APTR)MENU_NEXT },
+    { NM_ITEM, (STRPTR)"Previous input", (STRPTR)"P", 0, 0, (APTR)MENU_PREVIOUS },
+    { NM_TITLE, (STRPTR)"Capture", NULL, 0, 0, NULL },
+    { NM_ITEM, (STRPTR)"Pause", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)MENU_PAUSE },
+    { NM_END, NULL, NULL, 0, 0, NULL }
 };
 
 static const char *vhi_error(ULONG error)
@@ -314,6 +332,26 @@ static BOOL process_events(struct App *app)
 
         if (class == IDCMP_CLOSEWINDOW)
             running = FALSE;
+        else if (class == IDCMP_MENUPICK)
+        {
+            while (code != MENUNULL)
+            {
+                struct MenuItem *item = ItemAddress(app->menus, code);
+                ULONG action;
+                if (!item) break;
+                code = item->NextSelect;
+                action = (ULONG)(IPTR)GTMENUITEM_USERDATA(item);
+                if (action == MENU_QUIT) running = FALSE;
+                else if (action == MENU_NEXT) select_input(app, app->input + 1);
+                else if (action == MENU_PREVIOUS && app->input_count)
+                    select_input(app, app->input ? app->input - 1 : app->input_count - 1);
+                else if (action == MENU_PAUSE)
+                {
+                    app->paused = (item->Flags & CHECKED) != 0;
+                    set_status(app, app->paused ? "paused" : "resuming");
+                }
+            }
+        }
         else if (class == IDCMP_VANILLAKEY)
         {
             if (code == 'q' || code == 'Q')
@@ -356,7 +394,8 @@ int main(int argc, char **argv)
               OpenLibrary((CONST_STRPTR)"graphics.library", 39);
     CyberGfxBase = OpenLibrary((CONST_STRPTR)"cybergraphics.library", 0);
     VHIBase = OpenLibrary((CONST_STRPTR)driver, 0);
-    if (!IntuitionBase || !GfxBase || !CyberGfxBase || !VHIBase)
+    GadToolsBase = OpenLibrary("gadtools.library", 39);
+    if (!IntuitionBase || !GfxBase || !CyberGfxBase || !VHIBase || !GadToolsBase)
     {
         printf("VHITV: could not open required libraries or %s\n", driver);
         goto cleanup;
@@ -397,7 +436,7 @@ int main(int argc, char **argv)
         WA_Activate,     TRUE,
         WA_SimpleRefresh, TRUE,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_VANILLAKEY |
-                  IDCMP_REFRESHWINDOW | IDCMP_NEWSIZE,
+                  IDCMP_REFRESHWINDOW | IDCMP_NEWSIZE | IDCMP_MENUPICK,
         TAG_DONE);
     if (!app.window)
     {
@@ -405,10 +444,26 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    app.visual_info = GetVisualInfo(app.window->WScreen, TAG_DONE);
+    app.menus = CreateMenus(menu_spec, TAG_DONE);
+    if (!app.visual_info || !app.menus ||
+        !LayoutMenus(app.menus, app.visual_info, TAG_DONE) ||
+        !SetMenuStrip(app.window, app.menus))
+    {
+        printf("VHITV: could not create menus\n");
+        goto cleanup;
+    }
     select_input(&app, initial_input);
     while (running)
     {
         struct vhi_image *image;
+        running = process_events(&app);
+        if (!running) break;
+        if (app.paused)
+        {
+            WaitPort(app.window->UserPort);
+            continue;
+        }
         /* Input changes may select a different native capture geometry. */
         error = 0;
         memset(&maximum, 0, sizeof(maximum));
@@ -443,6 +498,9 @@ int main(int argc, char **argv)
 cleanup:
     if (app.input_name) FreeVec(app.input_name);
     if (app.display) FreeVec(app.display);
+    if (app.window && app.menus) ClearMenuStrip(app.window);
+    if (app.menus) FreeMenus(app.menus);
+    if (app.visual_info) FreeVisualInfo(app.visual_info);
     if (app.window) CloseWindow(app.window);
     if (app.vhi_handle)
     {
@@ -450,6 +508,7 @@ cleanup:
         call_vhi(VHI_METHOD_CLOSE, 0, NULL, &error, app.vhi_handle);
     }
     if (VHIBase) CloseLibrary(VHIBase);
+    if (GadToolsBase) CloseLibrary(GadToolsBase);
     if (CyberGfxBase) CloseLibrary(CyberGfxBase);
     if (GfxBase) CloseLibrary((struct Library *)GfxBase);
     if (IntuitionBase) CloseLibrary((struct Library *)IntuitionBase);
