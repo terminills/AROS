@@ -1850,12 +1850,25 @@ BOOL cmdAbortIO(struct IOUsbHWReq *ioreq, struct PCIDevice *base)
         if(!foundit) {
             // IOReq is probably pending in some transfer structure
             devadrep = (ioreq->iouh_DevAddr << 5) + ioreq->iouh_Endpoint + ((ioreq->iouh_Dir == UHDIR_IN) ? 0x10 : 0);
+            /*
+             * A request on these two queues has TRBs on the controller's
+             * ring. Taking it away from the controller needs commands, so
+             * the event task retires it (xhciRetireAbandonedRequests) and
+             * replies it; here it is only marked.
+             */
             cmpioreq = (struct IOUsbHWReq *) hc->hc_TDQueue.lh_Head;
             while(((struct Node *) cmpioreq)->ln_Succ) {
                 if(ioreq == cmpioreq) {
+                    struct pciusbXHCIIODevPrivate *dp = (struct pciusbXHCIIODevPrivate *)ioreq->iouh_DriverPrivate1;
+                    ioreq->iouh_Req.io_Error = IOERR_ABORTED;
+                    if(dp) {
+                        dp->dpAbort = TRUE;
+                        Enable();
+                        SureCause(base, &hc->hc_CompleteInt);
+                        return TRUE;
+                    }
                     xhciFreeAsyncContext(hc, unit, ioreq);
                     Enable();
-                    ioreq->iouh_Req.io_Error = IOERR_ABORTED;
                     TermIO(ioreq, base);
                     return TRUE;
                 }
@@ -1864,9 +1877,16 @@ BOOL cmdAbortIO(struct IOUsbHWReq *ioreq, struct PCIDevice *base)
             cmpioreq = (struct IOUsbHWReq *) hc->hc_PeriodicTDQueue.lh_Head;
             while(((struct Node *) cmpioreq)->ln_Succ) {
                 if(ioreq == cmpioreq) {
+                    struct pciusbXHCIIODevPrivate *dp = (struct pciusbXHCIIODevPrivate *)ioreq->iouh_DriverPrivate1;
+                    ioreq->iouh_Req.io_Error = IOERR_ABORTED;
+                    if(dp) {
+                        dp->dpAbort = TRUE;
+                        Enable();
+                        SureCause(base, &hc->hc_CompleteInt);
+                        return TRUE;
+                    }
                     xhciFreePeriodicContext(hc, unit, ioreq);
                     Enable();
-                    ioreq->iouh_Req.io_Error = IOERR_ABORTED;
                     TermIO(ioreq, base);
                     return TRUE;
                 }
@@ -2028,9 +2048,15 @@ AROS_INTH1(uhwNakTimeoutInt, struct PCIUnit *,  unit)
                         // Timeout failed pending transfers
                         devadrep = (ioreq->iouh_DevAddr << 5) + ioreq->iouh_Endpoint + ((ioreq->iouh_Dir == UHDIR_IN) ? 0x10 : 0);
                         if((unit->hu_NakTimeoutFrame[devadrep]) && (framecnt > unit->hu_NakTimeoutFrame[devadrep])) {
+                            struct pciusbXHCIIODevPrivate *dp = (struct pciusbXHCIIODevPrivate *)ioreq->iouh_DriverPrivate1;
                             KPRINTF(200, "xHCI: HC 0x%p NAK timeout %ld, IOReq=%p\n", hc, unit->hu_NakTimeoutFrame[devadrep], ioreq);
                             ioreq->iouh_Req.io_Error = UHIOERR_NAKTIMEOUT;
-                            xhciAbortRequest(hc, ioreq);
+                            if((cnt == 1) && dp) {
+                                /* on the ring: the event task stops the endpoint and skips the TD */
+                                dp->dpAbort = TRUE;
+                                causeint = TRUE;
+                            } else
+                                xhciAbortRequest(hc, ioreq);
                         } else if(unit->hu_NakTimeoutFrame[devadrep])
                             causeint = TRUE;
                     }

@@ -271,6 +271,7 @@ struct pciusbXHCIIODevPrivate {
     ULONG                               dpBounceLen;
     UWORD                               dpBounceDir;
     BYTE                                dpCC;
+    UBYTE                               dpAbort;                                    // retire: stop EP, skip TD
 };
 
 /* Misc Stuff */
