@@ -72,9 +72,8 @@ ADD2EXPUNGELIB(libExpunge, 0)
 /* \\\ */
 
 /* Only YUY2 is accepted here: other uncompressed GUIDs have different layouts.
- * Prefer the smallest advertised mode, bounded to VGA for USB bandwidth and
- * memory use. The bDefaultFrameInterval belongs to that exact frame. */
-#define UVC_MAX_FRAMES 32
+ * Retain supported descriptors for enumeration; selection prefers a fitting
+ * device default. The bDefaultFrameInterval belongs to that exact frame. */
 /* Isochronous transfers in flight. Each covers one 125 us service interval
  * and the controller drops whatever arrives while its ring is empty, so this
  * is how long the refilling task may be away: 112 x 125 us = 14 ms. The
@@ -173,7 +172,16 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
                                      ((ULONG)p[23] << 16) | ((ULONG)p[24] << 24);
                 cand[ncand].maxbuf = p[17] | ((ULONG)p[18] << 8) |
                                      ((ULONG)p[19] << 16) | ((ULONG)p[20] << 24);
-                ncand++;
+                {
+                    struct UVCModeInfo *mode = &nch->ncu_Modes[ncand];
+                    mode->width = w; mode->height = h;
+                    mode->format_index = format; mode->frame_index = p[3];
+                    mode->pixel_format = UVC_MODE_YUY2;
+                    mode->default_interval = cand[ncand].defint;
+                    mode->capture_interval = interval;
+                    mode->max_frame_bytes = cand[ncand].maxbuf;
+                }
+                nch->ncu_ModeCount = ++ncand;
             }
         }
     }
@@ -719,6 +727,19 @@ static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
             }
             break;
         }
+        if (method == UVCM_MODECOUNT && nch->ncu_Id == args[0]) {
+            result = nch->ncu_ModeCount;
+            break;
+        }
+        if (method == UVCM_MODEINFO && nch->ncu_Id == args[0]) {
+            if (args[1] < nch->ncu_ModeCount && args[2] &&
+                args[3] >= sizeof(struct UVCModeInfo)) {
+                memcpy((APTR)args[2], &nch->ncu_Modes[args[1]],
+                       sizeof(struct UVCModeInfo));
+                result = TRUE;
+            }
+            break;
+        }
         if (method == UVCM_GRAB && nch->ncu_Id == args[0]) {
             snapshot = *nch;
             found = TRUE;
@@ -965,7 +986,7 @@ AROS_LH2(IPTR, usbDoMethodA,
     AROS_LIBFUNC_INIT
 
     KPRINTF(10, ("Do Method %ld\n", methodid));
-    if (methodid >= UVCM_COUNT && methodid <= UVCM_GRAB)
+    if (methodid >= UVCM_COUNT && methodid <= UVCM_MODEINFO)
         return uvc_method(nh, methodid, methoddata);
     switch(methodid)
     {

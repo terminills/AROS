@@ -8,6 +8,9 @@
  */
 
 #include <exec/types.h>
+#include <devices/uvc_capture.h>
+
+#define UVC_MAX_FRAMES 32
 #include <exec/nodes.h>
 #include <exec/libraries.h>
 #include <exec/semaphores.h>
@@ -66,6 +69,8 @@ struct NepClassUVC
     ULONG                ncu_Id;
     ULONG                ncu_Interval;
     ULONG                ncu_MaxPayload;
+    ULONG                ncu_ModeCount;
+    struct UVCModeInfo   ncu_Modes[UVC_MAX_FRAMES];
     ULONG                ncu_MaxFrameBuf;  /* dwMaxVideoFrameBuf from the frame desc */
 };
 
