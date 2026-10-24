@@ -75,6 +75,40 @@ static int uvc_payload_feed(struct uvc_payload *s,
     }
     return 0;
 }
+/* Bulk requests may split a UVC payload. Only its first bytes contain a
+ * header; EOF is applied after the payload's last transfer. Start by dropping
+ * data through a short transfer, since a continuously streaming device can
+ * be opened in the middle of a payload. Never search pixels for headers. */
+struct uvc_bulk_payload {
+    unsigned char *data;
+    size_t capacity, used;
+    int synchronized;
+};
+static int uvc_bulk_feed(struct uvc_bulk_payload *b, struct uvc_payload *s,
+                         const unsigned char *p, size_t len, size_t requested)
+{
+    int short_transfer = len < requested;
+    int complete = 0;
+    if (!requested || len > requested || !b->capacity) return 0;
+    if (!b->synchronized) {
+        if (short_transfer) b->synchronized = 1;
+        b->used = 0;
+        return 0;
+    }
+    if (len > b->capacity - b->used) {
+        s->damaged = 1;
+        b->used = 0;
+        b->synchronized = short_transfer;
+        return 0;
+    }
+    if (len) memcpy(b->data + b->used, p, len);
+    b->used += len;
+    if (short_transfer || b->used == b->capacity) {
+        if (b->used) complete = uvc_payload_feed(s, b->data, b->used);
+        b->used = 0;
+    }
+    return complete;
+}
 static unsigned char uvc_clip(int v)
 {
     return (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);

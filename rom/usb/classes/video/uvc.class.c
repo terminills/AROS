@@ -422,6 +422,7 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     const char *stage = "allocate";
     BOOL timeropen = FALSE, timersent = FALSE, active = FALSE, timedout = FALSE;
     struct uvc_payload frame = {0};
+    struct uvc_bulk_payload bulk = {0};
     if (!nch->ncu_HaveStream || !rgb ||
         capacity < (ULONG)nch->ncu_Width*nch->ncu_Height*3) {
         UVCLOG(LOGF_Flag_Type_Warn, "grab id=%lu refused: stream %lu, buffer %lu of %lu bytes",
@@ -514,6 +515,11 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
         if (!uvc_alt(nh, ps, control, streamalt, mp, timer)) goto out;
     }
     size = nch->ncu_IsBulk ? maxpayload : streamsize;
+    if (nch->ncu_IsBulk) {
+        bulk.capacity = maxpayload;
+        bulk.data = AllocVec(maxpayload, MEMF_PUBLIC);
+        if (!bulk.data) goto out;
+    }
     /* The frame is as large as the device committed to, not as large as
      * the geometry implies; the picture is the first width*height*2 bytes. */
     expected = nch->ncu_MaxFrameBuf;
@@ -626,7 +632,9 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
             }
         }
         if (frame.used > maxframe) maxframe = frame.used;
-        if (actual && uvc_payload_feed(&frame, payload + slot*stride, actual)) {
+        if (nch->ncu_IsBulk ?
+            uvc_bulk_feed(&bulk, &frame, payload + slot*stride, actual, size) :
+            (actual && uvc_payload_feed(&frame, payload + slot*stride, actual))) {
             uvc_yuy2_rgb(raw, rgb, (ULONG)nch->ncu_Width * nch->ncu_Height * 2);
             result = (ULONG)nch->ncu_Width*nch->ncu_Height*3;
             break;
@@ -711,7 +719,7 @@ out:
     if (timer) DeleteIORequest((struct IORequest *)timer);
     if (tp) DeleteMsgPort(tp);
     if (mp) DeleteMsgPort(mp);
-    FreeVec(payloadraw); FreeVec(raw); FreeVec(hdrring);
+    FreeVec(payloadraw); FreeVec(raw); FreeVec(hdrring); FreeVec(bulk.data);
     if (ps) CloseLibrary(ps);
     return result;
 }

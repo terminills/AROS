@@ -27,6 +27,33 @@ int main(void)
     assert(!uvc_payload_feed(&s,a,sizeof(a)));
     assert(!uvc_payload_feed(&s,b,sizeof(b)));
     assert(uvc_payload_feed(&s,full,sizeof(full)));
+    /* Bulk synchronization drops even header-looking initial pixels. */
+    {
+        unsigned char storage[16];
+        struct uvc_bulk_payload bulk = { .data=storage, .capacity=16 };
+        struct uvc_payload frame = { .data=out, .capacity=8 };
+        assert(!uvc_bulk_feed(&bulk,&frame,full,sizeof(full),16));
+        assert(frame.eofs == 0 && bulk.synchronized);
+        /* EOF in the first chunk must not publish before the tail arrives. */
+        assert(!uvc_bulk_feed(&bulk,&frame,full,8,8));
+        assert(frame.eofs == 0);
+        assert(uvc_bulk_feed(&bulk,&frame,full+8,2,8));
+        assert(!memcmp(out,full+2,8));
+        /* A ZLP terminates a payload consisting of full-sized transfers. */
+        frame = (struct uvc_payload){ .data=out, .capacity=8 };
+        assert(!uvc_bulk_feed(&bulk,&frame,full,10,10));
+        assert(uvc_bulk_feed(&bulk,&frame,full,0,10));
+        /* Negotiated maximum also terminates without a short transfer. */
+        frame = (struct uvc_payload){ .data=out, .capacity=8 };
+        bulk.capacity = 10;
+        assert(uvc_bulk_feed(&bulk,&frame,full,10,10));
+        /* Overlong accumulation is discarded; recovery needs a boundary. */
+        assert(!uvc_bulk_feed(&bulk,&frame,full,8,8));
+        assert(!uvc_bulk_feed(&bulk,&frame,full,8,8));
+        assert(!bulk.synchronized);
+        assert(!uvc_bulk_feed(&bulk,&frame,full,0,8));
+        assert(bulk.synchronized);
+    }
     puts("PASS: frame boundaries, errors, overflow, recovery, YUY2 RGB");
     return 0;
 }
