@@ -744,7 +744,7 @@ static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
     ULONG index = 0;
     IPTR result = 0;
     BOOL found = FALSE;
-    if (method == UVCM_GRAB) {
+    if (method == UVCM_GRAB || method == UVCM_GRABMODE) {
         ps = OpenLibrary("poseidon.library", 4);
         if (!ps) return 0;
         psdLockReadPBase();
@@ -777,8 +777,26 @@ static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
             }
             break;
         }
-        if (method == UVCM_GRAB && nch->ncu_Id == args[0]) {
+        if ((method == UVCM_GRAB || method == UVCM_GRABMODE) &&
+            nch->ncu_Id == args[0]) {
             snapshot = *nch;
+            if (method == UVCM_GRABMODE) {
+                const struct UVCModeInfo *mode;
+                ULONG geometry;
+                if (args[3] >= nch->ncu_ModeCount) break;
+                mode = &nch->ncu_Modes[args[3]];
+                if (mode->pixel_format != UVC_MODE_YUY2) break;
+                snapshot.ncu_Width = mode->width;
+                snapshot.ncu_Height = mode->height;
+                snapshot.ncu_FormatIndex = mode->format_index;
+                snapshot.ncu_FrameIndex = mode->frame_index;
+                snapshot.ncu_Interval = mode->capture_interval;
+                geometry = mode->width * mode->height * 2;
+                snapshot.ncu_MaxFrameBuf = geometry;
+                if (mode->max_frame_bytes > geometry &&
+                    mode->max_frame_bytes <= 4 * geometry)
+                    snapshot.ncu_MaxFrameBuf = mode->max_frame_bytes;
+            }
             found = TRUE;
             break;
         }
@@ -1023,7 +1041,7 @@ AROS_LH2(IPTR, usbDoMethodA,
     AROS_LIBFUNC_INIT
 
     KPRINTF(10, ("Do Method %ld\n", methodid));
-    if (methodid >= UVCM_COUNT && methodid <= UVCM_MODEINFO)
+    if (methodid >= UVCM_COUNT && methodid <= UVCM_GRABMODE)
         return uvc_method(nh, methodid, methoddata);
     switch(methodid)
     {

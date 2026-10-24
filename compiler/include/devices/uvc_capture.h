@@ -10,6 +10,7 @@
 #define UVCM_GRAB  (UVCM_COUNT + 2)
 #define UVCM_MODECOUNT (UVCM_COUNT + 3)
 #define UVCM_MODEINFO  (UVCM_COUNT + 4)
+#define UVCM_GRABMODE  (UVCM_COUNT + 5)
 
 #define UVC_MODE_YUY2 1
 struct UVCModeInfo {
@@ -30,5 +31,9 @@ struct UVCCameraInfo {
     char name[128];
 };
 /* INFO arguments: index, UVCCameraInfo*. GRAB: id, RGB24 buffer, capacity.
- * GRAB returns the byte count, or zero on timeout, unplug, or invalid frame. */
+ * GRABMODE: id, RGB24 buffer, capacity, zero-based advertised mode index.
+ * The selected mode applies to this grab only, at its capture_interval.
+ * No fallback to another mode occurs if negotiation fails.
+ * GRAB and GRABMODE return bytes, or zero on invalid arguments, timeout,
+ * unplug, negotiation failure or invalid frame. */
 #endif
