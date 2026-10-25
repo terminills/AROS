@@ -33,6 +33,8 @@ struct StringBase_intern
 
 struct StringGadData
 {
+    Object          *sd_Bevel;          /* field frame (bevel.image) */
+    UBYTE           sd_Inset;           /* box inset for the superclass */
     UWORD           sd_MinVisible;      /* Minimum visible characters for sizing */
     UWORD           sd_HookType;        /* Built-in hook type (SHK_*) */
 };

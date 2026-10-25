@@ -32,6 +32,8 @@ struct IntegerBase_intern
 
 struct IntegerData
 {
+    Object          *id_Bevel;          /* field frame (bevel.image) */
+    UBYTE           id_Inset;           /* box inset for the superclass */
     LONG    number;
     LONG    minimum;
     LONG    maximum;
