@@ -91,12 +91,13 @@ struct App
 };
 
 enum { MENU_QUIT = 1, MENU_NEXT, MENU_PREVIOUS, MENU_PAUSE, MENU_SNAPSHOT,
-       MENU_SIZE_DEFAULT, MENU_SIZE_VGA, MENU_SIZE_SVGA, MENU_SIZE_HD, MENU_SIZE_FHD };
+       MENU_SIZE_DEFAULT, MENU_SIZE_VGA, MENU_SIZE_SVGA, MENU_SIZE_HD, MENU_SIZE_FHD, MENU_INPUT_INFO };
 static struct NewMenu menu_spec[] = {
     { NM_TITLE, (STRPTR)"Project", NULL, 0, 0, NULL },
     { NM_ITEM, (STRPTR)"Save snapshot...", (STRPTR)"S", 0, 0, (APTR)MENU_SNAPSHOT },
     { NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)MENU_QUIT },
     { NM_TITLE, (STRPTR)"Input", NULL, 0, 0, NULL },
+    { NM_ITEM, (STRPTR)"Input information...", (STRPTR)"I", 0, 0, (APTR)MENU_INPUT_INFO },
     { NM_ITEM, (STRPTR)"Next input", (STRPTR)"N", 0, 0, (APTR)MENU_NEXT },
     { NM_ITEM, (STRPTR)"Previous input", (STRPTR)"P", 0, 0, (APTR)MENU_PREVIOUS },
     { NM_TITLE, (STRPTR)"Capture", NULL, 0, 0, NULL },
@@ -452,6 +453,41 @@ done:
     FreeAslRequest(request);
 }
 
+static void show_input_info(struct App *app)
+{
+    char text[1024];
+    ULONG i, used;
+    struct EasyStruct info = { sizeof(info), 0, (STRPTR)"Capture input",
+        (STRPTR)"%s", (STRPTR)"Close" };
+    IPTR args[1] = { (IPTR)text };
+    used = snprintf(text, sizeof(text),
+        "Input %lu/%lu: %.128s\nLast captured frame: %lu x %lu\n"
+        "Requested size: %lu x %lu (0 = input default)\n"
+        "Enumerated native modes: %lu\n",
+        (unsigned long)(app->input + 1), (unsigned long)app->input_count,
+        app->input_name ? app->input_name : "unknown",
+        (unsigned long)app->frame_width, (unsigned long)app->frame_height,
+        (unsigned long)app->requested_width, (unsigned long)app->requested_height,
+        (unsigned long)app->mode_count);
+    for (i = 0; i < app->mode_count; i++) {
+        const struct UVCModeInfo *mode = &app->modes[i];
+        if (mode->width == app->frame_width && mode->height == app->frame_height) {
+            snprintf(text + used, sizeof(text) - used,
+                "Matching descriptor: format %lu / frame %lu, YUY2\n"
+                "Descriptor default interval: %lu x 100 ns\n"
+                "Proposed capture interval: %lu x 100 ns\n"
+                "Descriptor frame buffer: %lu bytes\n"
+                "Intervals are descriptor values, not measured preview FPS.",
+                (unsigned long)mode->format_index, (unsigned long)mode->frame_index,
+                (unsigned long)mode->default_interval,
+                (unsigned long)mode->capture_interval,
+                (unsigned long)mode->max_frame_bytes);
+            break;
+        }
+    }
+    EasyRequestArgs(app->window, &info, NULL, args);
+}
+
 static BOOL process_events(struct App *app)
 {
     struct IntuiMessage *message;
@@ -476,6 +512,7 @@ static BOOL process_events(struct App *app)
                 action = (ULONG)(IPTR)GTMENUITEM_USERDATA(item);
                 if (action == MENU_QUIT) running = FALSE;
                 else if (action == MENU_SNAPSHOT) save_snapshot(app);
+                else if (action == MENU_INPUT_INFO) show_input_info(app);
                 else if (action == MENU_NEXT) select_input(app, app->input + 1);
                 else if (action == MENU_PREVIOUS && app->input_count)
                     select_input(app, app->input ? app->input - 1 : app->input_count - 1);
