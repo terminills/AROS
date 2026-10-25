@@ -465,7 +465,7 @@ static void show_input_info(struct App *app)
         "Requested size: %lu x %lu (0 = input default)\n"
         "Enumerated native modes: %lu\n",
         (unsigned long)(app->input + 1), (unsigned long)app->input_count,
-        app->input_name ? app->input_name : "unknown",
+        app->input_name ? (const char *)app->input_name : "unknown",
         (unsigned long)app->frame_width, (unsigned long)app->frame_height,
         (unsigned long)app->requested_width, (unsigned long)app->requested_height,
         (unsigned long)app->mode_count);
@@ -485,7 +485,7 @@ static void show_input_info(struct App *app)
             break;
         }
     }
-    EasyRequestArgs(app->window, &info, NULL, args);
+    EasyRequestArgs(app->window, &info, NULL, (RAWARG)args);
 }
 
 static BOOL process_events(struct App *app)
