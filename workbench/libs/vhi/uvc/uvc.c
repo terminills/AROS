@@ -177,6 +177,23 @@ AROS_LH5(IPTR, vhi_api,
             if (!uh) { err = VHI_ERR_INTERNAL_ERROR; break; }
             switch (submethod)
             {
+                case VHI_UVC_MODECOUNT:
+                {
+                    IPTR args[1] = { uh->uh_CameraId };
+                    if (uh->uh_Input) result = uvc_class(uh, UVCM_MODECOUNT, args);
+                    break;
+                }
+                case VHI_UVC_MODEINFO:
+                {
+                    struct VHIUVCModeQuery *query = attr;
+                    if (uh->uh_Input && query && query->size >= sizeof(*query)) {
+                        IPTR args[4] = { uh->uh_CameraId, query->index,
+                            (IPTR)&query->mode, sizeof(query->mode) };
+                        result = uvc_class(uh, UVCM_MODEINFO, args);
+                    }
+                    if (!result) err = VHI_ERR_UNKNOWN_OPTION;
+                    break;
+                }
                 case VHI_CARD_NAME:
                     result = (IPTR)"AROS USB Video (VHI/UVC)";
                     break;

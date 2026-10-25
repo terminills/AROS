@@ -33,6 +33,7 @@
 #include <proto/cybergraphics.h>
 
 #include <vhi/vhi.h>
+#include <devices/uvc_capture.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,7 +73,11 @@ struct App
     struct Window *window;
     struct Menu *menus;
     APTR visual_info;
-    BOOL paused;
+    BOOL paused, menus_dirty;
+    ULONG mode_count;
+    struct UVCModeInfo modes[32];
+    char mode_labels[32][64];
+    struct NewMenu menu_entries[64];
     struct vhi_image *last_frame;
     APTR vhi_handle;
     ULONG input_count;
@@ -104,6 +109,50 @@ static struct NewMenu menu_spec[] = {
     { NM_ITEM, (STRPTR)"1920 x 1080 (nearest native)", NULL, 0, 0, (APTR)MENU_SIZE_FHD },
     { NM_END, NULL, NULL, 0, 0, NULL }
 };
+
+/* Rebuild between event batches: never free an ItemAddress result while
+ * processing its NextSelect chain. Labels live as long as the menu strip. */
+#define MENU_NATIVE_BASE 100
+static BOOL rebuild_menus(struct App *app)
+{
+    ULONG error = 0, count, i, n = 0;
+    struct Menu *menus;
+    if (app->menus) { ClearMenuStrip(app->window); FreeMenus(app->menus); }
+    app->menus = NULL;
+    app->mode_count = 0;
+    while (menu_spec[n].nm_Type != NM_END) {
+        app->menu_entries[n] = menu_spec[n]; n++;
+    }
+    count = call_vhi(VHI_METHOD_GET, VHI_UVC_MODECOUNT, NULL,
+                     &error, app->vhi_handle);
+    if (!error && count && count <= 32) {
+        app->menu_entries[n++] = (struct NewMenu){ NM_TITLE,
+            (STRPTR)"Camera modes", NULL, 0, 0, NULL };
+        for (i = 0; i < count && app->mode_count < 31; i++) {
+            struct VHIUVCModeQuery q = { .size = sizeof(q), .index = i };
+            ULONG index = app->mode_count;
+            error = 0;
+            if (!call_vhi(VHI_METHOD_GET, VHI_UVC_MODEINFO, &q,
+                          &error, app->vhi_handle) || error) continue;
+            app->modes[index] = q.mode;
+            snprintf(app->mode_labels[index], sizeof(app->mode_labels[index]),
+                     "%lux%lu YUY2", (unsigned long)q.mode.width,
+                     (unsigned long)q.mode.height);
+            app->menu_entries[n++] = (struct NewMenu){ NM_ITEM,
+                app->mode_labels[index], NULL, 0, 0,
+                (APTR)(IPTR)(MENU_NATIVE_BASE + index) };
+            app->mode_count++;
+        }
+    }
+    app->menu_entries[n] = (struct NewMenu){ NM_END, NULL, NULL, 0, 0, NULL };
+    menus = CreateMenus(app->menu_entries, TAG_DONE);
+    if (!menus) return FALSE;
+    if (!LayoutMenus(menus, app->visual_info, TAG_DONE) ||
+        !SetMenuStrip(app->window, menus)) { FreeMenus(menus); return FALSE; }
+    app->menus = menus;
+    app->menus_dirty = FALSE;
+    return TRUE;
+}
 
 static const char *vhi_error(ULONG error)
 {
@@ -264,6 +313,8 @@ static void select_input(struct App *app, ULONG input)
     free_frame(app->last_frame);
     app->last_frame = NULL;
     app->input = input;
+    app->menus_dirty = TRUE;
+    app->requested_width = app->requested_height = 0;
     app->frame_width = app->frame_height = 0;
     SetAPen(app->window->RPort, 0);
     RectFill(app->window->RPort, app->window->BorderLeft,
@@ -441,6 +492,16 @@ static BOOL process_events(struct App *app)
                     app->frame_width = app->frame_height = 0;
                     set_status(app, "capture size changed; awaiting frame");
                 }
+                else if (!app->menus_dirty && action >= MENU_NATIVE_BASE &&
+                         action < MENU_NATIVE_BASE + app->mode_count)
+                {
+                    ULONG index = action - MENU_NATIVE_BASE;
+                    app->requested_width = app->modes[index].width;
+                    app->requested_height = app->modes[index].height;
+                    free_frame(app->last_frame); app->last_frame = NULL;
+                    app->frame_width = app->frame_height = 0;
+                    set_status(app, "camera mode selected; awaiting frame");
+                }
                 else if (action == MENU_PAUSE)
                 {
                     app->paused = (item->Flags & CHECKED) != 0;
@@ -558,6 +619,10 @@ int main(int argc, char **argv)
         struct vhi_image *image;
         running = process_events(&app);
         if (!running) break;
+        if (app.menus_dirty && !rebuild_menus(&app)) {
+            printf("VHITV: could not rebuild camera menus\n");
+            break;
+        }
         if (app.paused)
         {
             WaitPort(app.window->UserPort);

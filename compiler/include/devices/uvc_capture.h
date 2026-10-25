@@ -12,6 +12,9 @@
 #define UVCM_MODEINFO  (UVCM_COUNT + 4)
 #define UVCM_GRABMODE  (UVCM_COUNT + 5)
 
+/* Optional uvc.library GET extensions; other VHI drivers may reject them. */
+#define VHI_UVC_MODECOUNT 0x55564310UL
+#define VHI_UVC_MODEINFO  0x55564311UL
 #define UVC_MODE_YUY2 1
 struct UVCModeInfo {
     ULONG width, height;
@@ -21,6 +24,13 @@ struct UVCModeInfo {
     ULONG capture_interval;   /* 100 ns units, proposed capture rate */
     ULONG max_frame_bytes;    /* descriptor buffer bound */
 };
+struct VHIUVCModeQuery {
+    ULONG size;              /* sizeof(struct VHIUVCModeQuery) */
+    ULONG index;
+    struct UVCModeInfo mode;
+};
+/* VHI GET MODECOUNT returns count for the selected input. GET MODEINFO takes
+ * VHIUVCModeQuery*, returns TRUE on success; synthetic input has no modes. */
 /* MODECOUNT: binding id. MODEINFO: binding id, zero-based mode index,
  * UVCModeInfo*, buffer size. Returns FALSE on stale id/index or short buffer.
  * Modes describe supported YUY2 descriptors, not guaranteed bandwidth or
