@@ -976,10 +976,8 @@ IPTR Layout__GM_RENDER(Class *cl, Object *o, struct gpRender *msg)
             }
         }
 
-        /* Render only image children here. Gadget children are linked into
-         * the window's GList via LM_ADDTOWINDOW and Intuition refreshes them
-         * individually, so rendering them again here would double-draw and
-         * fight Intuition's input dispatch. */
+        /* Image children and labels are drawn here; gadget children are
+         * redrawn after the erase (see below). */
         ForeachNode(&data->ld_Children, lc)
         {
             if (lc->lc_Object && lc->lc_IsImage)
@@ -996,6 +994,18 @@ IPTR Layout__GM_RENDER(Class *cl, Object *o, struct gpRender *msg)
                 DrawImageState(rp, (struct Image *)lc->lc_Object,
                     0, 0,
                     IDS_NORMAL, dri);
+            }
+            /* gadget children are in the window's list and intuition draws
+               them, but the erase above may have run after it did: draw
+               them again so a nested group never leaves a hole */
+            if (lc->lc_Object && !lc->lc_IsImage && msg->gpr_GInfo)
+            {
+                struct gpRender gr;
+                gr.MethodID   = GM_RENDER;
+                gr.gpr_GInfo  = msg->gpr_GInfo;
+                gr.gpr_RPort  = rp;
+                gr.gpr_Redraw = GREDRAW_REDRAW;
+                DoMethodA(lc->lc_Object, (Msg)&gr);
             }
             /* child labels: their IA_Left/IA_Top are absolute as well */
             if (lc->lc_Label && lc->lc_LabelW)
