@@ -26,6 +26,7 @@
 #include <proto/alib.h>
 
 #include "listbrowser_intern.h"
+#include "../reaction_box.h"
 
 #define ListBrowserBase ((struct Library *)(cl->cl_UserData))
 
@@ -249,12 +250,15 @@ struct lb_metrics
 };
 
 static void lb_get_metrics(struct ListBrowserData *data, struct Gadget *g,
-    struct RastPort *rp, struct lb_metrics *m)
+    struct GadgetInfo *gi, struct RastPort *rp, struct lb_metrics *m)
 {
-    m->left = g->LeftEdge;
-    m->top = g->TopEdge;
-    m->width = g->Width;
-    m->height = g->Height;
+    WORD x, y, w, h;
+
+    reaction_gadget_box(g, gi, &x, &y, &w, &h);
+    m->left = x;
+    m->top = y;
+    m->width = w;
+    m->height = h;
 
     if (rp && rp->Font)
         m->row_h = rp->Font->tf_YSize + 2;
@@ -406,7 +410,7 @@ IPTR ListBrowser__GM_RENDER(Class *cl, Object *obj, struct gpRender *msg)
     if (!dri || !rp)
         return FALSE;
 
-    lb_get_metrics(data, G(obj), rp, &m);
+    lb_get_metrics(data, G(obj), msg->gpr_GInfo, rp, &m);
 
     if (m.width <= 4 || m.height <= 4)
         return FALSE;
@@ -670,7 +674,7 @@ static IPTR lb_handle_input(Class *cl, Object *obj, struct gpInput *msg)
             WORD my = msg->gpi_Mouse.Y;
             struct RastPort *girp = NULL;
 
-            lb_get_metrics(data, G(obj), NULL, &m);
+            lb_get_metrics(data, G(obj), msg->gpi_GInfo, NULL, &m);
             if (data->lbd_RowHeight)
                 m.row_h = data->lbd_RowHeight;
 
