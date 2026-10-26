@@ -2,7 +2,7 @@
 #define DOS_DOSTAGS_H
 
 /*
-    Copyright © 1995-2020, The AROS Development Team. All rights reserved.
+    Copyright © 1995-2026, The AROS Development Team. All rights reserved.
     $Id$
 
     Desc: Tags for DOS routines
