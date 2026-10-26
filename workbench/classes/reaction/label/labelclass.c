@@ -10,6 +10,7 @@
 #include <proto/utility.h>
 #include <proto/graphics.h>
 #include <proto/alib.h>
+#include <proto/diskfont.h>
 
 #include <graphics/gfxmacros.h>
 #include <intuition/intuition.h>
@@ -29,21 +30,134 @@
 
 /******************************************************************************/
 
+static void label_free_segs(struct LabelData *data)
+{
+    struct LabelSeg *seg = data->ld_Segs, *next;
+
+    while (seg)
+    {
+        next = seg->ls_Next;
+        if (data->ld_DisposeImage && seg->ls_Image)
+            DisposeObject(seg->ls_Image);
+        FreeVec(seg);
+        seg = next;
+    }
+    data->ld_Segs = NULL;
+    data->ld_Text = NULL;
+    data->ld_Image = NULL;
+}
+
+static struct LabelSeg *label_add_seg(struct LabelSeg ***tail, UBYTE type,
+    CONST_STRPTR text, ULONG len)
+{
+    struct LabelSeg *seg = AllocVec(sizeof(struct LabelSeg) + len + 1,
+        MEMF_ANY | MEMF_CLEAR);
+
+    if (seg)
+    {
+        seg->ls_Type = type;
+        seg->ls_Len = len;
+        if (len)
+            CopyMem(text, seg->ls_Text, len);
+        **tail = seg;
+        *tail = &seg->ls_Next;
+    }
+    return seg;
+}
+
+static struct TextFont *label_open_font(struct LabelData *data,
+    struct TextAttr *ta)
+{
+    struct TextFont *font = NULL;
+    struct Library *DiskfontBase;
+    int i;
+
+    if (!ta)
+        return NULL;
+    if ((DiskfontBase = OpenLibrary("diskfont.library", 0)))
+    {
+        font = OpenDiskFont(ta);
+        CloseLibrary(DiskfontBase);
+    }
+    if (!font && !(font = OpenFont(ta)))
+        return NULL;
+    for (i = 0; i < 4; i++)
+    {
+        if (!data->ld_Fonts[i])
+        {
+            data->ld_Fonts[i] = font;
+            return font;
+        }
+    }
+    CloseFont(font);
+    return NULL;
+}
+
+static BOOL label_has_contents(struct TagItem *tags)
+{
+    return FindTagItem(LABEL_Text, tags) || FindTagItem(LABEL_Image, tags);
+}
+
 static void label_set(Class *cl, Object *o, struct opSet *msg)
 {
     struct LabelData *data = INST_DATA(cl, o);
     struct TagItem *tags = msg->ops_AttrList;
     struct TagItem *tag;
+    struct LabelSeg **tail, *seg;
+    struct TextFont *font = NULL;
+    UWORD pen = 0;
+
+    if (label_has_contents(tags))
+        label_free_segs(data);
+    for (tail = &data->ld_Segs; *tail; tail = &(*tail)->ls_Next)
+        ;
 
     while ((tag = NextTagItem(&tags)))
     {
         switch (tag->ti_Tag)
         {
             case LABEL_Text:
-                data->ld_Text = (STRPTR)tag->ti_Data;
+            {
+                CONST_STRPTR text = (CONST_STRPTR)tag->ti_Data;
+
+                if (!text)
+                    break;
+                if (!data->ld_Text)
+                    data->ld_Text = (STRPTR)text;
+                for (;;)
+                {
+                    CONST_STRPTR nl = strchr(text, '\n');
+                    ULONG len = nl ? (ULONG)(nl - text) : strlen(text);
+
+                    if (len && (seg = label_add_seg(&tail, LSEG_TEXT, text, len)))
+                    {
+                        seg->ls_SoftStyle = data->ld_SoftStyle;
+                        seg->ls_Pen = pen;
+                        seg->ls_Font = font;
+                    }
+                    if (!nl)
+                        break;
+                    label_add_seg(&tail, LSEG_NEWLINE, NULL, 0);
+                    text = nl + 1;
+                }
                 break;
+            }
             case LABEL_Image:
-                data->ld_Image = (Object *)tag->ti_Data;
+                if (!tag->ti_Data)
+                    break;
+                if (!data->ld_Image)
+                    data->ld_Image = (Object *)tag->ti_Data;
+                if ((seg = label_add_seg(&tail, LSEG_IMAGE, NULL, 0)))
+                {
+                    seg->ls_Image = (Object *)tag->ti_Data;
+                    seg->ls_Mapping = data->ld_Mapping;
+                }
+                break;
+            case IA_Font:
+                font = label_open_font(data, (struct TextAttr *)tag->ti_Data);
+                break;
+            case IA_FGPen:
+                pen = (UWORD)tag->ti_Data;
                 break;
             case LABEL_Justification:
                 data->ld_Justification = tag->ti_Data;
@@ -55,13 +169,16 @@ static void label_set(Class *cl, Object *o, struct opSet *msg)
                 data->ld_DisposeImage = (BOOL)tag->ti_Data;
                 break;
             case LABEL_Mapping:
-                data->ld_Mapping = (LONG *)tag->ti_Data;
+                data->ld_Mapping = (UWORD *)tag->ti_Data;
                 break;
             case LABEL_DrawInfo:
                 data->ld_DrawInfo = (struct DrawInfo *)tag->ti_Data;
                 break;
             case LABEL_Underscore:
                 data->ld_Underscore = (UBYTE)tag->ti_Data;
+                break;
+            case LABEL_VerticalSpacing:
+                data->ld_VSpacing = (UWORD)tag->ti_Data;
                 break;
         }
     }
@@ -148,6 +265,163 @@ static ULONG label_text_pixel_width(struct RastPort *rp, STRPTR text,
 
 /******************************************************************************/
 
+static void label_image_size(Object *img, WORD *w, WORD *h)
+{
+    struct Image *im = (struct Image *)img;
+    IPTR iw = 0, ih = 0;
+
+    if (im->Depth == CUSTOMIMAGEDEPTH)
+    {
+        GetAttr(IA_Width, img, &iw);
+        GetAttr(IA_Height, img, &ih);
+    }
+    else
+    {
+        iw = im->Width;
+        ih = im->Height;
+    }
+    *w = (WORD)iw;
+    *h = (WORD)ih;
+}
+
+static void label_seg_font(struct RastPort *rp, struct LabelSeg *seg,
+    struct TextFont *deffont)
+{
+    struct TextFont *font = seg->ls_Font ? seg->ls_Font : deffont;
+
+    if (font && rp->Font != font)
+        SetFont(rp, font);
+    SetSoftStyle(rp, seg->ls_SoftStyle, AskSoftStyle(rp));
+}
+
+/* Size of the line starting at seg; returns the first segment of the next line */
+static struct LabelSeg *label_line(struct LabelData *data, struct LabelSeg *seg,
+    struct RastPort *rp, struct TextFont *deffont, WORD *lw, WORD *lh)
+{
+    WORD w = 0, h = 0, sw, sh;
+
+    for (; seg && seg->ls_Type != LSEG_NEWLINE; seg = seg->ls_Next)
+    {
+        if (seg->ls_Type == LSEG_TEXT)
+        {
+            label_seg_font(rp, seg, deffont);
+            sw = label_text_pixel_width(rp, seg->ls_Text, seg->ls_Len,
+                data->ld_Underscore);
+            sh = rp->TxHeight ? rp->TxHeight : 8;
+        }
+        else
+            label_image_size(seg->ls_Image, &sw, &sh);
+        w += sw;
+        if (sh > h)
+            h = sh;
+    }
+    if (h == 0)
+        h = deffont ? deffont->tf_YSize : 8;
+    *lw = w;
+    *lh = h;
+    return seg ? seg->ls_Next : NULL;
+}
+
+static void label_extent(struct LabelData *data, struct RastPort *rp,
+    struct TextFont *deffont, WORD *tw, WORD *th)
+{
+    struct LabelSeg *seg = data->ld_Segs;
+    WORD w = 0, h = 0, lw, lh;
+    BOOL first = TRUE;
+
+    while (seg)
+    {
+        BOOL last;
+
+        seg = label_line(data, seg, rp, deffont, &lw, &lh);
+        last = (seg == NULL);
+        if (!first)
+            h += data->ld_VSpacing;
+        if (lw > w)
+            w = lw;
+        h += lh;
+        first = FALSE;
+        if (last)
+            break;
+    }
+    *tw = w;
+    *th = h;
+}
+
+static struct TextFont *label_default_font(struct LabelData *data)
+{
+    struct TextFont *font = NULL;
+    struct Screen *scr;
+
+    if (data->ld_DrawInfo)
+        font = data->ld_DrawInfo->dri_Font;
+    if (!font && (scr = LockPubScreen(NULL)))
+    {
+        font = scr->RastPort.Font;
+        UnlockPubScreen(NULL, scr);
+    }
+    return font;
+}
+
+/* A plain image drawn through a LABEL_Mapping pen table */
+static void label_draw_mapped(struct RastPort *rp, struct Image *im,
+    UWORD *map, WORD x, WORD y)
+{
+    UWORD wpr = (im->Width + 15) >> 4;
+    ULONG plane = (ULONG)wpr * im->Height;
+    UBYTE *buf;
+    WORD px, py;
+
+    if (im->Width <= 0 || im->Height <= 0 || !im->ImageData)
+        return;
+    buf = AllocVec((ULONG)im->Width * im->Height, MEMF_ANY);
+    if (!buf)
+        return;
+
+    for (py = 0; py < im->Height; py++)
+    {
+        for (px = 0; px < im->Width; px++)
+        {
+            ULONG off = (ULONG)py * wpr + (px >> 4);
+            UWORD bit = 0x8000 >> (px & 15);
+            UBYTE color = 0, pick = 0;
+            int p;
+
+            for (p = 0; p < 8; p++)
+            {
+                if (im->PlanePick & (1 << p))
+                {
+                    if (pick < im->Depth && (im->ImageData[pick * plane + off] & bit))
+                        color |= 1 << p;
+                    pick++;
+                }
+                else if (im->PlaneOnOff & (1 << p))
+                    color |= 1 << p;
+            }
+            buf[(ULONG)py * im->Width + px] = (UBYTE)map[color];
+        }
+    }
+    WriteChunkyPixels(rp, x, y, x + im->Width - 1, y + im->Height - 1,
+        buf, im->Width);
+    FreeVec(buf);
+}
+
+/* ClassAct programs read the natural size straight from the Image */
+static void label_size_image(struct LabelData *data, struct Image *im)
+{
+    struct RastPort rp;
+    WORD w, h;
+
+    if (!data->ld_Segs)
+        return;
+    InitRastPort(&rp);
+    label_extent(data, &rp, label_default_font(data), &w, &h);
+    im->Width = w;
+    im->Height = h;
+}
+
+/******************************************************************************/
+
 IPTR Label__OM_NEW(Class *cl, Object *o, struct opSet *msg)
 {
     IPTR retval;
@@ -176,6 +450,7 @@ IPTR Label__OM_NEW(Class *cl, Object *o, struct opSet *msg)
         }
 
         label_set(cl, (Object *)retval, msg);
+        label_size_image(data, (struct Image *)retval);
     }
 
     return retval;
@@ -188,10 +463,13 @@ IPTR Label__OM_DISPOSE(Class *cl, Object *o, Msg msg)
     D(bug("[Label] OM_DISPOSE: obj 0x%p\n", o));
     struct LabelData *data = INST_DATA(cl, o);
 
-    if (data->ld_DisposeImage && data->ld_Image)
+    int i;
+
+    label_free_segs(data);
+    for (i = 0; i < 4; i++)
     {
-        DisposeObject(data->ld_Image);
-        data->ld_Image = NULL;
+        if (data->ld_Fonts[i])
+            CloseFont(data->ld_Fonts[i]);
     }
 
     return DoSuperMethodA(cl, o, msg);
@@ -204,6 +482,8 @@ IPTR Label__OM_SET(Class *cl, Object *o, struct opSet *msg)
     D(bug("[Label] OM_SET: obj 0x%p\n", o));
     IPTR retval = DoSuperMethodA(cl, o, (Msg)msg);
     label_set(cl, o, msg);
+    if (label_has_contents(msg->ops_AttrList))
+        label_size_image(INST_DATA(cl, o), (struct Image *)o);
     return retval;
 }
 
@@ -216,75 +496,23 @@ IPTR Label__OM_GET(Class *cl, Object *o, struct opGet *msg)
 
     switch (msg->opg_AttrID)
     {
-        /* Compute on-demand size based on text + optional image. The image
-         * struct fields are 0 unless someone explicitly sets IA_Width/Height
-         * via OM_SET — but callers (e.g. layout) typically just GetAttr
-         * IA_Width to sample minimum width. Synthesise it from the text. */
+        /* imageclass defaults Width/Height to 80x40, so the natural size
+         * is always computed from the contents */
         case IA_Width:
-        {
-            ULONG w = 0;
-            /* Compute natural width from text + sub-image. Do NOT trust
-             * im->Width as a "set" indicator: imageclass initialises it to
-             * a default 80x40 unless overridden, so checking it first will
-             * mask the real text-derived size. */
-            if (data->ld_Text && data->ld_Text[0])
-            {
-                struct Screen *scr = LockPubScreen(NULL);
-                if (scr)
-                {
-                    struct RastPort rp;
-                    InitRastPort(&rp);
-                    SetFont(&rp, scr->RastPort.Font);
-                    w = label_text_pixel_width(&rp, data->ld_Text,
-                        strlen(data->ld_Text), data->ld_Underscore);
-                    UnlockPubScreen(NULL, scr);
-                }
-            }
-            if (data->ld_Image)
-            {
-                IPTR iw = 0;
-                if (((struct Image *)data->ld_Image)->Depth == CUSTOMIMAGEDEPTH)
-                    GetAttr(IA_Width, data->ld_Image, &iw);
-                else
-                    iw = ((struct Image *)data->ld_Image)->Width;
-                if ((ULONG)iw > w) w = (ULONG)iw;
-            }
-            /* Fall back to image record only if we have neither text nor
-             * a sub-image (e.g. unused spacer label). */
-            if (w == 0 && !data->ld_Text && !data->ld_Image)
-                w = im->Width;
-            *msg->opg_Storage = w;
-            D(bug("[Label] OM_GET: obj %p IA_Width -> %ld (text='%s')\n",
-                o, (LONG)w, data->ld_Text ? data->ld_Text : (STRPTR)""));
-            return TRUE;
-        }
-
         case IA_Height:
         {
-            ULONG h = 0;
-            if (data->ld_Text && data->ld_Text[0])
+            struct RastPort rp;
+            WORD w = 0, h = 0;
+
+            InitRastPort(&rp);
+            if (data->ld_Segs)
+                label_extent(data, &rp, label_default_font(data), &w, &h);
+            else
             {
-                struct Screen *scr = LockPubScreen(NULL);
-                if (scr)
-                {
-                    h = scr->RastPort.Font ? scr->RastPort.Font->tf_YSize : 8;
-                    UnlockPubScreen(NULL, scr);
-                }
-            }
-            if (data->ld_Image)
-            {
-                IPTR ih = 0;
-                if (((struct Image *)data->ld_Image)->Depth == CUSTOMIMAGEDEPTH)
-                    GetAttr(IA_Height, data->ld_Image, &ih);
-                else
-                    ih = ((struct Image *)data->ld_Image)->Height;
-                if ((ULONG)ih > h) h = (ULONG)ih;
-            }
-            if (h == 0 && !data->ld_Text && !data->ld_Image)
+                w = im->Width;
                 h = im->Height;
-            *msg->opg_Storage = h;
-            D(bug("[Label] OM_GET: obj %p IA_Height -> %ld (text='%s')\n",
-                o, (LONG)h, data->ld_Text ? data->ld_Text : (STRPTR)""));
+            }
+            *msg->opg_Storage = (msg->opg_AttrID == IA_Width) ? w : h;
             return TRUE;
         }
 
@@ -335,7 +563,6 @@ IPTR Label__IM_DRAW(Class *cl, Object *o, struct impDraw *msg)
     UWORD *pens;
     WORD x, y, w, h;
     UWORD textPen;
-    ULONG oldStyle;
 
     D(bug("[Label] IM_DRAW: state %d, dimensions %dx%d, text '%s'\n", msg->imp_State, im->Width, im->Height, data->ld_Text ? data->ld_Text : (STRPTR)"(null)"));
 
@@ -379,101 +606,82 @@ IPTR Label__IM_DRAW(Class *cl, Object *o, struct impDraw *msg)
 
     SetDrMd(rp, JAM1);
 
-    /* Draw the optional image first, vertically centred; the text is
-     * shifted right so it doesn't overdraw the image */
-    WORD textOffset = 0;
-
-    if (data->ld_Image)
+    if (data->ld_Segs)
     {
-        struct Image *lim = (struct Image *)data->ld_Image;
+        struct TextFont *deffont = rp->Font, *oldFont = rp->Font;
+        ULONG oldStyle = AskSoftStyle(rp) & rp->AlgoStyle;
+        struct LabelSeg *seg = data->ld_Segs, *line;
+        WORD tw, th, lw, lh, cx, cy;
 
-        DrawImageState(rp, lim,
-            x, y + (h > lim->Height ? (h - lim->Height) / 2 : 0),
-            msg->imp_State, dri);
+        if (!deffont)
+            deffont = label_default_font(data);
+        label_extent(data, rp, deffont, &tw, &th);
+        cy = y + (h > th ? (h - th) / 2 : 0);
 
-        textOffset = lim->Width + 4;
-    }
-
-    /* Draw text label */
-    if (data->ld_Text)
-    {
-        ULONG len = strlen(data->ld_Text);
-        WORD textX, textY;
-        ULONG pixelWidth;
-        struct TextFont *oldFont = NULL;
-        struct TextFont *useFont = NULL;
-
-        /* Make sure a font is selected. The rastport handed to us by
-         * DrawImageState/layout may not have one set, in which case
-         * TxHeight/TxBaseline/TextLength all return 0 and the text
-         * renders at an incorrect Y position or with zero width. */
-        if (!rp->Font)
+        while (seg)
         {
-            struct Screen *scr = LockPubScreen(NULL);
-            if (scr)
+            line = seg;
+            seg = label_line(data, line, rp, deffont, &lw, &lh);
+
+            switch (data->ld_Justification)
             {
-                useFont = scr->RastPort.Font;
-                if (useFont)
-                {
-                    oldFont = rp->Font;
-                    SetFont(rp, useFont);
-                }
-                UnlockPubScreen(NULL, scr);
+                case LJ_RIGHT:
+                    cx = x + w - lw;
+                    break;
+                case LJ_CENTER:
+                    cx = x + (w > lw ? (w - lw) / 2 : 0);
+                    break;
+                default:
+                    cx = x;
+                    break;
             }
+
+            for (; line && line->ls_Type != LSEG_NEWLINE; line = line->ls_Next)
+            {
+                WORD sw, sh;
+
+                if (line->ls_Type == LSEG_IMAGE)
+                {
+                    struct Image *lim = (struct Image *)line->ls_Image;
+
+                    label_image_size(line->ls_Image, &sw, &sh);
+                    if (line->ls_Mapping && lim->Depth != CUSTOMIMAGEDEPTH)
+                        label_draw_mapped(rp, lim, line->ls_Mapping,
+                            cx + lim->LeftEdge, cy + (lh - sh) / 2 + lim->TopEdge);
+                    else
+                        DrawImageState(rp, lim, cx, cy + (lh - sh) / 2,
+                            msg->imp_State, dri);
+                }
+                else
+                {
+                    WORD ty;
+                    UWORD pen = line->ls_Pen ? line->ls_Pen : textPen;
+
+                    label_seg_font(rp, line, deffont);
+                    sw = label_text_pixel_width(rp, line->ls_Text, line->ls_Len,
+                        data->ld_Underscore);
+                    sh = rp->TxHeight ? rp->TxHeight : 8;
+                    ty = cy + (lh - sh) / 2 + (rp->TxBaseline ? rp->TxBaseline : sh - 1);
+
+                    if (data->ld_3DLabel
+                        && msg->imp_State != IDS_DISABLED
+                        && msg->imp_State != IDS_INACTIVEDISABLED)
+                    {
+                        SetAPen(rp, pens[SHINEPEN]);
+                        label_draw_text(rp, line->ls_Text, line->ls_Len,
+                            cx + 1, ty + 1, data->ld_Underscore);
+                    }
+                    SetAPen(rp, pen);
+                    label_draw_text(rp, line->ls_Text, line->ls_Len, cx, ty,
+                        data->ld_Underscore);
+                }
+                cx += sw;
+            }
+            cy += lh + data->ld_VSpacing;
         }
 
-        /* Apply soft style */
-        oldStyle = SetSoftStyle(rp, data->ld_SoftStyle, AskSoftStyle(rp));
-
-        pixelWidth = label_text_pixel_width(rp, data->ld_Text, len,
-            data->ld_Underscore);
-
-        /* Calculate text Y position (vertically centered).
-         * Use a sensible fallback if the font reports zero height. */
-        {
-            WORD th = rp->TxHeight ? rp->TxHeight : 8;
-            WORD tb = rp->TxBaseline ? rp->TxBaseline : (th - 1);
-            textY = y + (h - th) / 2 + tb;
-        }
-
-        /* Calculate text X position based on justification */
-        switch (data->ld_Justification)
-        {
-            case LJ_RIGHT:
-                textX = x + w - pixelWidth;
-                break;
-
-            case LJ_CENTER:
-                textX = x + (w - pixelWidth) / 2;
-                break;
-
-            case LJ_LEFT:
-            default:
-                textX = x + textOffset;
-                break;
-        }
-
-        SetAPen(rp, textPen);
-        /* 3D label: draw a SHINEPEN highlight one pixel down/right behind
-         * the main text for an embossed look (only for normal, non-disabled
-         * states - disabled already handles its own visual). */
-        if (data->ld_3DLabel
-            && msg->imp_State != IDS_DISABLED
-            && msg->imp_State != IDS_INACTIVEDISABLED)
-        {
-            SetAPen(rp, pens[SHINEPEN]);
-            label_draw_text(rp, data->ld_Text, len, textX + 1, textY + 1,
-                data->ld_Underscore);
-            SetAPen(rp, textPen);
-        }
-        label_draw_text(rp, data->ld_Text, len, textX, textY,
-            data->ld_Underscore);
-
-        /* Restore soft style */
         SetSoftStyle(rp, oldStyle, AskSoftStyle(rp));
-
-        /* Restore previous font if we changed it */
-        if (oldFont)
+        if (oldFont && rp->Font != oldFont)
             SetFont(rp, oldFont);
     }
 

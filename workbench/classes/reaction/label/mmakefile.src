@@ -13,7 +13,8 @@ FUNCS := \
 #MM     kernel-exec-includes \
 #MM     kernel-graphics-includes \
 #MM     kernel-intuition-includes \
-#MM     kernel-utility-includes
+#MM     kernel-utility-includes \
+#MM     workbench-libs-diskfont-includes
 
 %build_module mmake=workbench-classes-reaction-label \
     modname=label modtype=image \
