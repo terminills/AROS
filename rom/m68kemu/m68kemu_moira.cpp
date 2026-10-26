@@ -57,11 +57,15 @@ public:
          * PC history and special trampoline dispatch still run every step.
          * Only a bounded RAM prefetch is eligible; device/sentinel reads and
          * every flagged or unsupported instruction stay in Moira. */
+        if (!jit || !m68kjit::MoveqCache::supports(queue.ird) || flags) {
+            execute();
+            return;
+        }
         uint64_t next = uint64_t(reg.pc) + 4;
         bool ram = next + 1 < ctx->mem_size &&
                    !(next >= SENTINEL_ADDR && next < SENTINEL_ADDR + 2) &&
                    ((next & CUSTOM_MASK) != CUSTOM_BASE);
-        if (jit && tryMoveq(*jit, ram)) ++jit_steps;
+        if (tryMoveq(*jit, ram)) ++jit_steps;
         else execute();
     }
 

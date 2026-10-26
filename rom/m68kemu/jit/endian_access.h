@@ -51,17 +51,20 @@ template<class T> inline void storeBE(void *p, T v)
 #if defined(__x86_64__) && defined(__GNUC__)
 /* Packed aliasable objects make unaligned memory operands valid C++ too. */
 template<class T> struct __attribute__((packed, may_alias)) Unaligned { T v; };
-template<class T> __attribute__((target("movbe"))) inline T loadMovbe(const void *p)
+/* The instruction is explicit assembly, so a target attribute is unnecessary
+ * and would prevent inlining into generic callers. Call only after CPUID.
+ * Volatile keeps the instruction inside that feature-guarded control flow. */
+template<class T> __attribute__((always_inline)) inline T loadMovbe(const void *p)
 {
     static_assert(sizeof(T) == 2 || sizeof(T) == 4);
     T v;
-    asm("movbe %1,%0" : "=r"(v) : "m"(static_cast<const Unaligned<T> *>(p)->v));
+    asm volatile("movbe %1,%0" : "=r"(v) : "m"(static_cast<const Unaligned<T> *>(p)->v));
     return v;
 }
-template<class T> __attribute__((target("movbe"))) inline void storeMovbe(void *p, T v)
+template<class T> __attribute__((always_inline)) inline void storeMovbe(void *p, T v)
 {
     static_assert(sizeof(T) == 2 || sizeof(T) == 4);
-    asm("movbe %1,%0" : "=m"(static_cast<Unaligned<T> *>(p)->v) : "r"(v));
+    asm volatile("movbe %1,%0" : "=m"(static_cast<Unaligned<T> *>(p)->v) : "r"(v));
 }
 #endif
 }
