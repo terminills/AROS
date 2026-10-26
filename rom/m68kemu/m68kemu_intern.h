@@ -24,6 +24,9 @@ struct M68KEmuLibBase
 #define M68KEMU_LIBBASE_SIZE    0x010000
 #define M68KEMU_HEAP_BASE       0x010400
 #define M68KEMU_STACK_SIZE      (64 * 1024)
+#define M68KEMU_ROM_BASE        0xF80000
+#define M68KEMU_ROM_SIZE        0x080000
+#define M68KEMU_ROM_END         (M68KEMU_ROM_BASE + M68KEMU_ROM_SIZE)
 
 /* a free heap block is an Amiga MemChunk */
 #define FB_NEXT 0
@@ -67,6 +70,7 @@ struct M68KEmuContext
     ULONG   heap_free;
     ULONG   heap_avail;         /* free bytes */
     ULONG   memheader;          /* the 68k MemHeader describing the heap */
+    ULONG   lists_base;         /* ExecBase whose LibList etc. are set up */
 
     ULONG   entry_point;
     ULONG   trace_exc;
@@ -309,6 +313,7 @@ LONG   M68KEmu_Execute(struct M68KEmuContext *ctx);
 ULONG  M68KEmu_HeapAlloc(struct M68KEmuContext *ctx, ULONG size, ULONG requirements);
 void   M68KEmu_HeapFree(struct M68KEmuContext *ctx, ULONG addr, ULONG size);
 ULONG  M68KEmu_HeapLargest(struct M68KEmuContext *ctx);
+void   m68k_publish_base(struct M68KEmuContext *ctx, ULONG base, const char *name);
 ULONG  M68KEmu_LoadHunks(struct M68KEmuContext *ctx, BPTR segList);
 ULONG  M68KEmu_LoadHunksFromMemory(struct M68KEmuContext *ctx, UBYTE *data, LONG size);
 ULONG  M68KEmu_LoadM68KLibrary(struct M68KEmuContext *ctx, const char *name);
