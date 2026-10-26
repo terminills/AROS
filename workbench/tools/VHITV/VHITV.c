@@ -35,12 +35,14 @@
 #include <vhi/vhi.h>
 #include <devices/uvc_capture.h>
 
+#include <dos/dostags.h>
+#include <dos/dosextens.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static const char version[] __attribute__((used)) =
-    "$VER: VHITV 1.1 (24.10.2026)";
+    "$VER: VHITV 1.2 (26.10.2026)";
 
 struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase *GfxBase = NULL;
@@ -67,6 +69,65 @@ static IPTR call_vhi(ULONG method, ULONG submethod, APTR attr,
 
 #define STATUS_HEIGHT 18
 #define DEFAULT_DRIVER "uvc.library"
+
+/* Only one request is in flight. The worker owns its driver and VHI handle;
+ * the UI owns returned frames after ReplyMsg. LoadSeg gives the worker its
+ * own executable lifetime, including when the UI exits on an SMP machine. */
+struct CaptureRequest {
+    struct Message message;
+    BOOL quit;
+    const char *driver;
+    ULONG input, width, height, error;
+    struct vhi_image *image;
+};
+
+static int capture_worker(void)
+{
+    struct Process *self = (struct Process *)FindTask(NULL);
+    struct CaptureRequest *request;
+    APTR handle = NULL;
+    ULONG error = 0;
+    for (;;) {
+        WaitPort(&self->pr_MsgPort);
+        request = (struct CaptureRequest *)GetMsg(&self->pr_MsgPort);
+        if (!request) continue;
+        if (request->quit) {
+            if (handle) call_vhi(VHI_METHOD_CLOSE, 0, NULL, &error, handle);
+            if (VHIBase) CloseLibrary(VHIBase);
+            ReplyMsg(&request->message);
+            return RETURN_OK;
+        }
+        request->error = 0;
+        request->image = NULL;
+        if (!VHIBase) VHIBase = OpenLibrary(request->driver, 0);
+        if (VHIBase && !handle)
+            handle = (APTR)call_vhi(VHI_METHOD_OPEN, 0, NULL, &error, NULL);
+        if (!handle) request->error = VHI_ERR_INTERNAL_ERROR;
+        else {
+            struct vhi_setoptions option = {0};
+            struct vhi_size maximum = {0};
+            struct vhi_digitize digitize = {0};
+            error = 0;
+            option.option = VHI_OPT_INPUT; option.value = request->input;
+            call_vhi(VHI_METHOD_SET, VHI_OPTIONS, &option, &error, handle);
+            if (!error)
+                call_vhi(VHI_METHOD_GET, VHI_MAXIMUM_SIZE, &maximum, &error, handle);
+            digitize.dim.x2 = digitize.dim.dst_width =
+                request->width ? request->width : maximum.max_width;
+            digitize.dim.y2 = digitize.dim.dst_height =
+                request->height ? request->height : maximum.max_height;
+            if (!error)
+                call_vhi(VHI_METHOD_PERFORM, VHI_CHECK_DIGITIZE_SIZE,
+                         &digitize.dim, &error, handle);
+            if (!error)
+                request->image = (APTR)call_vhi(VHI_METHOD_PERFORM,
+                    VHI_DIGITIZE_PICTURE, &digitize, &error, handle);
+            request->error = error;
+        }
+        Delay(2); /* bound synthetic preview rate without blocking the UI */
+        ReplyMsg(&request->message);
+    }
+}
 
 struct App
 {
@@ -455,8 +516,9 @@ done:
 
 static void show_input_info(struct App *app)
 {
-    char text[1024];
-    ULONG i, used;
+    char text[2048];
+    ULONG i, used, error = 0;
+    struct UVCDeviceInfo device = {0};
     struct EasyStruct info = { sizeof(info), 0, (STRPTR)"Capture input",
         (STRPTR)"%s", (STRPTR)"Close" };
     IPTR args[1] = { (IPTR)text };
@@ -469,6 +531,33 @@ static void show_input_info(struct App *app)
         (unsigned long)app->frame_width, (unsigned long)app->frame_height,
         (unsigned long)app->requested_width, (unsigned long)app->requested_height,
         (unsigned long)app->mode_count);
+    device.size = sizeof(device);
+    if (call_vhi(VHI_METHOD_GET, VHI_UVC_DEVICEINFO, &device,
+                 &error, app->vhi_handle)) {
+        const char *speed = device.speed == UVC_SPEED_SUPER ? "SuperSpeed" :
+            device.speed == UVC_SPEED_HIGH ? "High speed" :
+            device.speed == UVC_SPEED_LOW ? "Low speed" : "Full speed";
+        used += snprintf(text + used, sizeof(text) - used,
+            "USB %04lx:%04lx - %s, %s\nVC interface %lu / VS interface %lu\n",
+            (unsigned long)device.vendor_id, (unsigned long)device.product_id,
+            speed, device.bulk ? "bulk" : "isochronous",
+            (unsigned long)device.control_interface,
+            (unsigned long)device.streaming_interface);
+        if (device.negotiated)
+            used += snprintf(text + used, sizeof(text) - used,
+                "Last committed: %lux%lu, format %lu / frame %lu\n"
+                "Interval %lu x 100 ns, payload %lu, frame %lu bytes, alt %lu\n"
+                "Commit history does not imply an active stream.\n",
+                (unsigned long)device.width, (unsigned long)device.height,
+                (unsigned long)device.format_index, (unsigned long)device.frame_index,
+                (unsigned long)device.interval, (unsigned long)device.payload_bytes,
+                (unsigned long)device.frame_bytes, (unsigned long)device.alternate);
+        else
+            used += snprintf(text + used, sizeof(text) - used,
+                "No successful streaming commit recorded.\n");
+    } else
+        used += snprintf(text + used, sizeof(text) - used,
+            "USB metadata unavailable (synthetic input or older driver).\n");
     for (i = 0; i < app->mode_count; i++) {
         const struct UVCModeInfo *mode = &app->modes[i];
         if (mode->width == app->frame_width && mode->height == app->frame_height) {
@@ -576,11 +665,17 @@ int main(int argc, char **argv)
     ULONG initial_input = argc > 2 ? strtoul(argv[2], NULL, 0) : 0;
     struct App app;
     struct vhi_size maximum;
-    struct vhi_digitize digitize;
+    struct CaptureRequest request = {0};
+    struct MsgPort *reply_port = NULL;
+    struct Process *worker = NULL;
+    BOOL pending = FALSE;
+    BPTR worker_segment = 0;
     ULONG error = 0;
     BOOL running = TRUE;
     int result = RETURN_FAIL;
 
+    if (argc > 1 && !strcmp(argv[1], "--capture-worker"))
+        return capture_worker();
     memset(&app, 0, sizeof(app));
     bug("VHITV: entered main, driver=%s input=%lu\n", driver,
         (unsigned long)initial_input);
@@ -650,66 +745,69 @@ int main(int argc, char **argv)
         printf("VHITV: could not create menus\n");
         goto cleanup;
     }
+    reply_port = CreateMsgPort();
+    worker_segment = LoadSeg(argv[0]);
+    if (!reply_port || !worker_segment) {
+        printf("VHITV: cannot load capture worker\n");
+        goto cleanup;
+    }
+    worker = CreateNewProcTags(NP_Seglist, worker_segment,
+        NP_FreeSeglist, TRUE, NP_Cli, TRUE,
+        NP_Name, (IPTR)"VHITV capture", NP_StackSize, 65536,
+        NP_Arguments, (IPTR)"--capture-worker\n", TAG_DONE);
+    if (!worker) goto cleanup;
+    worker_segment = 0; /* ownership transferred to DOS */
+    request.message.mn_ReplyPort = reply_port;
+    request.message.mn_Length = sizeof(request);
+    request.driver = driver;
     select_input(&app, initial_input);
-    while (running)
-    {
-        struct vhi_image *image;
+    while (running) {
         running = process_events(&app);
         if (!running) break;
-        if (app.menus_dirty && !rebuild_menus(&app)) {
-            printf("VHITV: could not rebuild camera menus\n");
-            break;
+        if (app.menus_dirty && !rebuild_menus(&app)) break;
+        if (pending && GetMsg(reply_port)) {
+            pending = FALSE;
+            /* Discard a frame from an input or mode changed while capturing. */
+            if (!app.paused && request.input == app.input &&
+                request.width == app.requested_width &&
+                request.height == app.requested_height) {
+                if (request.image && !request.error) {
+                    render_frame(&app, request.image);
+                    free_frame(app.last_frame);
+                    app.last_frame = request.image;
+                    request.image = NULL;
+                } else set_status(&app, vhi_error(request.error));
+            }
+            free_frame(request.image); request.image = NULL;
         }
-        if (app.paused)
-        {
-            WaitPort(app.window->UserPort);
-            continue;
+        if (!pending && !app.paused) {
+            request.input = app.input;
+            request.width = app.requested_width;
+            request.height = app.requested_height;
+            PutMsg(&worker->pr_MsgPort, &request.message);
+            pending = TRUE;
         }
-        /* Input changes may select a different native capture geometry. */
-        error = 0;
-        memset(&maximum, 0, sizeof(maximum));
-        call_vhi(VHI_METHOD_GET, VHI_MAXIMUM_SIZE, &maximum, &error,
-                 app.vhi_handle);
-        if (error || !maximum.max_width || !maximum.max_height)
-        {
-            set_status(&app, error ? vhi_error(error) : "capture size unavailable");
-            running = process_events(&app);
-            Delay(2);
-            continue;
-        }
-        memset(&digitize, 0, sizeof(digitize));
-        digitize.dim.x2 = digitize.dim.dst_width =
-            app.requested_width ? app.requested_width : maximum.max_width;
-        digitize.dim.y2 = digitize.dim.dst_height =
-            app.requested_height ? app.requested_height : maximum.max_height;
-        call_vhi(VHI_METHOD_PERFORM, VHI_CHECK_DIGITIZE_SIZE,
-                 &digitize.dim, &error, app.vhi_handle);
-        if (error || !digitize.dim.dst_width || !digitize.dim.dst_height)
-        {
-            set_status(&app, error ? vhi_error(error) : "requested size unavailable");
-            Delay(2);
-            continue;
-        }
-        image = (struct vhi_image *)call_vhi(VHI_METHOD_PERFORM,
-                                             VHI_DIGITIZE_PICTURE,
-                                             &digitize, &error,
-                                             app.vhi_handle);
-        if (image && !error)
-        {
-            render_frame(&app, image);
-            free_frame(app.last_frame);
-            app.last_frame = image;
-            image = NULL;
-        }
-        else
-            set_status(&app, vhi_error(error));
-        free_frame(image);
-        running = process_events(&app);
-        Delay(2);
+        Wait((1UL << app.window->UserPort->mp_SigBit) |
+             (1UL << reply_port->mp_SigBit));
     }
     result = RETURN_OK;
 
 cleanup:
+    /* Close the visible UI immediately; safely drain the bounded camera
+     * request before destroying its reply port or releasing shared data. */
+    if (app.window && app.menus) ClearMenuStrip(app.window);
+    if (app.window) { CloseWindow(app.window); app.window = NULL; }
+    if (worker) {
+        if (pending) {
+            WaitPort(reply_port); GetMsg(reply_port);
+            free_frame(request.image); request.image = NULL;
+        }
+        request.quit = TRUE;
+        PutMsg(&worker->pr_MsgPort, &request.message);
+        WaitPort(reply_port); GetMsg(reply_port);
+    }
+    if (worker_segment) UnLoadSeg(worker_segment);
+    if (reply_port) DeleteMsgPort(reply_port);
     free_frame(app.last_frame);
     if (app.input_name) FreeVec(app.input_name);
     if (app.display) FreeVec(app.display);

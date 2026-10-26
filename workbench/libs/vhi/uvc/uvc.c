@@ -177,6 +177,16 @@ AROS_LH5(IPTR, vhi_api,
             if (!uh) { err = VHI_ERR_INTERNAL_ERROR; break; }
             switch (submethod)
             {
+                case VHI_UVC_DEVICEINFO:
+                {
+                    struct UVCDeviceInfo *info = attr;
+                    if (uh->uh_Input && info && info->size >= sizeof(*info)) {
+                        IPTR args[3] = { uh->uh_CameraId, (IPTR)info, info->size };
+                        result = uvc_class(uh, UVCM_DEVICEINFO, args);
+                    }
+                    if (!result) err = VHI_ERR_UNKNOWN_OPTION;
+                    break;
+                }
                 case VHI_UVC_MODECOUNT:
                 {
                     IPTR args[1] = { uh->uh_CameraId };

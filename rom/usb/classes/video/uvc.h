@@ -66,6 +66,7 @@ struct NepClassUVC
     UWORD                ncu_Width;        /* negotiated frame width */
     UWORD                ncu_Height;       /* negotiated frame height */
     char                 ncu_Name[128];
+    struct UVCDeviceInfo ncu_Info;
     ULONG                ncu_Id;
     ULONG                ncu_Interval;
     ULONG                ncu_MaxPayload;

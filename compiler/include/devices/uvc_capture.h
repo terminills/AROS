@@ -11,10 +11,27 @@
 #define UVCM_MODECOUNT (UVCM_COUNT + 3)
 #define UVCM_MODEINFO  (UVCM_COUNT + 4)
 #define UVCM_GRABMODE  (UVCM_COUNT + 5)
+#define UVCM_DEVICEINFO (UVCM_COUNT + 6)
 
 /* Optional uvc.library GET extensions; other VHI drivers may reject them. */
 #define VHI_UVC_MODECOUNT 0x55564310UL
 #define VHI_UVC_MODEINFO  0x55564311UL
+#define VHI_UVC_DEVICEINFO 0x55564312UL
+/* DEVICEINFO: binding id, UVCDeviceInfo*, buffer size. Copy-only metadata;
+ * no borrowed Poseidon pointers. Negotiated fields describe the last commit,
+ * not a guarantee of successful frames or an active stream. */
+#define UVC_SPEED_FULL 1
+#define UVC_SPEED_LOW 2
+#define UVC_SPEED_HIGH 3
+#define UVC_SPEED_SUPER 4
+struct UVCDeviceInfo {
+    ULONG size;
+    ULONG vendor_id, product_id, speed;
+    ULONG control_interface, streaming_interface, bulk, mode_count;
+    ULONG negotiated; /* TRUE after successful commit and alternate selection */
+    ULONG width, height, format_index, frame_index, interval;
+    ULONG payload_bytes, frame_bytes, alternate;
+};
 #define UVC_MODE_YUY2 1
 struct UVCModeInfo {
     ULONG width, height;

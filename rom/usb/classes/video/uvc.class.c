@@ -514,6 +514,28 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
         active = TRUE;
         if (!uvc_alt(nh, ps, control, streamalt, mp, timer)) goto out;
     }
+    /* Publish only validated commit data, under the inventory lock. The
+     * capture uses a snapshot; locate the original by generation, not pointer. */
+    ObtainSemaphore(&nh->nh_Lock);
+    {
+        struct NepClassUVC *bound;
+        ForeachNode(&nh->nh_Cameras, bound) {
+            if (bound->ncu_Id == nch->ncu_Id) {
+                struct UVCDeviceInfo *info = &bound->ncu_Info;
+                info->negotiated = TRUE;
+                info->width = nch->ncu_Width;
+                info->height = nch->ncu_Height;
+                info->format_index = probe[2]; info->frame_index = probe[3];
+                info->interval = probe[4] | ((ULONG)probe[5] << 8) |
+                    ((ULONG)probe[6] << 16) | ((ULONG)probe[7] << 24);
+                info->payload_bytes = maxpayload;
+                info->frame_bytes = maxvideoframe;
+                info->alternate = altnum;
+                break;
+            }
+        }
+    }
+    ReleaseSemaphore(&nh->nh_Lock);
     size = nch->ncu_IsBulk ? maxpayload : streamsize;
     if (nch->ncu_IsBulk) {
         bulk.capacity = maxpayload;
@@ -764,6 +786,13 @@ static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
             }
             break;
         }
+        if (method == UVCM_DEVICEINFO && nch->ncu_Id == args[0]) {
+            if (args[1] && args[2] >= sizeof(nch->ncu_Info)) {
+                memcpy((APTR)args[1], &nch->ncu_Info, sizeof(nch->ncu_Info));
+                result = TRUE;
+            }
+            break;
+        }
         if (method == UVCM_MODECOUNT && nch->ncu_Id == args[0]) {
             result = nch->ncu_ModeCount;
             break;
@@ -917,6 +946,23 @@ struct NepClassUVC * usbForceInterfaceBinding(struct NepUVCBase *nh, struct PsdI
                 CloseLibrary(ps);
                 return NULL;
             }
+            {
+                IPTR vid = 0, pid = 0, low = 0, high = 0, super = 0, vs = 0;
+                psdGetAttrs(PGA_DEVICE, pd, DA_VendorID, &vid,
+                    DA_ProductID, &pid, DA_IsLowspeed, &low,
+                    DA_IsHighspeed, &high, DA_IsSuperspeed, &super, TAG_END);
+                psdGetAttrs(PGA_INTERFACE, nch->ncu_VSInterface,
+                    IFA_InterfaceNum, &vs, TAG_END);
+                nch->ncu_Info.size = sizeof(nch->ncu_Info);
+                nch->ncu_Info.vendor_id = vid;
+                nch->ncu_Info.product_id = pid;
+                nch->ncu_Info.speed = super ? UVC_SPEED_SUPER : high ?
+                    UVC_SPEED_HIGH : low ? UVC_SPEED_LOW : UVC_SPEED_FULL;
+                nch->ncu_Info.control_interface = ifnum;
+                nch->ncu_Info.streaming_interface = vs;
+                nch->ncu_Info.bulk = nch->ncu_IsBulk;
+                nch->ncu_Info.mode_count = nch->ncu_ModeCount;
+            }
             ObtainSemaphore(&nh->nh_Lock);
             nch->ncu_Id = ++nh->nh_NextId;
             AddTail(&nh->nh_Cameras, &nch->ncu_Node);
@@ -1041,7 +1087,7 @@ AROS_LH2(IPTR, usbDoMethodA,
     AROS_LIBFUNC_INIT
 
     KPRINTF(10, ("Do Method %ld\n", methodid));
-    if (methodid >= UVCM_COUNT && methodid <= UVCM_GRABMODE)
+    if (methodid >= UVCM_COUNT && methodid <= UVCM_DEVICEINFO)
         return uvc_method(nh, methodid, methoddata);
     switch(methodid)
     {
