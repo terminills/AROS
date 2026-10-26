@@ -78,6 +78,7 @@ struct ListBrowserData
     BOOL                lbd_AutoFit;
     BOOL                lbd_Borderless;
     UWORD               lbd_RowHeight;
+    UWORD               lbd_Spacing;        /* LISTBROWSER_Spacing */
     UWORD               lbd_TitleHeight;
     struct TextFont    *lbd_Font;
     struct DrawInfo    *lbd_DrawInfo;

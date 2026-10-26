@@ -123,6 +123,9 @@ static void lb_set_attrs(struct ListBrowserData *data, struct TagItem *tags)
             case LISTBROWSER_AutoFit:
                 data->lbd_AutoFit = (BOOL)tag->ti_Data;
                 break;
+            case LISTBROWSER_Spacing:
+                data->lbd_Spacing = (UWORD)tag->ti_Data;
+                break;
             case LISTBROWSER_Borderless:
                 data->lbd_Borderless = (BOOL)tag->ti_Data;
                 break;
@@ -249,6 +252,31 @@ struct lb_metrics
     BOOL vprop, hprop;
 };
 
+/* A row holds the font or the tallest plain image in the list */
+static WORD lb_row_height(struct ListBrowserData *data, struct TextFont *font)
+{
+    WORD h = font ? font->tf_YSize : 8;
+    struct Node *n;
+    UWORD col;
+
+    if (data->lbd_Labels)
+    {
+        for (n = data->lbd_Labels->lh_Head; n->ln_Succ; n = n->ln_Succ)
+        {
+            struct ListBrowserNode *lbn = (struct ListBrowserNode *)n;
+
+            for (col = 0; col < lbn->lbn_Columns; col++)
+            {
+                struct Image *im = (struct Image *)lbn->lbn_ColumnData[col].lbce_Image;
+
+                if (im && im->Depth != CUSTOMIMAGEDEPTH && im->Height > h)
+                    h = im->Height;
+            }
+        }
+    }
+    return h + 2 + data->lbd_Spacing;
+}
+
 static void lb_get_metrics(struct ListBrowserData *data, struct Gadget *g,
     struct GadgetInfo *gi, struct RastPort *rp, struct lb_metrics *m)
 {
@@ -261,11 +289,11 @@ static void lb_get_metrics(struct ListBrowserData *data, struct Gadget *g,
     m->height = h;
 
     if (rp && rp->Font)
-        m->row_h = rp->Font->tf_YSize + 2;
+        m->row_h = lb_row_height(data, rp->Font);
     else if (data->lbd_RowHeight)
         m->row_h = data->lbd_RowHeight;
     else
-        m->row_h = 10;
+        m->row_h = lb_row_height(data, NULL);
 
     m->title_h = (data->lbd_ColumnTitles && data->lbd_ColumnInfo) ? m->row_h + 2 : 0;
 
@@ -282,11 +310,25 @@ static void lb_get_metrics(struct ListBrowserData *data, struct Gadget *g,
     m->vp_h = m->height - 4 - m->title_h - (m->hprop ? LB_HPROP_H : 0);
 }
 
+/* ClassAct column widths are relative weights; CIF_FIXED makes one pixels */
 static WORD lb_col_width(struct ListBrowserData *data, UWORD col, WORD avail)
 {
-    if (data->lbd_ColumnInfo[col].ci_Flags & CIF_WEIGHTED)
-        return avail * data->lbd_ColumnInfo[col].ci_Width / 100;
-    return data->lbd_ColumnInfo[col].ci_Width;
+    struct ColumnInfo *ci = data->lbd_ColumnInfo;
+    LONG weights = 0, fixed = 0;
+    UWORD i;
+
+    if (ci[col].ci_Flags & CIF_FIXED)
+        return ci[col].ci_Width;
+    for (i = 0; ci[i].ci_Width != -1; i++)
+    {
+        if (ci[i].ci_Flags & CIF_FIXED)
+            fixed += ci[i].ci_Width;
+        else
+            weights += ci[i].ci_Width;
+    }
+    if (weights <= 0 || avail <= fixed)
+        return 0;
+    return (avail - fixed) * ci[col].ci_Width / weights;
 }
 
 static void lb_ltoa(LONG v, char *buf, int bufsize)
@@ -587,9 +629,16 @@ IPTR ListBrowser__GM_RENDER(Class *cl, Object *obj, struct gpRender *msg)
                         STRPTR ct = lbn->lbn_ColumnData[col].lbce_Text;
                         ULONG tlen = strlen(ct);
 
+                        WORD tx = col_x + inset, tw;
+
                         while (tlen && (WORD)TextLength(rp, ct, tlen) > col_w - inset - 2)
                             tlen--;
-                        Move(rp, col_x + inset, row_y + rp->Font->tf_Baseline + 1);
+                        tw = TextLength(rp, ct, tlen);
+                        if (lbn->lbn_ColumnData[col].lbce_HorizJustify == LCJ_CENTER)
+                            tx = col_x + (col_w - tw) / 2;
+                        else if (lbn->lbn_ColumnData[col].lbce_HorizJustify == LCJ_RIGHT)
+                            tx = col_x + col_w - tw - 2;
+                        Move(rp, tx, row_y + (m.row_h - rp->Font->tf_YSize) / 2 + rp->Font->tf_Baseline);
                         Text(rp, ct, tlen);
                     }
                     else if (lbn->lbn_ColumnData[col].lbce_Image)
@@ -610,7 +659,14 @@ IPTR ListBrowser__GM_RENDER(Class *cl, Object *obj, struct gpRender *msg)
                                 TAG_DONE);
                         }
 
-                        DrawImageState(rp, nim, col_x + inset, row_y,
+                        WORD ix = col_x + inset;
+
+                        if (lbn->lbn_ColumnData[col].lbce_HorizJustify == LCJ_CENTER)
+                            ix = col_x + (col_w - nim->Width) / 2;
+                        else if (lbn->lbn_ColumnData[col].lbce_HorizJustify == LCJ_RIGHT)
+                            ix = col_x + col_w - nim->Width - 2;
+                        DrawImageState(rp, nim, ix,
+                            row_y + (m.row_h > nim->Height ? (m.row_h - nim->Height) / 2 : 0),
                             selected ? IDS_SELECTED : IDS_NORMAL, dri);
                     }
                     else if (lbn->lbn_ColumnData[col].lbce_HasInteger)
@@ -838,10 +894,7 @@ IPTR ListBrowser__GM_DOMAIN(Class *cl, Object *obj, struct gpDomain *msg)
      * derive one from the measuring rastport's font */
     if (row_h <= 0)
     {
-        if (msg->gpd_RPort && msg->gpd_RPort->Font)
-            row_h = msg->gpd_RPort->Font->tf_YSize + 2;
-        else
-            row_h = 10;
+        row_h = lb_row_height(data, msg->gpd_RPort ? msg->gpd_RPort->Font : NULL);
     }
 
     msg->gpd_Domain.Left   = 0;
