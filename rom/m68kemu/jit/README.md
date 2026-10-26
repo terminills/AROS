@@ -49,7 +49,9 @@ Even the matched synthetic loop is not a representative application benchmark.
 - Target compiler/SDK baseline is the published 20261023 ISO and contrib SDK.
   The first cross-object probe failed because contrib `type_traits` includes an
   absent `bits/version.h`. No local SDK replacement is permitted to silently
-  satisfy this prerequisite. No AROS executable or runtime proof exists yet.
+  satisfy this prerequisite. Standalone native probes now pass; the full
+  library uses explicit diagnostic header overlays. See STATUS.md for the
+  separate published-nightly and integration-image evidence boundaries.
 
 Before enabling JIT in transparent execution, reproduce Claude's full current
 corpus with a committed baseline and an exclusively held corpus QEMU slot:
@@ -57,6 +59,11 @@ SysInfo SPEED; Aminet `corpus5`; ReAction `rra68`; ClassAct `rdemoc`; subsequent
 xSysInfo and every new regression Claude adds. Preserve screenshots and serial
 logs, and compare results, not compilation status. Only Wordle's known trap #0
 stop is expected in the handed-off GUI batch.
+
+The independent branch now includes committed compatibility checkpoint
+`1db3773ced315cb2076d7b9ee4e6d503ac3ac3c9`. Earlier visual pairs used
+`cdb4d33d644e0e469766c1ce812eeed2b59ae56f`; those results do not qualify later
+compatibility changes automatically. JIT remains opt-in throughout iteration.
 
 Preserve A-line library thunks, Supervisor trampoline at 0x108, RTE at 0x100,
 fault stub at 0x188, VBL polling/injection at the same instruction boundaries,
@@ -92,7 +99,9 @@ screens explicitly, and wait for `==CRASHEND` before interpreting the run.
 portable path uses memcpy plus byte-swap on little-endian targets. CPUID gates
 MOVBE once per execution; it is never queried per access. The adapter only
 uses MOVBE after special-read callbacks and bounds checks. It does not replace
-CIA/custom callbacks or planar writes. Compile `endian_test.cpp` with C++20,
+CIA/custom callbacks or planar writes. Explicit assembly is inlined into the
+generic caller, with volatile assembly preserving its feature-gated execution.
+Compile `endian_test.cpp` with C++20,
 `-O2 -mno-movbe`, and run both normally and with `--fallback`. Timings include
 matched indirect calls and are microbenchmarks, not application speedups.
 
