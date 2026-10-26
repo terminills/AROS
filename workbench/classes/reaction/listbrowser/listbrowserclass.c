@@ -597,10 +597,12 @@ IPTR ListBrowser__GM_RENDER(Class *cl, Object *obj, struct gpRender *msg)
                         struct Image *nim =
                             (struct Image *)lbn->lbn_ColumnData[col].lbce_Image;
 
-                        /* Clamp the image into the cell; BOOPSI images
-                         * (labels and the like) default to 80x40 and would
-                         * otherwise spill over neighbouring rows */
-                        if (nim->Width > col_w - inset || nim->Height > m.row_h)
+                        /* Clamp a BOOPSI image into the cell; they (labels
+                         * and the like) default to 80x40 and would otherwise
+                         * spill over neighbouring rows. A plain struct Image
+                         * has no attributes to set. */
+                        if (nim->Depth == CUSTOMIMAGEDEPTH &&
+                            (nim->Width > col_w - inset || nim->Height > m.row_h))
                         {
                             SetAttrs((Object *)nim,
                                 IA_Width,  (nim->Width  > col_w - inset) ? col_w - inset : nim->Width,
