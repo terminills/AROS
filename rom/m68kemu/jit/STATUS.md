@@ -15,7 +15,8 @@ Claude's integration workspace and Git metadata are not used for writes.
 - Moira pin: `1efd69467ca13b27b2fb40febd5cb31dbecdea5f`, unchanged.
 - Implementation: `4a112d02`; private corpus helper: `ef40aa12`.
 - Both clones have their own .git directory, no alternates, and pack link count 1.
-- Source origin push URL is disabled. Publication destination remains pending.
+- Source origin push URL is disabled. The experimental publication destination is
+  `terminills/AROS`, branch `jit/m68k-native-01a178bc`; no dependent PR is planned.
 - Private builds and registered evidence are sibling `build` and `evidence` directories.
   `/mnt/short-term` was selected after finding only 13 GiB free on the Codex volume.
 
@@ -278,3 +279,28 @@ Those captures remain limited foreground evidence. Earlier standalone ReAction
 and ClassAct runs are unaffected. A corrected paired harness brings Workbench
 forward after the two custom screens and allows four seconds after each marker;
 the rerun is retained separately as `visible-gui-interpreter`/`visible-gui-jit`.
+
+**Existing AMines alignment issue:** the user identifies the grid/frame mismatch
+as a prior bug, not a JIT regression. Read-only disassembly shows AMines uses
+`X = 17 * column + 5` and `Y = 10 * row + Screen.BarHeight + 1` for DrawBorder.
+Its mouse mapping subtracts the same offsets. It does not use Window.BorderLeft
+or Window.BorderTop in those paths. Growing the outer window cannot relocate
+these fixed coordinates; translating drawing alone would break hit testing.
+This is handed to the compatibility owner in TRIG-1622, with aligned code-hunk
+offsets and binary provenance in `amines-alignment-analysis.txt`. No alignment
+fix is claimed by this JIT branch.
+
+The corrected 2fbda536 visual pair is complete: all eight ReAction checkpoints,
+all eight ClassAct pages, and the post-Quit screen are pixel-identical. The AMines
+window is pixel-identical too, including its existing alignment defect; background
+debug text differs outside it. Both post-navigation `List RAM:CrashReports ALL`
+checks return object not found. There is no visible application window for 10000,
+Wordle or GnuChess, and TTT remains incomplete; these are limitations, not passes.
+Exact difference rectangles are retained in `visible-pair-comparison.txt`.
+
+The tested library SHA-256 is
+`1e098726facd14575f7d6009cd903f8e58ebdaba627983a28f5398b68e2d8559`.
+It uses the full coherent 1db3773c build plus the only consumer of the 2fbda536
+layout header rebuilt and relinked. Commands and hashes are retained. Published
+SDK packaging and shared DOS argument replay remain separate open gates. No
+nightly integration, full application qualification or physical-DUT proof is claimed.
