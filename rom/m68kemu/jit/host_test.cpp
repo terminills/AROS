@@ -33,30 +33,11 @@ public:
         flags = 0; ipl = 0; clock = 0;
         queue.ird = opcode; queue.irc = 0x4E71;
     }
+    #include "moveq_step.inc"
     bool step(m68kjit::MoveqCache &cache)
     {
-        /* Host harness only: read16 is nonthrowing ordinary RAM. Never use
-         * this adapter for AROS device memory or arbitrary client callbacks.
-         * Nonzero flags keep IRQ, tracing, stop, debug and fault paths in Moira.
-         */
-        if (flags || cpuModel != moira::Model::M68040 || reg.pc != reg.pc0 ||
-            reg.pc > mem.size() - 6)
-        {
-            execute(); return false;
-        }
-        auto code = cache.lookup(queue.ird);
-        if (!code) { execute(); return false; }
-        reg.pc += 2;
-        cp = 0;
-        code(&reg);
-        reg.pc0 = reg.pc;
-        queue.ird = queue.irc;
-        if constexpr (MOIRA_EMULATE_FC) fcl = moira::FC::USER_PROG;
-        reg.ipl = ipl;
-        queue.irc = read16(reg.pc + 2);
-        readBuffer = queue.irc;
-        sync(2);
-        return true;
+        if (tryMoveq(cache, reg.pc <= mem.size() - 6)) return true;
+        execute(); return false;
     }
     struct Hidden { moira::PrefetchQueue queue; int flags; int cp; uint8_t fcl; uint16_t readBuffer; int64_t clock; };
     Hidden hidden() const { return {queue, flags, cp, fcl, readBuffer, clock}; }
@@ -81,6 +62,9 @@ int main()
     unsigned cases = 0, rejected = 0;
     std::mt19937 candidateRng(0x68040);
     double compileNs = 0;
+    for (auto model : {moira::Model::M68040, moira::Model::M68LC040})
+    {
+    oracle.setModel(model); candidate.setModel(model);
     for (unsigned op = 0; op < 65536; ++op)
     {
         if (!cache.supports(op))
@@ -114,6 +98,7 @@ int main()
             require(std::memcmp(&expected, &actual, sizeof actual) == 0, "MOVEQ state differs from Moira");
             ++cases;
         }
+    }
     }
     unsigned fallbackCases = 0;
     for (unsigned scenario = 0; scenario < 8; ++scenario)
