@@ -243,7 +243,10 @@ IPTR Label__OM_GET(Class *cl, Object *o, struct opGet *msg)
             if (data->ld_Image)
             {
                 IPTR iw = 0;
-                GetAttr(IA_Width, data->ld_Image, &iw);
+                if (((struct Image *)data->ld_Image)->Depth == CUSTOMIMAGEDEPTH)
+                    GetAttr(IA_Width, data->ld_Image, &iw);
+                else
+                    iw = ((struct Image *)data->ld_Image)->Width;
                 if ((ULONG)iw > w) w = (ULONG)iw;
             }
             /* Fall back to image record only if we have neither text nor
@@ -271,7 +274,10 @@ IPTR Label__OM_GET(Class *cl, Object *o, struct opGet *msg)
             if (data->ld_Image)
             {
                 IPTR ih = 0;
-                GetAttr(IA_Height, data->ld_Image, &ih);
+                if (((struct Image *)data->ld_Image)->Depth == CUSTOMIMAGEDEPTH)
+                    GetAttr(IA_Height, data->ld_Image, &ih);
+                else
+                    ih = ((struct Image *)data->ld_Image)->Height;
                 if ((ULONG)ih > h) h = (ULONG)ih;
             }
             if (h == 0 && !data->ld_Text && !data->ld_Image)
