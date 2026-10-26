@@ -8,6 +8,9 @@
 #include <exec/memory.h>
 #include <aros/debug.h>
 #include <proto/exec.h>
+#include <proto/locale.h>
+#include <dos/datetime.h>
+#include <aros/asmcall.h>
 #include <proto/dos.h>
 #include <dos/rdargs.h>
 #include <dos/dosextens.h>
@@ -42,6 +45,8 @@ extern const ULONG m68kemu_thunks_gadtools_manual_count;
 extern const ULONG m68kemu_thunks_graphics_manual_count;
 extern const struct M68KThunkEntry m68kemu_thunks_diskfont_manual[];
 extern const ULONG m68kemu_thunks_diskfont_manual_count;
+extern const struct M68KThunkEntry m68kemu_thunks_locale_manual[];
+extern const ULONG m68kemu_thunks_locale_manual_count;
 
 /* ── exec.library thunks ─────────────────────────────────────────── */
 
@@ -54,6 +59,10 @@ IPTR m68k_SetAttrsA(struct M68KEmuContext *ctx, void *cpu);
 IPTR m68k_GetAttr(struct M68KEmuContext *ctx, void *cpu);
 IPTR m68k_SetGadgetAttrsA(struct M68KEmuContext *ctx, void *cpu);
 IPTR m68k_DoGadgetMethodA(struct M68KEmuContext *ctx, void *cpu);
+static IPTR thunk_exec_Allocate_m(struct M68KEmuContext *ctx, void *cpu);
+static IPTR thunk_exec_CacheControl_m(struct M68KEmuContext *ctx, void *cpu);
+static IPTR thunk_exec_AllocAbs_m(struct M68KEmuContext *ctx, void *cpu);
+static IPTR thunk_exec_Deallocate_m(struct M68KEmuContext *ctx, void *cpu);
 
 /* Open a library by name and return its fake base (no cpu needed) */
 ULONG M68KEmu_OpenLibrary(struct M68KEmuContext *ctx, const char *name)
@@ -90,6 +99,9 @@ ULONG M68KEmu_OpenLibrary(struct M68KEmuContext *ctx, const char *name)
             } else if (strcmp(name, "diskfont.library") == 0) {
                 manual = m68kemu_thunks_diskfont_manual;
                 manual_count = m68kemu_thunks_diskfont_manual_count;
+            } else if (strcmp(name, "locale.library") == 0) {
+                manual = m68kemu_thunks_locale_manual;
+                manual_count = m68kemu_thunks_locale_manual_count;
             } else if (strcmp(name, "commodities.library") == 0) {
                 manual = m68kemu_cx_manual;
                 manual_count = m68kemu_cx_manual_count;
@@ -1324,6 +1336,10 @@ const struct M68KThunkEntry m68kemu_thunks_exec[] = {
     { 684, thunk_exec_AllocVec },
     { 690, thunk_exec_FreeVec },
     { 216, thunk_exec_AvailMem },
+    { 186, thunk_exec_Allocate_m },
+    { 648, thunk_exec_CacheControl_m },
+    { 204, thunk_exec_AllocAbs_m },
+    { 192, thunk_exec_Deallocate_m },
     { 384, thunk_exec_WaitPort },
     { 372, thunk_exec_GetMsg },
     { 378, thunk_exec_ReplyMsg },
@@ -1951,7 +1967,81 @@ static IPTR thunk_dos_VFWritef(struct M68KEmuContext *ctx, void *cpu)
 }
 
 
+/* struct DateTime: dat_Stamp (3 longs), dat_Format, dat_Flags, then the
+   day, date and time string pointers (68k buffers of LEN_DATSTRING) */
+static void datetime_in(struct M68KEmuContext *ctx, ULONG md, struct DateTime *dt,
+                        char str[3][LEN_DATSTRING], BOOL strings_in)
+{
+    int i;
+
+    memset(dt, 0, sizeof(*dt));
+    dt->dat_Stamp.ds_Days   = (LONG)m68k_read32(ctx, md);
+    dt->dat_Stamp.ds_Minute = (LONG)m68k_read32(ctx, md + 4);
+    dt->dat_Stamp.ds_Tick   = (LONG)m68k_read32(ctx, md + 8);
+    dt->dat_Format = ctx->mem[md + 12];
+    dt->dat_Flags  = ctx->mem[md + 13];
+    for (i = 0; i < 3; i++)
+    {
+        ULONG ms = m68k_read32(ctx, md + 14 + i * 4);
+
+        str[i][0] = 0;
+        if (ms && strings_in)
+        {
+            strncpy(str[i], (const char *)ctx->mem + ms, LEN_DATSTRING - 1);
+            str[i][LEN_DATSTRING - 1] = 0;
+        }
+    }
+    dt->dat_StrDay  = m68k_read32(ctx, md + 14) ? (STRPTR)str[0] : NULL;
+    dt->dat_StrDate = m68k_read32(ctx, md + 18) ? (STRPTR)str[1] : NULL;
+    dt->dat_StrTime = m68k_read32(ctx, md + 22) ? (STRPTR)str[2] : NULL;
+}
+
+/* dos -744: DateToStr(D1=datetime) */
+static IPTR thunk_dos_DateToStr_m(struct M68KEmuContext *ctx, void *cpu)
+{
+    ULONG md = THUNK_D(1);
+    struct DateTime dt;
+    char str[3][LEN_DATSTRING];
+    LONG r;
+    int i;
+
+    if (!md)
+        return 0;
+    datetime_in(ctx, md, &dt, str, FALSE);
+    r = DateToStr(&dt);
+    for (i = 0; i < 3; i++)
+    {
+        ULONG ms = m68k_read32(ctx, md + 14 + i * 4);
+        if (ms)
+            memcpy(ctx->mem + ms, str[i], strnlen(str[i], LEN_DATSTRING - 1) + 1);
+    }
+    return r;
+}
+
+/* dos -750: StrToDate(D1=datetime) */
+static IPTR thunk_dos_StrToDate_m(struct M68KEmuContext *ctx, void *cpu)
+{
+    ULONG md = THUNK_D(1);
+    struct DateTime dt;
+    char str[3][LEN_DATSTRING];
+    LONG r;
+
+    if (!md)
+        return 0;
+    datetime_in(ctx, md, &dt, str, TRUE);
+    r = StrToDate(&dt);
+    if (r)
+    {
+        m68k_write32(ctx, md,     dt.dat_Stamp.ds_Days);
+        m68k_write32(ctx, md + 4, dt.dat_Stamp.ds_Minute);
+        m68k_write32(ctx, md + 8, dt.dat_Stamp.ds_Tick);
+    }
+    return r;
+}
+
 const struct M68KThunkEntry m68kemu_thunks_dos[] = {
+    { 744, thunk_dos_DateToStr_m },
+    { 750, thunk_dos_StrToDate_m },
     { 108, thunk_dos_ExNext },
     { 432, thunk_dos_ExAll },
     { 990, thunk_dos_ExAllEnd },
@@ -3477,6 +3567,102 @@ static IPTR thunk_gfx_LoadRGB4(struct M68KEmuContext *ctx, void *cpu)
     return 0;
 }
 
+/* exec -204: AllocAbs(D0=byteSize, A1=location): in the program's memory,
+   never at the host address of the same value */
+static IPTR thunk_exec_AllocAbs_m(struct M68KEmuContext *ctx, void *cpu)
+{
+    return M68KEmu_HeapAllocAbs(ctx, THUNK_D(0), THUNK_A(1));
+}
+
+/* exec -648: CacheControl(D0=bits, D1=mask) -> D0=old bits. The program
+   sees a 68040's cache control: instruction and data cache and copyback
+   can be switched, the 020/030-only bits (freeze, burst) never stick, the
+   clear bits only clear. There is no cache behind it to switch. */
+#define M68K_CACR_040 (CACRF_EnableI | CACRF_EnableD | CACRF_CopyBack)
+
+static IPTR thunk_exec_CacheControl_m(struct M68KEmuContext *ctx, void *cpu)
+{
+    ULONG bits = THUNK_D(0), mask = THUNK_D(1), old = ctx->cacr;
+
+    ctx->cacr = (old & ~(mask & M68K_CACR_040)) | (bits & mask & M68K_CACR_040);
+    return old;
+}
+
+/* Allocate() and Deallocate() on a MemHeader the program built in its own
+   memory (C runtimes keep their malloc pools this way): the chunk list is
+   m68k (mc_Next, mc_Bytes) and blocks are 8-byte aligned, as in exec */
+#define M68K_MEM_BLOCKSIZE 8
+
+/* exec -186: Allocate(A0=memHeader, D0=byteSize) -> D0=block */
+static IPTR thunk_exec_Allocate_m(struct M68KEmuContext *ctx, void *cpu)
+{
+    ULONG mh = THUNK_A(0), size = THUNK_D(0), prev, mc;
+    int guard = 0;
+
+    if (!mh || !size)
+        return 0;
+    size = (size + M68K_MEM_BLOCKSIZE - 1) & ~(M68K_MEM_BLOCKSIZE - 1);
+    if (m68k_read32(ctx, mh + M68K_MH_FREE) < size)
+        return 0;
+    for (prev = mh + M68K_MH_FIRST, mc = m68k_read32(ctx, prev);
+         mc && guard++ < 1000000;
+         prev = mc, mc = m68k_read32(ctx, mc))
+    {
+        ULONG bytes = m68k_read32(ctx, mc + 4);
+
+        if (bytes < size)
+            continue;
+        if (bytes == size)
+            m68k_write32(ctx, prev, m68k_read32(ctx, mc));
+        else
+        {
+            m68k_write32(ctx, mc + size, m68k_read32(ctx, mc));
+            m68k_write32(ctx, mc + size + 4, bytes - size);
+            m68k_write32(ctx, prev, mc + size);
+        }
+        m68k_write32(ctx, mh + M68K_MH_FREE, m68k_read32(ctx, mh + M68K_MH_FREE) - size);
+        return mc;
+    }
+    return 0;
+}
+
+/* exec -192: Deallocate(A0=memHeader, A1=block, D0=byteSize) */
+static IPTR thunk_exec_Deallocate_m(struct M68KEmuContext *ctx, void *cpu)
+{
+    ULONG mh = THUNK_A(0), blk = THUNK_A(1), size = THUNK_D(0), prev, mc, end, freed;
+    int guard = 0;
+
+    if (!mh || !blk || !size)
+        return 0;
+    size = (size + (blk & (M68K_MEM_BLOCKSIZE - 1)) + M68K_MEM_BLOCKSIZE - 1) & ~(M68K_MEM_BLOCKSIZE - 1);
+    blk &= ~(M68K_MEM_BLOCKSIZE - 1);
+    end = blk + size;
+    freed = size;
+
+    for (prev = mh + M68K_MH_FIRST, mc = m68k_read32(ctx, prev);
+         mc && mc < blk && guard++ < 1000000;
+         prev = mc, mc = m68k_read32(ctx, mc))
+        ;
+    /* merge with the following chunk */
+    if (mc && mc == end)
+    {
+        size += m68k_read32(ctx, mc + 4);
+        mc = m68k_read32(ctx, mc);
+    }
+    m68k_write32(ctx, blk, mc);
+    m68k_write32(ctx, blk + 4, size);
+    /* merge with the preceding chunk */
+    if (prev != mh + M68K_MH_FIRST && prev + m68k_read32(ctx, prev + 4) == blk)
+    {
+        m68k_write32(ctx, prev, mc);
+        m68k_write32(ctx, prev + 4, m68k_read32(ctx, prev + 4) + size);
+    }
+    else
+        m68k_write32(ctx, prev, blk);
+    m68k_write32(ctx, mh + M68K_MH_FREE, m68k_read32(ctx, mh + M68K_MH_FREE) + freed);
+    return 0;
+}
+
 /* -900: GetRGB32(A0=cm, D0=first, D1=ncolors, A1=table): the table is m68k longs */
 static IPTR thunk_gfx_GetRGB32(struct M68KEmuContext *ctx, void *cpu)
 {
@@ -3548,6 +3734,127 @@ static IPTR thunk_diskfont_OpenDiskFont_m(struct M68KEmuContext *ctx, void *cpu)
     font = OpenDiskFont(&ta);
     return font ? (IPTR)shadow_create_by_name(ctx, "TextFont", font) : 0;
 }
+
+/* ── character hooks: native code formats, the program's hook gets the
+   characters. The native call collects them; a small 68k routine run after
+   the thunk (tail_pc) calls the 68k hook once per character, the closing NUL
+   included, with A0 = hook, A2 = object, A1 = character, then returns the
+   call's result in D0. ── */
+#define PCH_DATA    0x60            /* hook, object, result */
+#define PCH_BUF     0x70
+#define PCH_BUFLEN  2048
+
+struct pch_collect
+{
+    char  *buf;
+    ULONG  len;
+};
+
+AROS_UFH3(static void, pch_collect_func,
+    AROS_UFHA(struct Hook *, h, A0),
+    AROS_UFHA(APTR, obj, A2),
+    AROS_UFHA(ULONG, ch, A1))
+{
+    AROS_USERFUNC_INIT
+    struct pch_collect *c = (struct pch_collect *)h->h_Data;
+
+    if (c->len < PCH_BUFLEN - 1 && (c->len == 0 || c->buf[c->len - 1] || (UBYTE)ch))
+        c->buf[c->len++] = (char)ch;
+    AROS_USERFUNC_EXIT
+}
+
+static ULONG pch_stub(struct M68KEmuContext *ctx)
+{
+    static const UWORD code[] =
+    {
+        0x48E7, 0x2030,                 /* movem.l d2/a2-a3,-(sp)   */
+        0x267C, 0x0000, 0x0000,         /* movea.l #buf,a3          */
+        0x7000,                         /* loop: moveq #0,d0        */
+        0x101B,                         /* move.b (a3)+,d0          */
+        0x2400,                         /* move.l d0,d2             */
+        0x2240,                         /* movea.l d0,a1            */
+        0x2079, 0x0000, 0x0000,         /* movea.l hook,a0          */
+        0x2479, 0x0000, 0x0000,         /* movea.l object,a2        */
+        0x487A, 0x0008,                 /* pea ret(pc)              */
+        0x2F28, 0x0008,                 /* move.l h_Entry(a0),-(sp) */
+        0x4E75,                         /* rts: call the hook       */
+        0x4A82,                         /* ret: tst.l d2            */
+        0x66DE,                         /* bne.b loop               */
+        0x2039, 0x0000, 0x0000,         /* move.l result,d0         */
+        0x4CDF, 0x0C04,                 /* movem.l (sp)+,d2/a2-a3   */
+        0x4E75                          /* rts                      */
+    };
+    ULONG s = ctx->pch_stub, i;
+
+    if (s)
+        return s;
+    if (!(s = M68KEmu_HeapAlloc(ctx, PCH_BUF + PCH_BUFLEN, MEMF_CLEAR)))
+        return 0;
+    for (i = 0; i < sizeof(code) / sizeof(code[0]); i++)
+        m68k_write16(ctx, s + i * 2, code[i]);
+    m68k_write32(ctx, s + 6, s + PCH_BUF);
+    m68k_write32(ctx, s + 20, s + PCH_DATA);
+    m68k_write32(ctx, s + 26, s + PCH_DATA + 4);
+    m68k_write32(ctx, s + 46, s + PCH_DATA + 8);
+    ctx->pch_stub = s;
+    return s;
+}
+
+/* after the thunk, feed the collected characters to the 68k hook */
+static void pch_emit(struct M68KEmuContext *ctx, ULONG hook, ULONG object,
+                     struct pch_collect *c, ULONG result)
+{
+    ULONG s = pch_stub(ctx);
+
+    if (!s || !hook)
+        return;
+    if (!c->len || c->buf[c->len - 1])
+        c->buf[c->len++] = 0;
+    memcpy(ctx->mem + s + PCH_BUF, c->buf, c->len);
+    m68k_write32(ctx, s + PCH_DATA, hook);
+    m68k_write32(ctx, s + PCH_DATA + 4, object);
+    m68k_write32(ctx, s + PCH_DATA + 8, result);
+    ctx->tail_pc = s;
+    ctx->tail_d0 = result;
+    ctx->tail_a0 = hook;
+    ctx->tail_a6 = ctx->m68k_sysbase;
+}
+
+/* locale -60: FormatDate(A0=locale, A1=template, A2=date, A3=hook) */
+static IPTR thunk_locale_FormatDate_m(struct M68KEmuContext *ctx, void *cpu)
+{
+    struct Locale *loc = (struct Locale *)m68k_to_host_or_shadow(ctx, THUNK_A(0));
+    CONST_STRPTR tmpl = (CONST_STRPTR)m68k_to_host(ctx, THUNK_A(1));
+    ULONG md = THUNK_A(2);
+    struct DateStamp ds;
+    char buf[PCH_BUFLEN];
+    struct pch_collect c = { buf, 0 };
+    struct Hook h;
+    struct Locale *own = NULL;
+
+    if (!tmpl || !md || !THUNK_A(3))
+        return 0;
+    ds.ds_Days   = (LONG)m68k_read32(ctx, md);
+    ds.ds_Minute = (LONG)m68k_read32(ctx, md + 4);
+    ds.ds_Tick   = (LONG)m68k_read32(ctx, md + 8);
+    if (!loc)
+        loc = own = OpenLocale(NULL);
+    if (!loc)
+        return 0;
+    memset(&h, 0, sizeof(h));
+    h.h_Entry = (HOOKFUNC)pch_collect_func;
+    h.h_Data  = &c;
+    FormatDate(loc, tmpl, &ds, &h);
+    if (own)
+        CloseLocale(own);
+    pch_emit(ctx, THUNK_A(3), THUNK_A(0), &c, 0);
+    return 0;
+}
+
+const struct M68KThunkEntry m68kemu_thunks_locale_manual[] = {
+    { 60, thunk_locale_FormatDate_m },
+};
+const ULONG m68kemu_thunks_locale_manual_count = 1;
 
 const struct M68KThunkEntry m68kemu_thunks_diskfont_manual[] = {
     { 30, thunk_diskfont_OpenDiskFont_m },

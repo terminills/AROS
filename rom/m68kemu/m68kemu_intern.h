@@ -71,6 +71,8 @@ struct M68KEmuContext
     ULONG   heap_avail;         /* free bytes */
     ULONG   memheader;          /* the 68k MemHeader describing the heap */
     ULONG   lists_base;         /* ExecBase whose LibList etc. are set up */
+    ULONG   cacr;               /* CacheControl() bits the program sees */
+    ULONG   pch_stub;           /* 68k routine feeding characters to a hook */
 
     ULONG   entry_point;
     ULONG   trace_exc;
@@ -286,7 +288,7 @@ static inline ULONG m68k_read32(struct M68KEmuContext *ctx, ULONG addr)
 static inline void m68k_write16(struct M68KEmuContext *ctx, ULONG addr, UWORD val)
 {
     if (addr + 1 >= ctx->mem_size) return;
-    if (ctx->low_guard && addr < 0x400 && addr != 0x28 && addr != 0x6C && addr != 0x10 && !(addr >= 0x140 && addr < 0x190)) { m68k_low_write_trap(ctx, addr, "thunk"); return; }
+    if (ctx->low_guard && addr < 0x400 && addr != 0x28 && addr != 0x2C && addr != 0x6C && addr != 0x10 && !(addr >= 0x140 && addr < 0x190)) { m68k_low_write_trap(ctx, addr, "thunk"); return; }
     UBYTE *p = ctx->mem + addr;
     p[0] = (UBYTE)(val >> 8);
     p[1] = (UBYTE)(val);
@@ -295,7 +297,7 @@ static inline void m68k_write16(struct M68KEmuContext *ctx, ULONG addr, UWORD va
 static inline void m68k_write32(struct M68KEmuContext *ctx, ULONG addr, ULONG val)
 {
     if (addr + 3 >= ctx->mem_size) return;
-    if (ctx->low_guard && addr < 0x400 && addr != 0x28 && addr != 0x6C && addr != 0x10 && !(addr >= 0x140 && addr < 0x190)) { m68k_low_write_trap(ctx, addr, "thunk"); return; }
+    if (ctx->low_guard && addr < 0x400 && addr != 0x28 && addr != 0x2C && addr != 0x6C && addr != 0x10 && !(addr >= 0x140 && addr < 0x190)) { m68k_low_write_trap(ctx, addr, "thunk"); return; }
     UBYTE *p = ctx->mem + addr;
     p[0] = (UBYTE)(val >> 24);
     p[1] = (UBYTE)(val >> 16);
@@ -313,6 +315,7 @@ LONG   M68KEmu_Execute(struct M68KEmuContext *ctx);
 ULONG  M68KEmu_HeapAlloc(struct M68KEmuContext *ctx, ULONG size, ULONG requirements);
 void   M68KEmu_HeapFree(struct M68KEmuContext *ctx, ULONG addr, ULONG size);
 ULONG  M68KEmu_HeapLargest(struct M68KEmuContext *ctx);
+ULONG  M68KEmu_HeapAllocAbs(struct M68KEmuContext *ctx, ULONG size, ULONG addr);
 void   m68k_publish_base(struct M68KEmuContext *ctx, ULONG base, const char *name);
 ULONG  M68KEmu_LoadHunks(struct M68KEmuContext *ctx, BPTR segList);
 ULONG  M68KEmu_LoadHunksFromMemory(struct M68KEmuContext *ctx, UBYTE *data, LONG size);
