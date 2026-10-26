@@ -12,6 +12,7 @@
 #include <proto/alib.h>
 #include <proto/diskfont.h>
 
+#include <aros/macros.h>
 #include <graphics/gfxmacros.h>
 #include <intuition/intuition.h>
 #include <intuition/classes.h>
@@ -391,7 +392,7 @@ static void label_draw_mapped(struct RastPort *rp, struct Image *im,
             {
                 if (im->PlanePick & (1 << p))
                 {
-                    if (pick < im->Depth && (im->ImageData[pick * plane + off] & bit))
+                    if (pick < im->Depth && (AROS_BE2WORD(im->ImageData[pick * plane + off]) & bit))
                         color |= 1 << p;
                     pick++;
                 }
