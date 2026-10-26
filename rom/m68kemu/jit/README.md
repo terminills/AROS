@@ -118,3 +118,8 @@ argument `execmem`. The latter passed on the tested nightly; page allocation
 returned NULL. `native_payload_test.cpp` checks emitted MOVEQ register/flag
 results and CPU-gated endian reads/writes directly under AROS. Neither standalone
 test establishes full application compatibility. See STATUS.md for evidence.
+
+`native_run.c` is a standalone diagnostic caller: `native-run program
+"argument string"`. It loads the HUNK and invokes RunHunk directly, preserving
+the native return code. Use it to distinguish emulator results from shell
+argument-dispatch behavior. It does not qualify transparent DOS dispatch.
