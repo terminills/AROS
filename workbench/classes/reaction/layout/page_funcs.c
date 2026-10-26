@@ -33,6 +33,8 @@ AROS_LH0(Class *, PAGE_GetClass,
     struct LayoutBase_intern *base = (struct LayoutBase_intern *)LayoutBase;
 
     if (!base->rc_PageBase)
+        base->rc_PageBase = OpenLibrary("gadgets/page.gadget", 0);
+    if (!base->rc_PageBase)
         base->rc_PageBase = OpenLibrary("page.gadget", 0);
 
     if (base->rc_PageBase)
