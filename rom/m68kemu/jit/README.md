@@ -63,3 +63,19 @@ Shared compatibility fixes must be separate commits delivered to Claude by relay
 with a reproducer. Coordinate interface changes before editing the integration
 adapter. Publish only to a separately agreed destination. Follow CONTRIBUTING.md
 and the current AROS PR policy: no draft or dependency-on-unmerged-PR submissions.
+
+## Preparing a private corpus harness
+
+`prepare-corpus.py --reference-qt /path/to/reference/qemu-test --maps
+/path/to/maps-v115.txt --out /path/to/new/private-directory` copies the handed-off
+inputs and records their hashes. It adapts the harness to private monitor, disk,
+NVRAM, log and screenshot paths, keeps failed images, binds VNC to loopback and
+rejects a missing completion marker. It refuses an existing output directory and
+never boots a VM. Check/claim the relay runtime scope before a run. The original
+reference harness, repository, build and disk remain untouched.
+
+The copied `corpus5` script has historical `Run >SER:` launcher failures for its
+CLI entries; those are also present in Claude's v103 reference. Report them as
+baseline limitations, not successful CLI tests. `rdemoc` prints `cp done` before
+its delayed crash check and has no SHOT markers: keep that VM, capture its page
+screens explicitly, and wait for `==CRASHEND` before interpreting the run.
