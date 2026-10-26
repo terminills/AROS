@@ -36,8 +36,8 @@ struct PaletteGadData
     ULONG           pd_Color;           /* Selected color index */
     ULONG           pd_ColorOffset;     /* First color in palette range */
     ULONG           pd_NumColors;       /* Number of colors to display */
-    Object         *pd_FrameBevel;      /* Cached outer frame bevel */
-    Object         *pd_SelBevel;        /* Cached selection bevel */
+    UWORD          *pd_ColorTable;      /* PALETTE_ColourTable, or NULL */
+    LONG            pd_Hover;           /* Cell under the pointer while active */
 };
 
 #endif /* PALETTE_INTERN_H */
