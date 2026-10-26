@@ -59,7 +59,18 @@ static LONG uvc_native_size(struct UvcHandle *uh, ULONG *width, ULONG *height)
     LONG selected = -1;
     *width = uh->uh_Width;
     *height = uh->uh_Height;
-    if (!uh->uh_Input || !wanted_w || !wanted_h) return -1;
+    if (!uh->uh_Input) return -1;
+    if (uh->uh_Mode >= 0) {
+        struct UVCModeInfo mode;
+        args[1] = uh->uh_Mode; args[2] = (IPTR)&mode; args[3] = sizeof(mode);
+        if (uvc_class(uh, UVCM_MODEINFO, args) && mode.width && mode.height &&
+            mode.width <= 3840 && mode.height <= 2160) {
+            *width = mode.width; *height = mode.height;
+            return uh->uh_Mode;
+        }
+        return -2; /* explicit mode is never silently replaced */
+    }
+    if (!wanted_w || !wanted_h) return -1;
     count = uvc_class(uh, UVCM_MODECOUNT, args);
     /* Bound enumeration even if a mismatched class returns a bogus count. */
     if (count > 256) return -1;
@@ -68,8 +79,8 @@ static LONG uvc_native_size(struct UvcHandle *uh, ULONG *width, ULONG *height)
         unsigned long long distance;
         args[1] = i; args[2] = (IPTR)&mode; args[3] = sizeof(mode);
         if (!uvc_class(uh, UVCM_MODEINFO, args) ||
-            mode.pixel_format != UVC_MODE_YUY2 || !mode.width || !mode.height ||
-            mode.width > 1920 || mode.height > 1080) continue;
+            (mode.pixel_format < UVC_MODE_YUY2 || mode.pixel_format > UVC_MODE_GRAY16) || !mode.width || !mode.height ||
+            mode.width > 3840 || mode.height > 2160) continue;
         distance = (unsigned long long)(wanted_w > mode.width ?
             wanted_w - mode.width : mode.width - wanted_w) +
             (wanted_h > mode.height ? wanted_h - mode.height : mode.height - wanted_h);
@@ -157,6 +168,7 @@ AROS_LH5(IPTR, vhi_api,
                 uh->uh_Width = UVC_DEF_WIDTH;
                 uh->uh_Height = UVC_DEF_HEIGHT;
                 uh->uh_Input = 0;              /* default: test pattern */
+                uh->uh_Mode = -1;
                 uh->uh_ClassBase = OpenLibrary("uvc.class", 1);
                 if (!uh->uh_ClassBase)
                     uh->uh_ClassBase = OpenLibrary("SYS:Classes/USB/uvc.class", 1);
@@ -183,6 +195,17 @@ AROS_LH5(IPTR, vhi_api,
                     if (uh->uh_Input && info && info->size >= sizeof(*info)) {
                         IPTR args[3] = { uh->uh_CameraId, (IPTR)info, info->size };
                         result = uvc_class(uh, UVCM_DEVICEINFO, args);
+                    }
+                    if (!result) err = VHI_ERR_UNKNOWN_OPTION;
+                    break;
+                }
+                case VHI_UVC_RATES:
+                {
+                    struct VHIUVCRateQuery *query = attr;
+                    if (uh->uh_Input && query && query->size >= sizeof(*query)) {
+                        IPTR args[4] = { uh->uh_CameraId, query->index,
+                            (IPTR)&query->rates, sizeof(query->rates) };
+                        result = uvc_class(uh, UVCM_RATES, args);
                     }
                     if (!result) err = VHI_ERR_UNKNOWN_OPTION;
                     break;
@@ -259,6 +282,14 @@ AROS_LH5(IPTR, vhi_api,
             if (!uh) { err = VHI_ERR_INTERNAL_ERROR; break; }
             switch (submethod)
             {
+                case VHI_UVC_MODE:
+                    uh->uh_Mode = (LONG)(IPTR)attr;
+                    result = TRUE;
+                    break;
+                case VHI_UVC_INTERVAL:
+                    uh->uh_Interval = (ULONG)(IPTR)attr;
+                    result = TRUE;
+                    break;
                 case VHI_OPTIONS:
                     /* attr = struct vhi_setoptions {option, value} */
                     if (attr)
@@ -301,7 +332,9 @@ AROS_LH5(IPTR, vhi_api,
                     {
                         struct vhi_dimensions *dim = (struct vhi_dimensions *)attr;
                         ULONG width = dim->dst_width, height = dim->dst_height;
-                        uvc_native_size(uh, &width, &height);
+                        if (uvc_native_size(uh, &width, &height) == -2) {
+                            err = VHI_ERR_UNKNOWN_OPTION; break;
+                        }
                         dim->x1 = dim->y1 = 0;
                         dim->x2 = dim->dst_width = width;
                         dim->y2 = dim->dst_height = height;
@@ -323,20 +356,22 @@ AROS_LH5(IPTR, vhi_api,
                     }
 
                     mode_index = uvc_native_size(uh, &width, &height);
+                    if (mode_index == -2) { err = VHI_ERR_UNKNOWN_OPTION; break; }
                     img = AllocVec(sizeof(struct vhi_image),
                                    MEMF_PUBLIC | MEMF_CLEAR);
                     if (!img) { err = VHI_ERR_OUT_OF_MEMORY; break; }
                     if (!uh->uh_Input) pixels = uvc_grab_testpattern(uh);
                     else {
                         ULONG bytes = width * height * 3;
-                        IPTR args[4];
+                        IPTR args[5];
                         pixels = AllocVec(bytes, MEMF_PUBLIC);
                         args[0] = uh->uh_CameraId;
                         args[1] = (IPTR)pixels;
                         args[2] = bytes;
                         args[3] = mode_index;
+                        args[4] = uh->uh_Interval;
                         if (pixels && uvc_class(uh, mode_index >= 0 ?
-                            UVCM_GRABMODE : UVCM_GRAB, args) != bytes) {
+                            (uh->uh_Interval ? UVCM_GRABRATE : UVCM_GRABMODE) : UVCM_GRAB, args) != bytes) {
                             FreeVec(pixels);
                             pixels = NULL;
                         }

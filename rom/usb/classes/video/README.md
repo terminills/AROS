@@ -1,10 +1,19 @@
 # UVC capture
 
-The class binds UVC VideoControl interfaces with a YUY2 streaming mode no larger
-than 640x480. It selects the smallest such mode, retains that frame's interval,
-and negotiates the format before capture. MJPEG and other uncompressed GUIDs
-are deliberately unsupported. Isochronous endpoint capacity includes the
-high-speed transaction multiplier exposed separately by Poseidon.
+The class binds UVC VideoControl functions to their associated VideoStreaming
+interfaces. It enumerates YUY2, MJPEG, Y800/Y8 8-bit luminance and Y16 16-bit
+little-endian luminance modes up to 3840x2160. Grayscale recognition requires
+both the exact GUID and matching bits-per-pixel; unknown formats are rejected.
+RGB and IR functions retain separate bindings even when product names match.
+The mode picker selects a descriptor's exact format/frame pair, including
+MJPEG and YUY2 modes with the same dimensions. There is no low-resolution
+fallback after an explicit mode fails negotiation.
+
+MJPEG uses the capturing task's `jfif.library` (version 52 or later), with
+bounded input/output buffers, exact decoded-dimension checks and rejection of
+truncated/corrupt frames. Grayscale frames are returned as RGB24 with equal
+channels; Y16 display uses the high luminance byte. These implementation claims
+do not establish physical IR-device compatibility without a matching device.
 
 `uvc.library` exposes input 0 as an explicitly synthetic test pattern and inputs
 1 onward as supported bound cameras. A selected input retains its binding ID;
@@ -15,10 +24,33 @@ vector. Existing VHI, USB-class and Poseidon vector positions are unchanged.
 Descriptor ownership remains with Poseidon. Capture takes the device lock, with
 no class lock held while waiting for it, and revalidates the binding afterward.
 
-Capture queues 16 isochronous or two bulk requests, checks UVC FID/EOF/ERR headers,
-and publishes only an exact-size complete frame. Outstanding requests are
+Capture queues 112 isochronous or two bulk requests, checks UVC FID/EOF/ERR headers,
+and publishes only complete frames. Uncompressed frames require the expected
+byte count; compressed frames require a nonempty bounded EOF frame and a
+successful JPEG decode. Outstanding requests are
 aborted and collected exactly once before buffers are freed. Capture has a
 three-second deadline; alternate-setting cleanup gets one additional second.
+
+## Viewer controls
+
+VHITV captures in a separately loaded process so camera waits do not block
+menus, resize, pause, or close. Closing drains the outstanding bounded request
+before releasing shared data. Only one capture is in flight; frames made stale
+by input, resolution, format, or interval changes are discarded.
+
+- **Input**: select next/previous camera; information (`I`) shows VID/PID, USB
+  speed, bulk/iso transport, VC/VS interfaces and the last streaming commit.
+- **Camera modes**: exact advertised size and format.
+- **Frame rate**: descriptor-advertised intervals for that mode. Continuous
+  descriptors offer valid endpoints. The class rejects unadvertised intervals
+  and a camera's refusal to negotiate the requested interval. Menu FPS is the
+  stream interval, not a measured preview rate.
+- **Device log** (`L`): separate live `log.resource` window, filtered by class
+  and binding generation. It shows the latest twelve capture records.
+- **Capture**: pause/resume. **Project** (`S`): full-frame PPM snapshot.
+
+The metadata API is size-checked; old class/library pairs may lack these
+extensions. Install the class, library and viewer as a matched set.
 
 ## Build and test
 
@@ -47,6 +79,9 @@ The portable payload regression can be built with a host C compiler:
 cc -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined \
   test/payload.c -o payload-test
 ./payload-test
+cc -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  test/formats.c -ljpeg -o formats-test
+./formats-test
 ```
 
 Install `uvc.class` in SYS:Classes/USB and `uvc.library` in LIBS:. Register the

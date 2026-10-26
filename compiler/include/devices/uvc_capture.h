@@ -12,6 +12,8 @@
 #define UVCM_MODEINFO  (UVCM_COUNT + 4)
 #define UVCM_GRABMODE  (UVCM_COUNT + 5)
 #define UVCM_DEVICEINFO (UVCM_COUNT + 6)
+#define UVCM_RATES (UVCM_COUNT + 7)
+#define UVCM_GRABRATE (UVCM_COUNT + 8)
 
 /* Optional uvc.library GET extensions; other VHI drivers may reject them. */
 #define VHI_UVC_MODECOUNT 0x55564310UL
@@ -31,8 +33,28 @@ struct UVCDeviceInfo {
     ULONG negotiated; /* TRUE after successful commit and alternate selection */
     ULONG width, height, format_index, frame_index, interval;
     ULONG payload_bytes, frame_bytes, alternate;
+    ULONG binding_id; /* generation used by [uvc:id] log.resource records */
 };
+#define VHI_UVC_RATES 0x55564313UL
+#define VHI_UVC_INTERVAL 0x55564314UL /* SET: interval as IPTR; zero = default */
+#define UVC_MAX_INTERVALS 32
+struct UVCRates {
+    ULONG count;
+    ULONG minimum, maximum, step; /* continuous descriptor when count == 0 */
+    ULONG intervals[UVC_MAX_INTERVALS]; /* 100 ns units, no invented rates */
+};
+struct VHIUVCRateQuery {
+    ULONG size, index;
+    struct UVCRates rates;
+};
+/* RATES: id, mode index, UVCRates*, size. GRABRATE extends GRABMODE
+ * with a fifth argument: interval. Nonzero intervals must be advertised.
+ * A zero interval selects the existing conservative descriptor default. */
 #define UVC_MODE_YUY2 1
+#define UVC_MODE_MJPEG 2
+#define UVC_MODE_GRAY8 3
+#define UVC_MODE_GRAY16 4
+#define VHI_UVC_MODE 0x55564315UL /* SET: exact mode index; -1 = nearest/default */
 struct UVCModeInfo {
     ULONG width, height;
     ULONG format_index, frame_index;
@@ -50,7 +72,7 @@ struct VHIUVCModeQuery {
  * VHIUVCModeQuery*, returns TRUE on success; synthetic input has no modes. */
 /* MODECOUNT: binding id. MODEINFO: binding id, zero-based mode index,
  * UVCModeInfo*, buffer size. Returns FALSE on stale id/index or short buffer.
- * Modes describe supported YUY2 descriptors, not guaranteed bandwidth or
+ * Modes describe supported native descriptors, not guaranteed bandwidth or
  * successful negotiation. Existing INFO and GRAB layouts remain unchanged. */
 struct UVCCameraInfo {
     ULONG id;                 /* binding generation; never a borrowed pointer */

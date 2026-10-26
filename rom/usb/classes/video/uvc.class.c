@@ -3,7 +3,7 @@
  *                  uvc (USB Video Class) class for poseidon
  *----------------------------------------------------------------------------
  *
- * Poseidon USB Video Class capture with bounded YUY2 frame acquisition.
+ * Poseidon USB Video Class capture with bounded supported frame acquisition.
  * The existing class dispatcher exposes stable camera IDs and RGB24 frames
  * to the VHI driver. Binding release waits for an in-flight bounded grab.
  */
@@ -14,6 +14,7 @@
 #include <devices/timer.h>
 #include <devices/uvc_capture.h>
 #include "uvc_payload.h"
+#include "uvc_jpeg.h"
 
 #define __LOG_LIBBASE (nh->nh_LogResBase)
 #include <proto/log.h>
@@ -39,6 +40,7 @@ static int libInit(LIBBASETYPEPTR nh)
 
     NEWLIST(&nh->nh_Cameras);
     InitSemaphore(&nh->nh_Lock);
+    InitSemaphore(&uvc_jpeg_lock);
     nh->nh_NextId = 0;
     nh->nh_UtilityBase = OpenLibrary("utility.library", 39);
     nh->nh_LogResBase = OpenResource("log.resource");
@@ -71,7 +73,7 @@ ADD2INITLIB(libInit, 0)
 ADD2EXPUNGELIB(libExpunge, 0)
 /* \\\ */
 
-/* Only YUY2 is accepted here: other uncompressed GUIDs have different layouts.
+/* Match exact uncompressed GUIDs and bit depths; MJPEG has its own descriptor.
  * Retain supported descriptors for enumeration; selection prefers a fitting
  * device default. The bDefaultFrameInterval belongs to that exact frame. */
 /* Isochronous transfers in flight. Each covers one 125 us service interval
@@ -93,7 +95,7 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
     struct Library *ps = OpenLibrary("poseidon.library", 4);
     APTR dd = NULL;
     ULONG alts_with_iso = 0;
-    UBYTE format = 0;
+    UBYTE format = 0, pixel_format = 0;
     struct uvc_frame_cand cand[UVC_MAX_FRAMES];
     ULONG ncand = 0;
     LONG chosen = -1;
@@ -102,6 +104,15 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
     ULONG altcap;
     static const UBYTE yuy2[16] = {
         'Y','U','Y','2',0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71
+    };
+    static const UBYTE gray8[16] = {
+        'Y','8','0','0',0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71
+    };
+    static const UBYTE y8[16] = {
+        'Y','8',' ',' ',0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71
+    };
+    static const UBYTE gray16[16] = {
+        'Y','1','6',' ',0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71
     };
     if (!ps) return FALSE;
     /* The VideoControl header (CS_INTERFACE subtype 1) names the streaming
@@ -155,11 +166,19 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
                        nch->ncu_Name, (IPTR)nch->ncu_IfNum, vsnum,
                        (IPTR)p[3], guid, (IPTR)p[21], (IPTR)p[4], (IPTR)p[22]);
             }
-            format = (p[0] >= 27 && !memcmp(p+5, yuy2, 16) && p[21] == 16)
-                ? p[3] : 0;
+            pixel_format = 0;
+            if (p[0] >= 27) {
+                if (!memcmp(p+5, yuy2, 16) && p[21] == 16) pixel_format = UVC_MODE_YUY2;
+                else if ((!memcmp(p+5, gray8, 16) || !memcmp(p+5, y8, 16)) && p[21] == 8)
+                    pixel_format = UVC_MODE_GRAY8;
+                else if (!memcmp(p+5, gray16, 16) && p[21] == 16) pixel_format = UVC_MODE_GRAY16;
+            }
+            format = pixel_format ? p[3] : 0;
         } else if (p[2] == UDST_VIDEO_STREAM_FORMAT_MJPEG) {
-            format = 0;
-        } else if (p[2] == UDST_VIDEO_STREAM_FRAME_UNCOMPRESSED &&
+            format = p[0] >= 11 ? p[3] : 0;
+            pixel_format = UVC_MODE_MJPEG;
+        } else if (((p[2] == UDST_VIDEO_STREAM_FRAME_UNCOMPRESSED && pixel_format != UVC_MODE_MJPEG) ||
+                    (p[2] == UDST_VIDEO_STREAM_FRAME_MJPEG && pixel_format == UVC_MODE_MJPEG)) &&
                    format && p[0] >= 26) {
             ULONG w = p[5] | ((ULONG)p[6] << 8);
             ULONG h = p[7] | ((ULONG)p[8] << 8);
@@ -177,7 +196,7 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
                         interval = candidate;
                 }
             }
-            if (w && h && !(w & 1) && w <= 1920 && h <= 1080 && interval &&
+            if (w && h && (pixel_format != UVC_MODE_YUY2 || !(w & 1)) && w <= 3840 && h <= 2160 && interval &&
                 ncand < UVC_MAX_FRAMES) {
                 cand[ncand].w = w;
                 cand[ncand].h = h;
@@ -192,10 +211,27 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
                     struct UVCModeInfo *mode = &nch->ncu_Modes[ncand];
                     mode->width = w; mode->height = h;
                     mode->format_index = format; mode->frame_index = p[3];
-                    mode->pixel_format = UVC_MODE_YUY2;
+                    mode->pixel_format = pixel_format;
                     mode->default_interval = cand[ncand].defint;
                     mode->capture_interval = interval;
                     mode->max_frame_bytes = cand[ncand].maxbuf;
+                    {
+                        struct UVCRates *rates = &nch->ncu_Rates[ncand];
+                        ULONG j, entries = p[25] ? p[25] : 3;
+                        if (p[0] >= 26 + 4 * entries) {
+                            for (j = 0; j < entries; j++) {
+                                const UBYTE *q = p + 26 + 4*j;
+                                ULONG value = q[0] | ((ULONG)q[1]<<8) |
+                                    ((ULONG)q[2]<<16) | ((ULONG)q[3]<<24);
+                                if (p[25]) {
+                                    if (value && rates->count < UVC_MAX_INTERVALS)
+                                        rates->intervals[rates->count++] = value;
+                                } else if (!j) rates->minimum = value;
+                                else if (j == 1) rates->maximum = value;
+                                else rates->step = value;
+                            }
+                        }
+                    }
                 }
                 nch->ncu_ModeCount = ++ncand;
             }
@@ -277,10 +313,10 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
                        (IPTR)(size * fps), (IPTR)budget);
             }
         } else if (ioerr == 0) {
-            UVCLOG(LOGF_Flag_Type_Information, "'%s': device default is format %lu frame %lu, not one of its YUY2 frames; choosing the largest YUY2 frame that fits",
+            UVCLOG(LOGF_Flag_Type_Information, "'%s': device default is format %lu frame %lu, not one of its supported frames; choosing the largest supported frame that fits",
                    nch->ncu_Name, (IPTR)probe[2], (IPTR)probe[3]);
         } else {
-            UVCLOG(LOGF_Flag_Type_Warn, "'%s': GET_DEF probe failed (%ld); choosing the largest YUY2 frame that fits",
+            UVCLOG(LOGF_Flag_Type_Warn, "'%s': GET_DEF probe failed (%ld); choosing the largest supported frame that fits",
                    nch->ncu_Name, (IPTR)ioerr);
         }
         if (chosen < 0) {
@@ -298,12 +334,15 @@ static BOOL uvc_parse_streaming(struct NepClassUVC *nch)
             reason = "largest frame the stream endpoint carries";
         }
         if (chosen >= 0) {
+            nch->ncu_PixelFormat = nch->ncu_Modes[chosen].pixel_format;
+            nch->ncu_IsMJPEG = nch->ncu_PixelFormat == UVC_MODE_MJPEG;
             nch->ncu_Width = cand[chosen].w;
             nch->ncu_Height = cand[chosen].h;
             nch->ncu_FormatIndex = cand[chosen].format;
             nch->ncu_FrameIndex = cand[chosen].frame;
             nch->ncu_Interval = cand[chosen].interval;
-            nch->ncu_MaxFrameBuf = (ULONG)cand[chosen].w * cand[chosen].h * 2;
+            nch->ncu_MaxFrameBuf = (ULONG)cand[chosen].w * cand[chosen].h *
+                (nch->ncu_PixelFormat == UVC_MODE_GRAY8 ? 1 : 2);
             if (cand[chosen].maxbuf > nch->ncu_MaxFrameBuf && cand[chosen].maxbuf <= 4 * nch->ncu_MaxFrameBuf)
                 nch->ncu_MaxFrameBuf = cand[chosen].maxbuf;
         }
@@ -313,15 +352,15 @@ done:
     if (!nch->ncu_VSInterface)
         UVCLOG(LOGF_Flag_Type_Warn, "'%s': no VideoStreaming interface", nch->ncu_Name);
     else if (!ncand)
-        UVCLOG(LOGF_Flag_Type_Warn, "'%s': no uncompressed YUY2 frame up to 1920x1080", nch->ncu_Name);
+        UVCLOG(LOGF_Flag_Type_Warn, "'%s': no uncompressed supported frame up to 1920x1080", nch->ncu_Name);
     else if (!nch->ncu_StreamEP)
-        UVCLOG(LOGF_Flag_Type_Warn, "'%s': %lu YUY2 frames but no bulk IN or isochronous IN alternate up to %lu bytes (%lu isochronous alternates)",
+        UVCLOG(LOGF_Flag_Type_Warn, "'%s': %lu supported frames but no bulk IN or isochronous IN alternate up to %lu bytes (%lu isochronous alternates)",
                nch->ncu_Name, (IPTR)ncand, (IPTR)altcap, (IPTR)alts_with_iso);
     else if (!nch->ncu_HaveStream)
-        UVCLOG(LOGF_Flag_Type_Warn, "'%s': none of %lu YUY2 frames fits the %s stream endpoint (%lu bytes/interval)",
+        UVCLOG(LOGF_Flag_Type_Warn, "'%s': none of %lu supported frames fits the %s stream endpoint (%lu bytes/interval)",
                nch->ncu_Name, (IPTR)ncand, nch->ncu_IsBulk ? "bulk" : "isochronous", (IPTR)nch->ncu_StreamMaxPkt);
     else
-        UVCLOG(LOGF_Flag_Type_Information, "'%s': YUY2 %lux%lu format %lu frame %lu interval %lu (%s; %lu YUY2 frames offered), %s, largest alternate %lu bytes/interval (%lu isochronous alternates), frame buffer %lu",
+        UVCLOG(LOGF_Flag_Type_Information, "'%s': YUY2 %lux%lu format %lu frame %lu interval %lu (%s; %lu supported frames offered), %s, largest alternate %lu bytes/interval (%lu isochronous alternates), frame buffer %lu",
                nch->ncu_Name, (IPTR)nch->ncu_Width, (IPTR)nch->ncu_Height,
                (IPTR)nch->ncu_FormatIndex, (IPTR)nch->ncu_FrameIndex, (IPTR)nch->ncu_Interval, reason, (IPTR)ncand,
                nch->ncu_IsBulk ? "bulk" : "isochronous", (IPTR)nch->ncu_StreamMaxPkt, (IPTR)alts_with_iso,
@@ -471,6 +510,13 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
                (IPTR)nch->ncu_FormatIndex, (IPTR)nch->ncu_FrameIndex);
         goto out;
     }
+    if (nch->ncu_ExactInterval &&
+        (probe[4] | ((ULONG)probe[5]<<8) | ((ULONG)probe[6]<<16) |
+         ((ULONG)probe[7]<<24)) != nch->ncu_Interval) {
+        UVCLOG(LOGF_Flag_Type_Warn, "[uvc:%lu] camera rejected requested frame interval %lu",
+            (IPTR)nch->ncu_Id, (IPTR)nch->ncu_Interval);
+        goto out;
+    }
     stage = "probe-validate";
     maxvideoframe = probe[18] | ((ULONG)probe[19]<<8) |
                     ((ULONG)probe[20]<<16) | ((ULONG)probe[21]<<24);
@@ -571,6 +617,7 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
     }
     stage = "payload";
     frame.data = raw; frame.capacity = expected;
+    frame.variable_length = nch->ncu_IsMJPEG;
     /* Refilling the ring is time-critical; run above ordinary tasks while
      * streaming, the way a kernel capture driver completes in softirq. */
     if (oldpri < 10) {
@@ -660,10 +707,28 @@ static ULONG uvc_grab(struct NepClassUVC *nch, UBYTE *rgb, ULONG capacity)
         if (nch->ncu_IsBulk ?
             uvc_bulk_feed(&bulk, &frame, payload + slot*stride, actual, size) :
             (actual && uvc_payload_feed(&frame, payload + slot*stride, actual))) {
-            uvc_yuy2_rgb(raw, rgb, (ULONG)nch->ncu_Width * nch->ncu_Height * 2);
-            result = (ULONG)nch->ncu_Width*nch->ncu_Height*3;
+            ULONG pixels = (ULONG)nch->ncu_Width * nch->ncu_Height;
+            if (nch->ncu_IsMJPEG) {
+                if (raised) { SetTaskPri(me, oldpri); raised = FALSE; }
+                int reason = 0;
+                if (!uvc_jpeg_rgb(raw, frame.used, rgb, capacity, nch->ncu_Width, nch->ncu_Height, &reason)) {
+                    UVCLOG(LOGF_Flag_Type_Warn, "[uvc:%lu] JPEG rejected %lu bytes: reason %ld, tail %02lx %02lx",
+                        (IPTR)nch->ncu_Id, (IPTR)frame.used, (IPTR)reason,
+                        (IPTR)(frame.used > 1 ? raw[frame.used-2] : 0),
+                        (IPTR)(frame.used ? raw[frame.used-1] : 0));
+                    /* Opening a stream can land mid-frame. Reject it and
+                     * continue through the next FID within the same deadline. */
+                    if (oldpri < 10) { SetTaskPri(me, 10); raised = TRUE; }
+                    goto refill;
+
+                }
+            } else if (nch->ncu_PixelFormat == UVC_MODE_GRAY8 || nch->ncu_PixelFormat == UVC_MODE_GRAY16) {
+                uvc_gray_rgb(raw, rgb, pixels, nch->ncu_PixelFormat == UVC_MODE_GRAY16);
+            } else uvc_yuy2_rgb(raw, rgb, pixels * 2);
+            result = pixels*3;
             break;
         }
+refill:
         memset(payload + slot*stride, 0xA5, size);
         psdSendPipe(pipes[slot], payload + slot*stride, size);
         pending[slot] = TRUE;
@@ -766,7 +831,7 @@ static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
     ULONG index = 0;
     IPTR result = 0;
     BOOL found = FALSE;
-    if (method == UVCM_GRAB || method == UVCM_GRABMODE) {
+    if (method == UVCM_GRAB || method == UVCM_GRABMODE || method == UVCM_GRABRATE) {
         ps = OpenLibrary("poseidon.library", 4);
         if (!ps) return 0;
         psdLockReadPBase();
@@ -793,6 +858,13 @@ static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
             }
             break;
         }
+        if (method == UVCM_RATES && nch->ncu_Id == args[0]) {
+            if (args[1] < nch->ncu_ModeCount && args[2] && args[3] >= sizeof(struct UVCRates)) {
+                memcpy((APTR)args[2], &nch->ncu_Rates[args[1]], sizeof(struct UVCRates));
+                result = TRUE;
+            }
+            break;
+        }
         if (method == UVCM_MODECOUNT && nch->ncu_Id == args[0]) {
             result = nch->ncu_ModeCount;
             break;
@@ -806,21 +878,36 @@ static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
             }
             break;
         }
-        if ((method == UVCM_GRAB || method == UVCM_GRABMODE) &&
+        if ((method == UVCM_GRAB || method == UVCM_GRABMODE || method == UVCM_GRABRATE) &&
             nch->ncu_Id == args[0]) {
             snapshot = *nch;
-            if (method == UVCM_GRABMODE) {
+            if (method == UVCM_GRABMODE || method == UVCM_GRABRATE) {
                 const struct UVCModeInfo *mode;
                 ULONG geometry;
                 if (args[3] >= nch->ncu_ModeCount) break;
                 mode = &nch->ncu_Modes[args[3]];
-                if (mode->pixel_format != UVC_MODE_YUY2) break;
+                if (mode->pixel_format < UVC_MODE_YUY2 || mode->pixel_format > UVC_MODE_GRAY16) break;
+                snapshot.ncu_PixelFormat = mode->pixel_format;
+                snapshot.ncu_IsMJPEG = mode->pixel_format == UVC_MODE_MJPEG;
                 snapshot.ncu_Width = mode->width;
                 snapshot.ncu_Height = mode->height;
                 snapshot.ncu_FormatIndex = mode->format_index;
                 snapshot.ncu_FrameIndex = mode->frame_index;
                 snapshot.ncu_Interval = mode->capture_interval;
-                geometry = mode->width * mode->height * 2;
+                if (method == UVCM_GRABRATE && args[4]) {
+                    const struct UVCRates *rates = &nch->ncu_Rates[args[3]];
+                    ULONG j, wanted = args[4];
+                    BOOL valid = FALSE;
+                    for (j = 0; j < rates->count; j++)
+                        if (wanted == rates->intervals[j]) valid = TRUE;
+                    if (!rates->count && rates->minimum && rates->step &&
+                        wanted >= rates->minimum && wanted <= rates->maximum &&
+                        (wanted-rates->minimum) % rates->step == 0) valid = TRUE;
+                    if (!valid) break;
+                    snapshot.ncu_Interval = wanted;
+                    snapshot.ncu_ExactInterval = TRUE;
+                }
+                geometry = mode->width * mode->height * (mode->pixel_format == UVC_MODE_GRAY8 ? 1 : 2);
                 snapshot.ncu_MaxFrameBuf = geometry;
                 if (mode->max_frame_bytes > geometry &&
                     mode->max_frame_bytes <= 4 * geometry)
@@ -851,7 +938,15 @@ static IPTR uvc_method(struct NepUVCBase *nh, ULONG method, IPTR *args)
                 if (nch->ncu_Id == args[0]) { found = TRUE; break; }
             }
             ReleaseSemaphore(&nh->nh_Lock);
-            if (found) result = uvc_grab(&snapshot, (APTR)args[1], args[2]);
+            if (found) {
+                result = uvc_grab(&snapshot, (APTR)args[1], args[2]);
+                UVCLOG(result ? LOGF_Flag_Type_Information : LOGF_Flag_Type_Warn,
+                    "[uvc:%lu] %lux%lu format %lu/frame %lu: %s (%lu RGB bytes)",
+                    (IPTR)snapshot.ncu_Id, (IPTR)snapshot.ncu_Width,
+                    (IPTR)snapshot.ncu_Height, (IPTR)snapshot.ncu_FormatIndex,
+                    (IPTR)snapshot.ncu_FrameIndex,
+                    result ? "frame received" : "capture failed or timed out", result);
+            }
             psdUnlockDevice(pd);
         }
         CloseLibrary(ps);
@@ -941,7 +1036,7 @@ struct NepClassUVC * usbForceInterfaceBinding(struct NepUVCBase *nh, struct PsdI
 
             if (!uvc_parse_streaming(nch)) {
                 psdAddErrorMsg(RETURN_WARN, (STRPTR)libname,
-                    "No supported YUY2 mode (up to 640x480) on '%s'", devname);
+                    "No supported video mode (up to 3840x2160) on '%s'", devname);
                 psdFreeVec(nch);
                 CloseLibrary(ps);
                 return NULL;
@@ -965,9 +1060,10 @@ struct NepClassUVC * usbForceInterfaceBinding(struct NepUVCBase *nh, struct PsdI
             }
             ObtainSemaphore(&nh->nh_Lock);
             nch->ncu_Id = ++nh->nh_NextId;
+            nch->ncu_Info.binding_id = nch->ncu_Id;
             AddTail(&nh->nh_Cameras, &nch->ncu_Node);
             ReleaseSemaphore(&nh->nh_Lock);
-            UVCLOG(LOGF_Flag_Type_Information, "bound id=%lu '%s' (interface %lu, hub port %lu) YUY2 %lux%lu",
+            UVCLOG(LOGF_Flag_Type_Information, "bound id=%lu '%s' (interface %lu, hub port %lu) video %lux%lu",
                    (IPTR)nch->ncu_Id, devname, (IPTR)ifnum, (IPTR)hubport,
                    (IPTR)nch->ncu_Width, (IPTR)nch->ncu_Height);
             CloseLibrary(ps);
@@ -1087,7 +1183,7 @@ AROS_LH2(IPTR, usbDoMethodA,
     AROS_LIBFUNC_INIT
 
     KPRINTF(10, ("Do Method %ld\n", methodid));
-    if (methodid >= UVCM_COUNT && methodid <= UVCM_DEVICEINFO)
+    if (methodid >= UVCM_COUNT && methodid <= UVCM_GRABRATE)
         return uvc_method(nh, methodid, methoddata);
     switch(methodid)
     {

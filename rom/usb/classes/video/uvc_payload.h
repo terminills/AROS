@@ -13,6 +13,7 @@ struct uvc_payload {
     size_t capacity, used;
     unsigned int fid;
     int have_fid, damaged, saw_eof;
+    int variable_length; /* compressed frames: EOF with a nonempty bounded frame */
     /* diagnostics */
     unsigned long fidflips;              /* FID toggles seen */
     unsigned long badhdr;                /* header length invalid */
@@ -61,7 +62,8 @@ static int uvc_payload_feed(struct uvc_payload *s,
         s->used += n;
     }
     if (p[1] & 2) {
-        int complete = !s->damaged && s->used == s->capacity;
+        int complete = !s->damaged && (s->variable_length ?
+            s->used > 0 : s->used == s->capacity);
         if (s->eofs < UVC_EOF_SAMPLES) {
             s->eofused[s->eofs] = s->used;
             s->eofraw[s->eofs] = s->raw;
@@ -108,6 +110,15 @@ static int uvc_bulk_feed(struct uvc_bulk_payload *b, struct uvc_payload *s,
         b->used = 0;
     }
     return complete;
+}
+static void uvc_gray_rgb(const unsigned char *in, unsigned char *out,
+                          size_t pixels, int sixteen_bit)
+{
+    size_t i;
+    for (i = 0; i < pixels; i++) {
+        unsigned char value = in[sixteen_bit ? 2*i+1 : i];
+        out[3*i] = out[3*i+1] = out[3*i+2] = value;
+    }
 }
 static unsigned char uvc_clip(int v)
 {

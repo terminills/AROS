@@ -35,6 +35,10 @@
 #include <vhi/vhi.h>
 #include <devices/uvc_capture.h>
 
+#include <resources/log.h>
+#define __LOG_LIBBASE LogResBase
+#include <proto/log.h>
+#include <workbench/startup.h>
 #include <dos/dostags.h>
 #include <dos/dosextens.h>
 #include <stdio.h>
@@ -44,12 +48,14 @@
 static const char version[] __attribute__((used)) =
     "$VER: VHITV 1.2 (26.10.2026)";
 
+long __stack = 131072;
 struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase *GfxBase = NULL;
 struct Library *CyberGfxBase = NULL;
 struct Library *VHIBase = NULL;
 struct Library *GadToolsBase = NULL;
 struct Library *AslBase = NULL;
+struct Library *LogResBase = NULL;
 
 /* VHI drivers are selected at runtime and all implement the same first LVO.
  * Do not include the generated proto/vhi.h inline here: its AROS_LIBREQ marks
@@ -77,7 +83,8 @@ struct CaptureRequest {
     struct Message message;
     BOOL quit;
     const char *driver;
-    ULONG input, width, height, error;
+    ULONG input, width, height, interval, error;
+    LONG mode;
     struct vhi_image *image;
 };
 
@@ -86,6 +93,8 @@ static int capture_worker(void)
     struct Process *self = (struct Process *)FindTask(NULL);
     struct CaptureRequest *request;
     APTR handle = NULL;
+    LONG current_mode = -1;
+    ULONG current_interval = 0;
     ULONG error = 0;
     for (;;) {
         WaitPort(&self->pr_MsgPort);
@@ -110,6 +119,10 @@ static int capture_worker(void)
             error = 0;
             option.option = VHI_OPT_INPUT; option.value = request->input;
             call_vhi(VHI_METHOD_SET, VHI_OPTIONS, &option, &error, handle);
+            if (!error && request->mode != current_mode) {
+                call_vhi(VHI_METHOD_SET, VHI_UVC_MODE, (APTR)(IPTR)request->mode, &error, handle);
+                if (!error) current_mode = request->mode;
+            }
             if (!error)
                 call_vhi(VHI_METHOD_GET, VHI_MAXIMUM_SIZE, &maximum, &error, handle);
             digitize.dim.x2 = digitize.dim.dst_width =
@@ -119,6 +132,11 @@ static int capture_worker(void)
             if (!error)
                 call_vhi(VHI_METHOD_PERFORM, VHI_CHECK_DIGITIZE_SIZE,
                          &digitize.dim, &error, handle);
+            if (!error && request->interval != current_interval) {
+                call_vhi(VHI_METHOD_SET, VHI_UVC_INTERVAL,
+                         (APTR)(IPTR)request->interval, &error, handle);
+                if (!error) current_interval = request->interval;
+            }
             if (!error)
                 request->image = (APTR)call_vhi(VHI_METHOD_PERFORM,
                     VHI_DIGITIZE_PICTURE, &digitize, &error, handle);
@@ -132,13 +150,17 @@ static int capture_worker(void)
 struct App
 {
     struct Window *window;
+    struct Window *log_window;
     struct Menu *menus;
     APTR visual_info;
     BOOL paused, menus_dirty;
     ULONG mode_count;
     struct UVCModeInfo modes[32];
     char mode_labels[32][64];
-    struct NewMenu menu_entries[64];
+    struct NewMenu menu_entries[128];
+    ULONG rate_count, rates[30], requested_interval;
+    LONG requested_mode;
+    char rate_labels[30][48];
     struct vhi_image *last_frame;
     APTR vhi_handle;
     ULONG input_count;
@@ -152,7 +174,7 @@ struct App
 };
 
 enum { MENU_QUIT = 1, MENU_NEXT, MENU_PREVIOUS, MENU_PAUSE, MENU_SNAPSHOT,
-       MENU_SIZE_DEFAULT, MENU_SIZE_VGA, MENU_SIZE_SVGA, MENU_SIZE_HD, MENU_SIZE_FHD, MENU_INPUT_INFO };
+       MENU_SIZE_DEFAULT, MENU_SIZE_VGA, MENU_SIZE_SVGA, MENU_SIZE_HD, MENU_SIZE_FHD, MENU_INPUT_INFO, MENU_DEVICE_LOG };
 static struct NewMenu menu_spec[] = {
     { NM_TITLE, (STRPTR)"Project", NULL, 0, 0, NULL },
     { NM_ITEM, (STRPTR)"Save snapshot...", (STRPTR)"S", 0, 0, (APTR)MENU_SNAPSHOT },
@@ -161,6 +183,7 @@ static struct NewMenu menu_spec[] = {
     { NM_ITEM, (STRPTR)"Input information...", (STRPTR)"I", 0, 0, (APTR)MENU_INPUT_INFO },
     { NM_ITEM, (STRPTR)"Next input", (STRPTR)"N", 0, 0, (APTR)MENU_NEXT },
     { NM_ITEM, (STRPTR)"Previous input", (STRPTR)"P", 0, 0, (APTR)MENU_PREVIOUS },
+    { NM_ITEM, (STRPTR)"Device log", (STRPTR)"L", 0, 0, (APTR)MENU_DEVICE_LOG },
     { NM_TITLE, (STRPTR)"Capture", NULL, 0, 0, NULL },
     { NM_ITEM, (STRPTR)"Pause", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)MENU_PAUSE },
     { NM_TITLE, (STRPTR)"Requested size", NULL, 0, 0, NULL },
@@ -175,6 +198,8 @@ static struct NewMenu menu_spec[] = {
 /* Rebuild between event batches: never free an ItemAddress result while
  * processing its NextSelect chain. Labels live as long as the menu strip. */
 #define MENU_NATIVE_BASE 100
+#define MENU_RATE_DEFAULT 199
+#define MENU_RATE_BASE 200
 static BOOL rebuild_menus(struct App *app)
 {
     ULONG error = 0, count, i, n = 0;
@@ -183,7 +208,10 @@ static BOOL rebuild_menus(struct App *app)
     app->menus = NULL;
     app->mode_count = 0;
     while (menu_spec[n].nm_Type != NM_END) {
-        app->menu_entries[n] = menu_spec[n]; n++;
+        app->menu_entries[n] = menu_spec[n];
+        if ((IPTR)menu_spec[n].nm_UserData == MENU_PAUSE && app->paused)
+            app->menu_entries[n].nm_Flags |= CHECKED;
+        n++;
     }
     count = call_vhi(VHI_METHOD_GET, VHI_UVC_MODECOUNT, NULL,
                      &error, app->vhi_handle);
@@ -198,12 +226,60 @@ static BOOL rebuild_menus(struct App *app)
                           &error, app->vhi_handle) || error) continue;
             app->modes[index] = q.mode;
             snprintf(app->mode_labels[index], sizeof(app->mode_labels[index]),
-                     "%lux%lu YUY2", (unsigned long)q.mode.width,
-                     (unsigned long)q.mode.height);
+                     "%lux%lu %s", (unsigned long)q.mode.width,
+                     (unsigned long)q.mode.height,
+                     q.mode.pixel_format == UVC_MODE_MJPEG ? "MJPEG" :
+                     q.mode.pixel_format == UVC_MODE_GRAY8 ? "Gray8" :
+                     q.mode.pixel_format == UVC_MODE_GRAY16 ? "Gray16" : "YUY2");
             app->menu_entries[n++] = (struct NewMenu){ NM_ITEM,
                 app->mode_labels[index], NULL, 0, 0,
                 (APTR)(IPTR)(MENU_NATIVE_BASE + index) };
             app->mode_count++;
+        }
+    }
+    app->rate_count = 0;
+    if (app->mode_count) {
+        struct vhi_size maximum = {0};
+        ULONG w = app->requested_width, h = app->requested_height, best = 0;
+        unsigned long long distance = ~0ULL;
+        if (!w || !h) {
+            error = 0;
+            call_vhi(VHI_METHOD_GET, VHI_MAXIMUM_SIZE, &maximum, &error, app->vhi_handle);
+            w = maximum.max_width; h = maximum.max_height;
+        }
+        for (i = 0; i < app->mode_count; i++) {
+            struct UVCModeInfo *mode = &app->modes[i];
+            unsigned long long d = (unsigned long long)(w > mode->width ? w-mode->width : mode->width-w) +
+                (h > mode->height ? h-mode->height : mode->height-h);
+            if (d < distance) { best = i; distance = d; }
+        }
+        if (app->requested_mode >= 0 && app->requested_mode < app->mode_count) best = app->requested_mode;
+        {
+            struct VHIUVCRateQuery query = { .size = sizeof(query), .index = best };
+            error = 0;
+            if (call_vhi(VHI_METHOD_GET, VHI_UVC_RATES, &query, &error, app->vhi_handle)) {
+                app->menu_entries[n++] = (struct NewMenu){ NM_TITLE, (STRPTR)"Frame rate", NULL, 0, 0, NULL };
+                app->menu_entries[n++] = (struct NewMenu){ NM_ITEM, (STRPTR)"Input default", NULL, 0, 0, (APTR)MENU_RATE_DEFAULT };
+                if (!query.rates.count && query.rates.minimum && query.rates.step &&
+                    query.rates.maximum >= query.rates.minimum) {
+                    /* Offer exact endpoints of a continuous descriptor. */
+                    query.rates.intervals[query.rates.count++] = query.rates.minimum;
+                    if (query.rates.maximum != query.rates.minimum)
+                        query.rates.intervals[query.rates.count++] = query.rates.minimum +
+                            ((query.rates.maximum-query.rates.minimum)/query.rates.step)*query.rates.step;
+                }
+                for (i = 0; i < query.rates.count && i < 30; i++) {
+                    ULONG interval = query.rates.intervals[i], fps100;
+                    if (!interval) continue;
+                    fps100 = 1000000000UL / interval;
+                    snprintf(app->rate_labels[app->rate_count], 48, "%lu.%02lu fps (%lu x 100 ns)",
+                        (unsigned long)(fps100/100), (unsigned long)(fps100%100), (unsigned long)interval);
+                    app->rates[app->rate_count] = interval;
+                    app->menu_entries[n++] = (struct NewMenu){ NM_ITEM, app->rate_labels[app->rate_count],
+                        NULL, 0, 0, (APTR)(IPTR)(MENU_RATE_BASE+app->rate_count) };
+                    app->rate_count++;
+                }
+            }
         }
     }
     app->menu_entries[n] = (struct NewMenu){ NM_END, NULL, NULL, 0, 0, NULL };
@@ -377,6 +453,8 @@ static void select_input(struct App *app, ULONG input)
     app->input = input;
     app->menus_dirty = TRUE;
     app->requested_width = app->requested_height = 0;
+    app->requested_interval = 0;
+    app->requested_mode = -1;
     app->frame_width = app->frame_height = 0;
     SetAPen(app->window->RPort, 0);
     RectFill(app->window->RPort, app->window->BorderLeft,
@@ -560,9 +638,10 @@ static void show_input_info(struct App *app)
             "USB metadata unavailable (synthetic input or older driver).\n");
     for (i = 0; i < app->mode_count; i++) {
         const struct UVCModeInfo *mode = &app->modes[i];
-        if (mode->width == app->frame_width && mode->height == app->frame_height) {
+        if (mode->width == app->frame_width && mode->height == app->frame_height &&
+            (app->requested_mode < 0 || i == app->requested_mode)) {
             snprintf(text + used, sizeof(text) - used,
-                "Matching descriptor: format %lu / frame %lu, YUY2\n"
+                "Matching descriptor: format %lu / frame %lu\n"
                 "Descriptor default interval: %lu x 100 ns\n"
                 "Proposed capture interval: %lu x 100 ns\n"
                 "Descriptor frame buffer: %lu bytes\n"
@@ -575,6 +654,93 @@ static void show_input_info(struct App *app)
         }
     }
     EasyRequestArgs(app->window, &info, NULL, (RAWARG)args);
+}
+
+/* Copy under log.resource's read lock, then draw without holding it.
+ * Match the generation, not a product name shared by two identical cameras. */
+static void draw_device_log(struct App *app)
+{
+    char lines[12][192] = {{0}}, marker[40];
+    struct UVCDeviceInfo device = { .size = sizeof(device) };
+    ULONG error = 0, count = 0, i, start, rows, columns;
+    struct Window *window = app->log_window;
+    struct RastPort *rp;
+    APTR entry = NULL;
+    if (!window) return;
+    if (!LogResBase)
+        strcpy(lines[count++], "log.resource unavailable");
+    else if (!call_vhi(VHI_METHOD_GET, VHI_UVC_DEVICEINFO, &device,
+                      &error, app->vhi_handle))
+        strcpy(lines[count++], "Select a USB camera to view its capture log.");
+    else {
+        snprintf(marker, sizeof(marker), "[uvc:%lu]", (unsigned long)device.binding_id);
+        logLockEntries(LLF_READ);
+        while ((entry = logNextEntry(&entry)) && entry != (APTR)-1) {
+            STRPTR origin = NULL, message = NULL;
+            struct TagItem attrs[] = {
+                { LOGMA_Component, (IPTR)&origin },
+                { LOGMA_Entry, (IPTR)&message }, { TAG_DONE, 0 }
+            };
+            logGetEntryAttrs(entry, attrs);
+            if (origin && strstr((char *)origin, "uvc") && message &&
+                strstr((char *)message, marker)) {
+                snprintf(lines[count % 12], sizeof(lines[0]), "%s", message);
+                count++;
+            }
+        }
+        logUnlockEntries(LLF_READ);
+        if (!count) strcpy(lines[count++], "Waiting for this camera's capture records...");
+    }
+    rp = window->RPort;
+    SetAPen(rp, 0);
+    RectFill(rp, window->BorderLeft, window->BorderTop,
+        window->Width-window->BorderRight-1, window->Height-window->BorderBottom-1);
+    SetAPen(rp, 1); SetBPen(rp, 0);
+    rows = (window->Height-window->BorderTop-window->BorderBottom-8) / rp->TxHeight;
+    if (rows > 12) rows = 12;
+    if (rows > count) rows = count;
+    columns = (window->Width-window->BorderLeft-window->BorderRight-12) / rp->TxWidth;
+    start = count - rows;
+    for (i = 0; i < rows; i++) {
+        char *line = lines[(start+i) % 12];
+        ULONG length = strlen(line);
+        if (length > columns) length = columns;
+        Move(rp, window->BorderLeft+6, window->BorderTop+4+rp->TxBaseline+i*rp->TxHeight);
+        Text(rp, line, length);
+    }
+}
+
+static void open_device_log(struct App *app)
+{
+    if (!app->log_window)
+        app->log_window = OpenWindowTags(NULL,
+            WA_Title, (IPTR)"VHITV - selected device log (log.resource)",
+            WA_Left, 30, WA_Top, 450, WA_InnerWidth, 760, WA_InnerHeight, 180,
+            WA_MinWidth, 300, WA_MinHeight, 100, WA_MaxWidth, ~0UL, WA_MaxHeight, ~0UL,
+            WA_CloseGadget, TRUE, WA_DragBar, TRUE, WA_DepthGadget, TRUE,
+            WA_SizeGadget, TRUE, WA_SmartRefresh, TRUE,
+            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_NEWSIZE,
+            TAG_DONE);
+    draw_device_log(app);
+}
+
+static void process_log_events(struct App *app)
+{
+    struct IntuiMessage *message;
+    if (!app->log_window) return;
+    while ((message = (APTR)GetMsg(app->log_window->UserPort))) {
+        ULONG class = message->Class;
+        ReplyMsg((struct Message *)message);
+        if (class == IDCMP_CLOSEWINDOW) {
+            CloseWindow(app->log_window); app->log_window = NULL;
+            return;
+        }
+        if (class == IDCMP_REFRESHWINDOW) {
+            BeginRefresh(app->log_window);
+            draw_device_log(app);
+            EndRefresh(app->log_window, TRUE);
+        } else draw_device_log(app);
+    }
 }
 
 static BOOL process_events(struct App *app)
@@ -599,7 +765,12 @@ static BOOL process_events(struct App *app)
                 if (!item) break;
                 code = item->NextSelect;
                 action = (ULONG)(IPTR)GTMENUITEM_USERDATA(item);
-                if (action == MENU_QUIT) running = FALSE;
+                if (action == MENU_RATE_DEFAULT || (action >= MENU_RATE_BASE && action < MENU_RATE_BASE+app->rate_count)) {
+                    app->requested_interval = action == MENU_RATE_DEFAULT ? 0 : app->rates[action-MENU_RATE_BASE];
+                    set_status(app, "frame interval selected (takes effect on next capture)");
+                }
+                else if (action == MENU_DEVICE_LOG) open_device_log(app);
+                else if (action == MENU_QUIT) running = FALSE;
                 else if (action == MENU_SNAPSHOT) save_snapshot(app);
                 else if (action == MENU_INPUT_INFO) show_input_info(app);
                 else if (action == MENU_NEXT) select_input(app, app->input + 1);
@@ -611,6 +782,8 @@ static BOOL process_events(struct App *app)
                         {0,0}, {640,480}, {800,600}, {1280,720}, {1920,1080}
                     };
                     ULONG index = action - MENU_SIZE_DEFAULT;
+                    app->requested_mode = -1;
+                    app->requested_interval = 0; app->menus_dirty = TRUE;
                     app->requested_width = sizes[index][0];
                     app->requested_height = sizes[index][1];
                     free_frame(app->last_frame);
@@ -622,6 +795,8 @@ static BOOL process_events(struct App *app)
                          action < MENU_NATIVE_BASE + app->mode_count)
                 {
                     ULONG index = action - MENU_NATIVE_BASE;
+                    app->requested_mode = index;
+                    app->requested_interval = 0; app->menus_dirty = TRUE;
                     app->requested_width = app->modes[index].width;
                     app->requested_height = app->modes[index].height;
                     free_frame(app->last_frame); app->last_frame = NULL;
@@ -639,6 +814,10 @@ static BOOL process_events(struct App *app)
         {
             if (code == 'q' || code == 'Q')
                 running = FALSE;
+            else if (code == 'l' || code == 'L')
+                open_device_log(app);
+            else if (code == 'i' || code == 'I')
+                show_input_info(app);
             else if (code == 's' || code == 'S')
                 save_snapshot(app);
             else if (code == 'n' || code == 'N')
@@ -670,6 +849,7 @@ int main(int argc, char **argv)
     struct Process *worker = NULL;
     BOOL pending = FALSE;
     BPTR worker_segment = 0;
+    char worker_path[1024];
     ULONG error = 0;
     BOOL running = TRUE;
     int result = RETURN_FAIL;
@@ -726,7 +906,7 @@ int main(int argc, char **argv)
         WA_DepthGadget,  TRUE,
         WA_SizeGadget,   TRUE,
         WA_Activate,     TRUE,
-        WA_SimpleRefresh, TRUE,
+        WA_SmartRefresh, TRUE,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_VANILLAKEY |
                   IDCMP_REFRESHWINDOW | IDCMP_NEWSIZE | IDCMP_MENUPICK,
         TAG_DONE);
@@ -746,22 +926,30 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     reply_port = CreateMsgPort();
-    worker_segment = LoadSeg(argv[0]);
+    {
+        const char *program = argc > 0 ? (const char *)FilePart(argv[0]) :
+            (const char *)((struct WBStartup *)argv)->sm_ArgList[0].wa_Name;
+        if (snprintf(worker_path, sizeof(worker_path), "PROGDIR:%s", program) >= sizeof(worker_path))
+            goto cleanup;
+        worker_segment = LoadSeg(worker_path);
+    }
     if (!reply_port || !worker_segment) {
         printf("VHITV: cannot load capture worker\n");
         goto cleanup;
     }
     worker = CreateNewProcTags(NP_Seglist, worker_segment,
         NP_FreeSeglist, TRUE, NP_Cli, TRUE,
-        NP_Name, (IPTR)"VHITV capture", NP_StackSize, 65536,
+        NP_Name, (IPTR)"VHITV capture", NP_StackSize, 131072,
         NP_Arguments, (IPTR)"--capture-worker\n", TAG_DONE);
     if (!worker) goto cleanup;
     worker_segment = 0; /* ownership transferred to DOS */
     request.message.mn_ReplyPort = reply_port;
     request.message.mn_Length = sizeof(request);
     request.driver = driver;
+    LogResBase = OpenResource("log.resource");
     select_input(&app, initial_input);
     while (running) {
+        process_log_events(&app);
         running = process_events(&app);
         if (!running) break;
         if (app.menus_dirty && !rebuild_menus(&app)) break;
@@ -770,7 +958,8 @@ int main(int argc, char **argv)
             /* Discard a frame from an input or mode changed while capturing. */
             if (!app.paused && request.input == app.input &&
                 request.width == app.requested_width &&
-                request.height == app.requested_height) {
+                request.height == app.requested_height &&
+                request.interval == app.requested_interval && request.mode == app.requested_mode) {
                 if (request.image && !request.error) {
                     render_frame(&app, request.image);
                     free_frame(app.last_frame);
@@ -779,20 +968,25 @@ int main(int argc, char **argv)
                 } else set_status(&app, vhi_error(request.error));
             }
             free_frame(request.image); request.image = NULL;
+            draw_device_log(&app);
         }
         if (!pending && !app.paused) {
             request.input = app.input;
             request.width = app.requested_width;
             request.height = app.requested_height;
+            request.interval = app.requested_interval;
+            request.mode = app.requested_mode;
             PutMsg(&worker->pr_MsgPort, &request.message);
             pending = TRUE;
         }
         Wait((1UL << app.window->UserPort->mp_SigBit) |
-             (1UL << reply_port->mp_SigBit));
+             (1UL << reply_port->mp_SigBit) |
+             (app.log_window ? (1UL << app.log_window->UserPort->mp_SigBit) : 0));
     }
     result = RETURN_OK;
 
 cleanup:
+    if (app.log_window) CloseWindow(app.log_window);
     /* Close the visible UI immediately; safely drain the bounded camera
      * request before destroying its reply port or releasing shared data. */
     if (app.window && app.menus) ClearMenuStrip(app.window);

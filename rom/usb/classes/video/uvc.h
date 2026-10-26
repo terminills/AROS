@@ -60,6 +60,7 @@ struct NepClassUVC
     UWORD                ncu_StreamMaxPkt; /* isoc endpoint wMaxPacketSize (bandwidth) */
     UBYTE                ncu_FormatIndex;  /* chosen VS format index */
     UBYTE                ncu_FrameIndex;   /* chosen VS frame index */
+    UBYTE                ncu_PixelFormat;
     UBYTE                ncu_IsMJPEG;      /* TRUE=MJPEG, FALSE=uncompressed/YUYV */
     UBYTE                ncu_IsBulk;       /* TRUE=bulk streaming EP, FALSE=isoc */
     UBYTE                ncu_HaveStream;   /* TRUE once a format+frame was parsed */
@@ -69,9 +70,11 @@ struct NepClassUVC
     struct UVCDeviceInfo ncu_Info;
     ULONG                ncu_Id;
     ULONG                ncu_Interval;
+    BOOL                 ncu_ExactInterval;
     ULONG                ncu_MaxPayload;
     ULONG                ncu_ModeCount;
     struct UVCModeInfo   ncu_Modes[UVC_MAX_FRAMES];
+    struct UVCRates      ncu_Rates[UVC_MAX_FRAMES];
     ULONG                ncu_MaxFrameBuf;  /* dwMaxVideoFrameBuf from the frame desc */
 };
 

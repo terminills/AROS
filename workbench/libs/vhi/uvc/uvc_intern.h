@@ -23,6 +23,8 @@ struct UvcHandle
     ULONG            uh_Input;       /* selected VHI input: 0=test pattern, N=camera */
     struct Library  *uh_ClassBase;
     ULONG            uh_CameraId;  /* zero for the synthetic input */
+    LONG             uh_Mode; /* -1 selects nearest/default */
+    ULONG            uh_Interval; /* zero chooses conservative default */
     ULONG            uh_FrameSeq;    /* advances the test pattern per grab */
 };
 

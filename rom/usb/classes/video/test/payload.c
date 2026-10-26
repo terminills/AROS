@@ -4,6 +4,26 @@
 int main(void)
 {
     unsigned char out[8], rgb[12];
+    {
+        unsigned char bytes[16];
+        struct uvc_payload compressed = { .data = bytes, .capacity = sizeof(bytes), .variable_length = 1 };
+        const unsigned char jpeg[] = {2,2,0xff,0xd8,0xff,0xd9};
+        const unsigned char empty[] = {2,3};
+        const unsigned char damaged[] = {2,0x42,0xff,0xd8,0xff,0xd9};
+        assert(uvc_payload_feed(&compressed, jpeg, sizeof(jpeg)));
+        assert(compressed.used == 4);
+        assert(!uvc_payload_feed(&compressed, jpeg, sizeof(jpeg)));
+        assert(!uvc_payload_feed(&compressed, empty, sizeof(empty)));
+        assert(!uvc_payload_feed(&compressed, damaged, sizeof(damaged)));
+    }
+    {
+        const unsigned char gray[] = {0,128,255};
+        const unsigned char gray16[] = {255,0,0,128,0,255};
+        uvc_gray_rgb(gray, rgb, 3, 0);
+        assert(rgb[0] == 0 && rgb[3] == 128 && rgb[8] == 255);
+        uvc_gray_rgb(gray16, rgb, 3, 1);
+        assert(rgb[0] == 0 && rgb[4] == 128 && rgb[8] == 255);
+    }
     struct uvc_payload s = { .data=out, .capacity=8 };
     const unsigned char a[] = {2,0,16,128,235,128};
     const unsigned char b[] = {2,2,16,128,235,128};
