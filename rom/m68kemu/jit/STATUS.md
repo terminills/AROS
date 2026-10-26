@@ -250,3 +250,22 @@ to a new 1db3773c regression is withdrawn. Command-argument replay after emulate
 return is under test: `DEBUG FULL` appears to be executed by the native shell.
 The standalone native RunHunk caller separates API execution from that launch
 path. No affected report alone is treated as full transparent-dispatch acceptance.
+
+The harmless reproducer confirms argument replay: the MOVEQ loop ignores its
+`Echo ARGUMENT_REPLAYED` arguments, returns, and the native shell then prints
+`ARGUMENT_REPLAYED`. This shared DOS issue is handed to Claude in TRIG-1620.
+
+On the 2fbda536 layout checkpoint, six synchronous direct RunHunk xSysInfo runs
+all produce complete reports and return zero, with no SAD entry. Mode order is
+interpreter/JIT/JIT/interpreter/interpreter/JIT. Dhrystones:
+
+| Mode | Samples | Median |
+| --- | --- | --- |
+| Interpreter | 96480, 96480, 96888 | 96480 |
+| Opt-in JIT + MOVBE | 98181, 97725, 97758 | 97758 |
+
+The observed median difference is +1.3%. This is exploratory: three samples per
+mode, one application, other workloads on the host, and a new cache per execution.
+It does not establish a general or steady-state speedup. The earlier slower pair
+used a different compatibility checkpoint and launch path, so this is not a
+controlled before/after measurement of the dispatch optimization alone.
