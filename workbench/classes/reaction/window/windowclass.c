@@ -644,6 +644,10 @@ IPTR Window__WM_HANDLEINPUT(Class *cl, Object *o, Msg msg)
     if (!imsg)
         return WMHI_LASTMSG;
 
+    /* a message used here returns WMHI_IGNORE: WMHI_LASTMSG would end the
+       caller's loop with more messages queued and its signal spent */
+    result = WMHI_IGNORE;
+
     D(bug("[Window] WM_HANDLEINPUT: obj 0x%p IDCMP class=0x%08lx code=0x%04lx\n",
         o, (ULONG)imsg->Class, (ULONG)imsg->Code));
 
@@ -697,7 +701,10 @@ IPTR Window__WM_HANDLEINPUT(Class *cl, Object *o, Msg msg)
             break;
 
         case IDCMP_REFRESHWINDOW:
+            /* simple refresh: redraw the damaged part */
             BeginRefresh(data->wcd_Window);
+            if (data->wcd_Layout)
+                RefreshGList((struct Gadget *)data->wcd_Layout, data->wcd_Window, NULL, -1);
             EndRefresh(data->wcd_Window, TRUE);
             break;
 
