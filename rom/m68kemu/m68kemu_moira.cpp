@@ -43,7 +43,7 @@ public:
     ~AROSMoira()
     {
         if (jit) {
-            bug("[m68kemu] JIT MOVEQ steps %lu payloads %lu\n",
+            if (ctx->trace_calls) bug("[m68kemu] JIT MOVEQ steps %lu payloads %lu\n",
                 jit_steps, (unsigned long)jit->compiled());
             jit->~MoveqCache();
             FreeMem(jit, sizeof(m68kjit::MoveqCache));
