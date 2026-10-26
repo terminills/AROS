@@ -334,7 +334,7 @@ public:
         }
         if ((addr & CUSTOM_MASK) == CUSTOM_BASE)
             return customRead16(addr & 0xFFE);
-        if (addr + 1 >= ctx->mem_size) return 0;
+        if (u64(addr) + 1 >= ctx->mem_size) return 0;
 #if defined(__x86_64__) && defined(__GNUC__)
         if (jit_movbe) return m68kjit::loadMovbe<uint16_t>(ctx->mem + addr);
 #endif
@@ -370,7 +370,7 @@ public:
             customWrite16(addr & 0xFFE, val);
             return;
         }
-        if (addr + 1 >= ctx->mem_size) return;
+        if (u64(addr) + 1 >= ctx->mem_size) return;
         if (ctx->low_guard && (addr < 8 || (addr >= 0x100 && addr < 0x180)))
         {
             if (ctx->low_trap_count++ < 8 && ctx->trace_calls)
@@ -385,13 +385,13 @@ public:
 
     u16 read16OnReset(u32 addr) const override
     {
-        if (addr + 1 >= ctx->mem_size) return 0;
+        if (u64(addr) + 1 >= ctx->mem_size) return 0;
         return ((u16)ctx->mem[addr] << 8) | ctx->mem[addr + 1];
     }
 
     u16 read16Dasm(u32 addr) const override
     {
-        if (addr + 1 >= ctx->mem_size) return 0;
+        if (u64(addr) + 1 >= ctx->mem_size) return 0;
         return ((u16)ctx->mem[addr] << 8) | ctx->mem[addr + 1];
     }
 
