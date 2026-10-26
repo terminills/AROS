@@ -8,6 +8,12 @@
 #include "m68kemu_offsets.h"
 #include "m68kemu_thunks.h"
 #include "Moira/Moira.h"
+#include "jit/moveq_cache.h"
+#include "jit/endian_access.h"
+#include <exec/memory.h>
+#include <proto/exec.h>
+#include <proto/dos.h>
+#include <new>
 
 using namespace moira;
 
@@ -19,8 +25,45 @@ class AROSMoira : public Moira
 {
 public:
     struct M68KEmuContext *ctx;
+    m68kjit::MoveqCache *jit = nullptr;
+    unsigned long jit_steps = 0;
+    bool jit_movbe = false;
 
-    explicit AROSMoira(struct M68KEmuContext *c) : ctx(c) {}
+    explicit AROSMoira(struct M68KEmuContext *c) : ctx(c)
+    {
+#if defined(M68KJIT_NATIVE_EXECMEM)
+        char value[4] = {};
+        if (GetVar("M68KEMU_JIT", value, sizeof(value), 0) == 1 && value[0] == '1') {
+            void *storage = AllocMem(sizeof(m68kjit::MoveqCache), MEMF_ANY);
+            if (storage) jit = new (storage) m68kjit::MoveqCache;
+            jit_movbe = jit && m68kjit::hasMovbe();
+        }
+#endif
+    }
+    ~AROSMoira()
+    {
+        if (jit) {
+            if (ctx->trace_calls) bug("[m68kemu] JIT MOVEQ steps %lu payloads %lu\n",
+                jit_steps, (unsigned long)jit->compiled());
+            jit->~MoveqCache();
+            FreeMem(jit, sizeof(m68kjit::MoveqCache));
+        }
+    }
+
+    #include "jit/moveq_step.inc"
+    void executeStep()
+    {
+        /* Keep the entire outer instruction boundary intact: VBL, watchdog,
+         * PC history and special trampoline dispatch still run every step.
+         * Only a bounded RAM prefetch is eligible; device/sentinel reads and
+         * every flagged or unsupported instruction stay in Moira. */
+        uint64_t next = uint64_t(reg.pc) + 4;
+        bool ram = next + 1 < ctx->mem_size &&
+                   !(next >= SENTINEL_ADDR && next < SENTINEL_ADDR + 2) &&
+                   ((next & CUSTOM_MASK) != CUSTOM_BASE);
+        if (jit && tryMoveq(*jit, ram)) ++jit_steps;
+        else execute();
+    }
 
     /* ── Custom chip register emulation ──────────────────────────── */
 
@@ -292,6 +335,9 @@ public:
         if ((addr & CUSTOM_MASK) == CUSTOM_BASE)
             return customRead16(addr & 0xFFE);
         if (addr + 1 >= ctx->mem_size) return 0;
+#if defined(__x86_64__) && defined(__GNUC__)
+        if (jit_movbe) return m68kjit::loadMovbe<uint16_t>(ctx->mem + addr);
+#endif
         return ((u16)ctx->mem[addr] << 8) | ctx->mem[addr + 1];
     }
 
@@ -772,7 +818,7 @@ LONG M68KEmu_Execute(struct M68KEmuContext *ctx)
                 break;
             }
             ctx->icount_lo = (ULONG)icount;
-            cpu.execute();
+            cpu.executeStep();
             if ((++icount & 0xFFFFF) == 0)
             {
                 static ULONG lastpc = 0xFFFFFFFF;

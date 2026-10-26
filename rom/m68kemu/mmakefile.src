@@ -35,6 +35,10 @@ include $(SRCDIR)/config/aros.cfg
 #MM     workbench-libs-workbench-includes
 
 USER_CPPFLAGS := -DNO_INLINE_STDARG -I$(SRCDIR)/$(CURDIR)/Moira
+ifeq ($(AROS_TARGET_CPU),x86_64)
+# Experimental backend; runtime remains off unless M68KEMU_JIT=1.
+USER_CPPFLAGS += -DM68KJIT_NATIVE_EXECMEM
+endif
 # Moira uses if constexpr (<integer>) - narrowing the condition to bool is only
 # well formed since P1401R5, which clang implements from 12 on (clang 11 errors).
 USER_CXXFLAGS := $(CXXFLAGS_CXX20) $(NOWARN_NARROWING)
@@ -54,6 +58,7 @@ M68KEMU_FILES := \
     m68kemu_thunks_gen
 
 M68KEMU_CXXFILES := \
+    jit/moveq_cache \
     m68kemu_moira \
     Moira/Moira/Moira \
     Moira/Moira/MoiraDebugger

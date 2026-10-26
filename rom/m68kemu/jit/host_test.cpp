@@ -126,6 +126,20 @@ int main()
         ++fallbackCases;
     }
     std::printf("PASS fallback_scenarios=%u (NOP A-line RTE F-line trace IRQ model disabled)\n", fallbackCases);
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        candidate.prepare(0x7001, 31, candidateRng);
+        if (scenario == 1) { candidate.setPC(0x1001); candidate.setPC0(0x1001); }
+        if (scenario == 2) candidate.setPC(0x1002);
+        auto before = candidate.snapshot(); auto hidden = candidate.hidden();
+        require(!candidate.tryMoveq(cache, scenario != 0), "RAM/alignment/PC guard");
+        auto after = candidate.snapshot(); auto current = candidate.hidden();
+        require(std::memcmp(&before, &after, sizeof before) == 0 &&
+                hidden.queue.ird == current.queue.ird && hidden.queue.irc == current.queue.irc &&
+                hidden.clock == current.clock && hidden.flags == current.flags &&
+                hidden.cp == current.cp && hidden.fcl == current.fcl &&
+                hidden.readBuffer == current.readBuffer, "guard must leave state untouched");
+    }
+    std::puts("PASS non-RAM, odd-PC and mismatched-PC guards preserve state");
     /* Guest writes do not retroactively replace the prefetched word. Compare
      * both the retained IRD and a later refill after modifying the same PC.
      */
