@@ -49,6 +49,9 @@ def main():
                   "compiler": str(args.cc.resolve()),
                   "compiler_sha256": hashlib.file_digest(args.cc.open("rb"), "sha256").hexdigest(),
                   "genmodule_sha256": hashlib.file_digest(tool.open("rb"), "sha256").hexdigest()}
+    revision = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True)
+    provenance["source_git_head"] = revision.stdout.strip() if revision.returncode == 0 else None
     (b / "provenance.txt").write_text(json.dumps(provenance, indent=2))
     for action in ("writefiles", "writelibdefs"):
         cmd = [tool, "-c", src / "m68kemu.conf", "-d", gen, action, "m68kemu", "library"]
@@ -78,6 +81,8 @@ def main():
                                   "Moira/Moira/Moira.cpp", "Moira/Moira/MoiraDebugger.cpp")]
     sources += [gen / "m68kemu_end.c"]
     inputs = list(sources) + [src / "m68kemu.conf"]
+    inputs += list(src.glob("*.h"))
+    inputs += list((src / "Moira/Moira").glob("*.h"))
     inputs += list((src / "jit").glob("*.h")) + list((src / "jit").glob("*.inc"))
     if args.source_dos_headers:
         inputs += list((b / "source-headers/dos").glob("*.h"))
@@ -85,7 +90,7 @@ def main():
         inputs += [f for f in args.cxx_overlay.resolve().rglob("*") if f.is_file()]
     (b / "input-hashes.txt").write_text("\n".join(
         hashlib.file_digest(f.open("rb"), "sha256").hexdigest() + " " + str(f)
-        for f in inputs))
+        for f in sorted(set(inputs))))
     objects = [b / (f.stem + ".o") for f in sources]
     compile_commands = [base + (cxx if f.suffix == ".cpp" else ["-std=gnu99"]) +
                         ["-c", str(f), "-o", str(o)] for f, o in zip(sources, objects)]
