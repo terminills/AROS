@@ -24,6 +24,7 @@
 #include <proto/graphics.h>
 #include <proto/utility.h>
 #include <proto/alib.h>
+#include <proto/listbrowser.h>
 
 #include "listbrowser_intern.h"
 #include "../reaction_box.h"
@@ -251,6 +252,31 @@ struct lb_metrics
     WORD vp_x, vp_y, vp_h;           /* vertical prop trough */
     BOOL vprop, hprop;
 };
+
+/* A flat ClassAct tree: the nodes after a branch with a higher generation
+   are its children, hidden while the branch is closed */
+static void lb_apply_tree(struct List *list)
+{
+    struct Node *n;
+    UWORD closed = 0;
+
+    if (!list)
+        return;
+    for (n = list->lh_Head; n->ln_Succ; n = n->ln_Succ)
+    {
+        struct ListBrowserNode *lbn = (struct ListBrowserNode *)n;
+
+        if (closed && lbn->lbn_Generation > closed)
+        {
+            lbn->lbn_Hidden = TRUE;
+            continue;
+        }
+        closed = 0;
+        lbn->lbn_Hidden = (lbn->lbn_Flags & LBFLG_HIDDEN) ? TRUE : FALSE;
+        if ((lbn->lbn_Flags & LBFLG_HASCHILDREN) && !(lbn->lbn_Flags & LBFLG_SHOWCHILDREN))
+            closed = lbn->lbn_Generation;
+    }
+}
 
 /* A row holds the font or the tallest plain image in the list */
 static WORD lb_row_height(struct ListBrowserData *data, struct TextFont *font)
@@ -593,6 +619,24 @@ IPTR ListBrowser__GM_RENDER(Class *cl, Object *obj, struct gpRender *msg)
                     {
                         inset += indent;
 
+                        /* Branch arrow in the indent: right when closed, down when open */
+                        if (data->lbd_Hierarchical && (lbn->lbn_Flags & LBFLG_HASCHILDREN) &&
+                            lbn->lbn_Generation > 0)
+                        {
+                            WORD ax = col_x + 2 + (lbn->lbn_Generation - 1) * 16 + 4;
+                            WORD ay = row_y + m.row_h / 2;
+                            WORD k;
+
+                            SetAPen(rp, fgpen);
+                            for (k = 0; k < 4; k++)
+                            {
+                                if (lbn->lbn_Flags & LBFLG_SHOWCHILDREN)
+                                    RectFill(rp, ax + k, ay - 2 + k, ax + 7 - k, ay - 2 + k);
+                                else
+                                    RectFill(rp, ax + 2 + k, ay - 3 + k, ax + 2 + k, ay + 3 - k);
+                            }
+                        }
+
                         /* Row checkbox: recessed box, check mark when set */
                         if (lbn->lbn_HasCheckBox)
                         {
@@ -621,6 +665,16 @@ IPTR ListBrowser__GM_RENDER(Class *cl, Object *obj, struct gpRender *msg)
                     /* Per-column pen overrides */
                     UBYTE cfgpen = (lbn->lbn_ColumnData[col].lbce_FGPen != 0) ?
                         lbn->lbn_ColumnData[col].lbce_FGPen : fgpen;
+
+                    if (!selected && (lbn->lbn_Flags & LBFLG_CUSTOMPENS) &&
+                        lbn->lbn_ColumnData[col].lbce_BGPen != 0)
+                    {
+                        WORD cx2 = col_x + col_w - 1;
+
+                        if (cx2 > row_x2) cx2 = row_x2;
+                        SetAPen(rp, lbn->lbn_ColumnData[col].lbce_BGPen);
+                        RectFill(rp, col_x + inset - 2, row_y, cx2, row_y + m.row_h - 1);
+                    }
 
                     SetAPen(rp, cfgpen);
 
@@ -814,6 +868,32 @@ static IPTR lb_handle_input(Class *cl, Object *obj, struct gpInput *msg)
                         lb_visible_node(data->lbd_Labels, clicked_row);
                     BOOL dbl = FALSE;
 
+                    /* Branch arrow hit? */
+                    if (lbn && data->lbd_Hierarchical &&
+                        (lbn->lbn_Flags & LBFLG_HASCHILDREN) && lbn->lbn_Generation > 0)
+                    {
+                        WORD ax = m.c_left + 2 + (lbn->lbn_Generation - 1) * 16;
+
+                        if (mx >= ax && mx < ax + 16)
+                        {
+                            lbn->lbn_Flags ^= LBFLG_SHOWCHILDREN;
+                            lb_apply_tree(data->lbd_Labels);
+                            data->lbd_SelectedNode = lbn;
+                            data->lbd_RelEvent = (lbn->lbn_Flags & LBFLG_SHOWCHILDREN)
+                                ? LBRE_SHOWCHILDREN : LBRE_HIDECHILDREN;
+
+                            girp = ObtainGIRPort(msg->gpi_GInfo);
+                            if (girp)
+                            {
+                                DoMethod(obj, GM_RENDER, (IPTR)msg->gpi_GInfo,
+                                    (IPTR)girp, GREDRAW_REDRAW);
+                                ReleaseGIRPort(girp);
+                            }
+                            *msg->gpi_Termination = clicked_row;
+                            return GMR_NOREUSE | GMR_VERIFY;
+                        }
+                    }
+
                     /* Checkbox hit? */
                     if (lbn && lbn->lbn_HasCheckBox)
                     {
@@ -904,4 +984,101 @@ IPTR ListBrowser__GM_DOMAIN(Class *cl, Object *obj, struct gpDomain *msg)
         (data->lbd_ColumnTitles ? row_h : data->lbd_TitleHeight) + 4;
 
     return (IPTR)TRUE;
+}
+
+/******************************************************************************/
+
+static void lb_refresh(Class *cl, Object *obj, struct GadgetInfo *gi)
+{
+    struct ListBrowserData *data = INST_DATA_LB(cl, obj);
+    struct RastPort *rp;
+
+    data->lbd_TotalNodes = data->lbd_Labels ? CountNodes(data->lbd_Labels) : 0;
+    if (data->lbd_Hierarchical)
+        lb_apply_tree(data->lbd_Labels);
+    if (gi && (rp = ObtainGIRPort(gi)))
+    {
+        DoMethod(obj, GM_RENDER, (IPTR)gi, (IPTR)rp, GREDRAW_REDRAW);
+        ReleaseGIRPort(rp);
+    }
+}
+
+static UWORD lb_columns(struct ListBrowserData *data)
+{
+    UWORD n = 0;
+
+    if (data->lbd_ColumnInfo)
+        while (data->lbd_ColumnInfo[n].ci_Width != -1)
+            n++;
+    return n ? n : 1;
+}
+
+/* A new node after lba_Node: NULL puts it first, ~0 last */
+IPTR ListBrowser__LBM_ADDNODE(Class *cl, Object *obj, struct lbAddNode *msg)
+{
+    struct ListBrowserData *data = INST_DATA_LB(cl, obj);
+    struct Node *node;
+
+    if (!data->lbd_Labels)
+        return 0;
+    if (!(node = AllocListBrowserNodeA(lb_columns(data), msg->lba_NodeAttrs)))
+        return 0;
+    if (!msg->lba_Node)
+        AddHead(data->lbd_Labels, node);
+    else if (msg->lba_Node == (struct Node *)~0)
+        AddTail(data->lbd_Labels, node);
+    else
+        Insert(data->lbd_Labels, node, msg->lba_Node);
+    lb_refresh(cl, obj, msg->lba_GInfo);
+    return (IPTR)node;
+}
+
+IPTR ListBrowser__LBM_REMNODE(Class *cl, Object *obj, struct lbRemNode *msg)
+{
+    struct ListBrowserData *data = INST_DATA_LB(cl, obj);
+
+    if (!data->lbd_Labels || !msg->lbr_Node)
+        return 0;
+    if (data->lbd_SelectedNode == (struct ListBrowserNode *)msg->lbr_Node)
+    {
+        data->lbd_SelectedNode = NULL;
+        data->lbd_Selected = -1;
+    }
+    Remove(msg->lbr_Node);
+    FreeListBrowserNode(msg->lbr_Node);
+    lb_refresh(cl, obj, msg->lbr_GInfo);
+    return TRUE;
+}
+
+IPTR ListBrowser__LBM_EDITNODE(Class *cl, Object *obj, struct lbEditNode *msg)
+{
+    if (!msg->lbe_Node)
+        return 0;
+    SetListBrowserNodeAttrsA(msg->lbe_Node, msg->lbe_NodeAttrs);
+    lb_refresh(cl, obj, msg->lbe_GInfo);
+    return TRUE;
+}
+
+IPTR ListBrowser__LBM_SHOWCHILDREN(Class *cl, Object *obj, struct lbShowChildren *msg)
+{
+    struct ListBrowserData *data = INST_DATA_LB(cl, obj);
+
+    if (msg->lbsc_Node)
+        ShowListBrowserNodeChildren(msg->lbsc_Node, msg->lbsc_Depth);
+    else if (data->lbd_Labels)
+        ShowAllListBrowserChildren(data->lbd_Labels);
+    lb_refresh(cl, obj, msg->lbsc_GInfo);
+    return TRUE;
+}
+
+IPTR ListBrowser__LBM_HIDECHILDREN(Class *cl, Object *obj, struct lbHideChildren *msg)
+{
+    struct ListBrowserData *data = INST_DATA_LB(cl, obj);
+
+    if (msg->lbhc_Node)
+        HideListBrowserNodeChildren(msg->lbhc_Node);
+    else if (data->lbd_Labels)
+        HideAllListBrowserChildren(data->lbd_Labels);
+    lb_refresh(cl, obj, msg->lbhc_GInfo);
+    return TRUE;
 }
