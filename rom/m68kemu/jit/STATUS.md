@@ -269,3 +269,12 @@ mode, one application, other workloads on the host, and a new cache per executio
 It does not establish a general or steady-state speedup. The earlier slower pair
 used a different compatibility checkpoint and launch path, so this is not a
 controlled before/after measurement of the dispatch optimization alone.
+
+**Visual coverage correction:** the original corpus script leaves TTT's custom
+screen in front while subsequent apps open on Workbench. Pixel-identical captures
+of 10000/Wordle/AmiLines/GnuChess therefore do not establish those apps' rendering.
+The first combined latest-baseline run similarly obscures ReAction and ClassAct.
+Those captures remain limited foreground evidence. Earlier standalone ReAction
+and ClassAct runs are unaffected. A corrected paired harness brings Workbench
+forward after the two custom screens and allows four seconds after each marker;
+the rerun is retained separately as `visible-gui-interpreter`/`visible-gui-jit`.
