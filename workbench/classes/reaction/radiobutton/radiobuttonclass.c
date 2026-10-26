@@ -199,6 +199,49 @@ IPTR RadioButton__OM_GET(Class *cl, Object *o, struct opGet *msg)
 
 /* ====================================================================== */
 
+IPTR RadioButton__GM_DOMAIN(Class *cl, Object *o, struct gpDomain *msg)
+{
+    struct RadioButtonData *data = INST_DATA(cl, o);
+    struct TextFont *font = NULL;
+    struct RastPort rp;
+    struct Node *node;
+    WORD itemh, textw = 0, count = 0;
+
+    if (msg->gpd_GInfo && msg->gpd_GInfo->gi_DrInfo)
+        font = msg->gpd_GInfo->gi_DrInfo->dri_Font;
+    if (!font && msg->gpd_RPort)
+        font = msg->gpd_RPort->Font;
+
+    InitRastPort(&rp);
+    if (font)
+        SetFont(&rp, font);
+
+    if (data->labels)
+    {
+        for (node = data->labels->lh_Head; node->ln_Succ; node = node->ln_Succ)
+        {
+            if (node->ln_Name)
+            {
+                WORD w = TextLength(&rp, node->ln_Name, strlen(node->ln_Name));
+                if (w > textw)
+                    textw = w;
+            }
+            count++;
+        }
+    }
+
+    itemh = rp.TxHeight + data->spacing;
+    if (itemh < RADIO_DIAM + data->spacing)
+        itemh = RADIO_DIAM + data->spacing;
+
+    msg->gpd_Domain.Left   = 0;
+    msg->gpd_Domain.Top    = 0;
+    msg->gpd_Domain.Width  = RADIO_DIAM + 6 + textw;
+    msg->gpd_Domain.Height = (count ? count : 1) * itemh;
+
+    return TRUE;
+}
+
 IPTR RadioButton__GM_RENDER(Class *cl, Object *o, struct gpRender *msg)
 {
     D(bug("[RadioButton] GM_RENDER: redraw=%d\n", msg->gpr_Redraw));
