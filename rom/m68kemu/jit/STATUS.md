@@ -237,9 +237,16 @@ entry. A fresh interpreter-only launch reproduced it, as did an unmodified
 1db3773c CPU adapter with the JIT object removed from the link. Trace confirms
 normal emulated exit (D0=0); a complete xSysInfo report is still produced.
 Diagnostic cleanup markers show all context frees complete before SAD entry.
-This is an unresolved native return-boundary failure, not established JIT
-execution failure or usable performance evidence. Failed attempts are retained
+This initially suggested a native return-boundary failure. Failed attempts are retained
 as `rebased-checks`, `rebased-xsys-fresh-interpreter`, `baseline-xsys`,
 `baseline-xsys-trace`, and `cleanup-debug`. The independent source subsequently
 rebased cleanly onto layout checkpoint `2fbda5364311365e9b507cea306afc07f87d5120`;
 qualification of that revision remains separate.
+
+**Attribution correction:** read-only SAD inspection identifies the stopped task
+as `DEBUG`, not `m68kemu`. Both earlier cdb4d33d paired xSysInfo serial logs also
+contain SAD at line 70; the initial review missed it. Therefore the attribution
+to a new 1db3773c regression is withdrawn. Command-argument replay after emulated
+return is under test: `DEBUG FULL` appears to be executed by the native shell.
+The standalone native RunHunk caller separates API execution from that launch
+path. No affected report alone is treated as full transparent-dispatch acceptance.
