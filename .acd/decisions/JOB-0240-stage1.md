@@ -24,3 +24,13 @@ Exhaustive MOVEQ/CCR differential comparison, unsupported opcode coverage, slow
 path fallback, full bounded host step state, per-instance ownership and prefetch
 mutation checks are run in the private build. Results and hashes belong to the
 JOB-0240 evidence manifest. The full AROS corpus and target integration remain open.
+
+## Native capability probe
+
+Import committed compatibility changes with upstream provenance, never the
+owner's remaining dirty file. Keep the first native allocator test in standalone
+C so the missing published C++ header cannot be hidden by a private overlay.
+Use KrnAllocPages/KrnFreePages for dedicated pages. Do not equate a void
+KrnSetProtection call with verified protection or enable the production JIT on
+that assumption. The prepared probe is compile/link evidence until its serial
+completion is captured in an owned runtime slot.

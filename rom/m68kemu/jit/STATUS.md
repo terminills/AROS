@@ -102,3 +102,28 @@ for that gate. No dependent PR was opened.
 4. Run matched interpreter/JIT corpus and representative application benchmarks,
    separating compilation, warmup and steady state; no physical-DUT claim.
 5. Publish to the user-selected separate destination, respecting AROS PR policy.
+
+## Continuation: committed compatibility import and native probe
+
+Imported upstream compatibility commits `6ac6c49f61`, `8136e62e28`,
+`8b718d4c39`, and `b8a003b436` with cherry-pick provenance into this independent
+clone. Local resulting commits are `460bcff4`, `8a80271f`, `878bc7d4`, and
+`59f4aba5`. All five affected module files byte-match the committed upstream
+checkpoint `b8a003b43674bfaa8d92639a543d2169492722fe`. Claude still has a dirty
+`m68kemu_thunks.c`; that working copy was not imported. Expanded xSysInfo
+regressions and the production adapter agreement remain requested in TRIG-1608.
+
+`native_probe.c` is a standalone C executable, outside the library build. It
+requests 32 allocate/emit/protect/call/free cycles with a constant-return x86-64
+payload. It compiled and linked against the pristine 20261023 nightly C SDK,
+using the local GCC cross compiler and its libgcc. The link trace identifies
+every library; no C++ header overlay was used. The first compile's KernelBase
+declaration mismatch and the corrected successful build are both retained.
+
+Runtime has not yet been attempted: prelaunch inspection found Claude's active
+xSysInfo v121 VM, so the corpus slot was released and handover requested in
+TRIG-1609. The probe CD and exact binary/ISO hashes are retained under
+`evidence/native-probe`. Successful code execution would still not prove W^X:
+KrnSetProtection returns void, and this x86-64 implementation does not explicitly
+apply execute-disable permissions. Production code-memory qualification remains
+open, as do the separate C++ SDK packaging and matched JIT application gates.
