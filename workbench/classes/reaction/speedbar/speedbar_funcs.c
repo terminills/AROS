@@ -14,21 +14,76 @@
 
 #include "speedbar_intern.h"
 
-/* Internal structure for speed button nodes */
-struct SpeedButtonNode
+void speedbar_node_set(struct SpeedButtonNode *sbn, struct TagItem *tags)
 {
-    struct Node sbn_Node;
-    UWORD       sbn_Number;
-    Object     *sbn_Image;
-    ULONG       sbn_Flags;
-    LONG        sbn_Disabled;
-    LONG        sbn_Toggle;
-    LONG        sbn_Selected;
-};
+    struct TagItem *tag, *tstate = tags;
 
-#define SBNF_DISABLED  (1 << 0)
-#define SBNF_TOGGLE    (1 << 1)
-#define SBNF_SELECTED  (1 << 2)
+    while ((tag = NextTagItem(&tstate)))
+    {
+        switch (tag->ti_Tag)
+        {
+            case SBNA_Image:
+                sbn->sbn_Image = (Object *)tag->ti_Data;
+                break;
+            case SBNA_SelImage:
+                sbn->sbn_SelImage = (Object *)tag->ti_Data;
+                break;
+            case SBNA_Help:
+                sbn->sbn_Help = (STRPTR)tag->ti_Data;
+                break;
+            case SBNA_UserData:
+                sbn->sbn_UserData = (APTR)tag->ti_Data;
+                break;
+            case SBNA_Left:
+                sbn->sbn_Left = (WORD)tag->ti_Data;
+                break;
+            case SBNA_Top:
+                sbn->sbn_Top = (WORD)tag->ti_Data;
+                break;
+            case SBNA_Width:
+                sbn->sbn_Width = (WORD)tag->ti_Data;
+                break;
+            case SBNA_Height:
+                sbn->sbn_Height = (WORD)tag->ti_Data;
+                break;
+            case SBNA_Spacing:
+                sbn->sbn_Spacing = (WORD)tag->ti_Data;
+                break;
+            case SBNA_Highlight:
+                sbn->sbn_Highlight = (UWORD)tag->ti_Data;
+                break;
+            case SBNA_MXGroup:
+                sbn->sbn_MXGroup = tag->ti_Data;
+                if (tag->ti_Data)
+                    sbn->sbn_Flags |= SBNF_TOGGLE;
+                break;
+            case SBNA_Enabled:
+                if (tag->ti_Data)
+                    sbn->sbn_Flags &= ~SBNF_DISABLED;
+                else
+                    sbn->sbn_Flags |= SBNF_DISABLED;
+                break;
+            case SBNA_Disabled:
+                if (tag->ti_Data)
+                    sbn->sbn_Flags |= SBNF_DISABLED;
+                else
+                    sbn->sbn_Flags &= ~SBNF_DISABLED;
+                break;
+            case SBNA_Toggle:
+                if (tag->ti_Data)
+                    sbn->sbn_Flags |= SBNF_TOGGLE;
+                else
+                    sbn->sbn_Flags &= ~SBNF_TOGGLE;
+                break;
+            case SBNA_Selected:
+                if (tag->ti_Data)
+                    sbn->sbn_Flags |= SBNF_SELECTED;
+                else
+                    sbn->sbn_Flags &= ~SBNF_SELECTED;
+                break;
+        }
+    }
+}
 
 /*****************************************************************************
 
@@ -60,7 +115,6 @@ struct SpeedButtonNode
 
     D(bug("[SpeedBar] AllocSpeedButtonNodeA: number=%d\n", number));
     struct SpeedButtonNode *node;
-    struct TagItem *tag, *tstate;
 
     node = AllocVec(sizeof(struct SpeedButtonNode), MEMF_CLEAR | MEMF_PUBLIC);
     if (!node)
@@ -69,40 +123,8 @@ struct SpeedButtonNode
     node->sbn_Node.ln_Type = NT_USER;
     node->sbn_Number = number;
 
-    tstate = tags;
-    while ((tag = NextTagItem(&tstate)))
-    {
-        switch (tag->ti_Tag)
-        {
-            case SBNA_Image:
-                node->sbn_Image = (Object *)tag->ti_Data;
-                break;
-
-            case SBNA_Disabled:
-                node->sbn_Disabled = (LONG)tag->ti_Data;
-                if (tag->ti_Data)
-                    node->sbn_Flags |= SBNF_DISABLED;
-                else
-                    node->sbn_Flags &= ~SBNF_DISABLED;
-                break;
-
-            case SBNA_Toggle:
-                node->sbn_Toggle = (LONG)tag->ti_Data;
-                if (tag->ti_Data)
-                    node->sbn_Flags |= SBNF_TOGGLE;
-                else
-                    node->sbn_Flags &= ~SBNF_TOGGLE;
-                break;
-
-            case SBNA_Selected:
-                node->sbn_Selected = (LONG)tag->ti_Data;
-                if (tag->ti_Data)
-                    node->sbn_Flags |= SBNF_SELECTED;
-                else
-                    node->sbn_Flags &= ~SBNF_SELECTED;
-                break;
-        }
-    }
+    node->sbn_Highlight = SBH_RECESS;
+    speedbar_node_set(node, tags);
 
     return &node->sbn_Node;
 
@@ -166,45 +188,11 @@ struct SpeedButtonNode
 
     D(bug("[SpeedBar] SetSpeedButtonNodeAttrsA: node=%p\n", node));
     struct SpeedButtonNode *sbn = (struct SpeedButtonNode *)node;
-    struct TagItem *tag, *tstate;
 
     if (!node)
         return;
 
-    tstate = tags;
-    while ((tag = NextTagItem(&tstate)))
-    {
-        switch (tag->ti_Tag)
-        {
-            case SBNA_Image:
-                sbn->sbn_Image = (Object *)tag->ti_Data;
-                break;
-
-            case SBNA_Disabled:
-                sbn->sbn_Disabled = (LONG)tag->ti_Data;
-                if (tag->ti_Data)
-                    sbn->sbn_Flags |= SBNF_DISABLED;
-                else
-                    sbn->sbn_Flags &= ~SBNF_DISABLED;
-                break;
-
-            case SBNA_Toggle:
-                sbn->sbn_Toggle = (LONG)tag->ti_Data;
-                if (tag->ti_Data)
-                    sbn->sbn_Flags |= SBNF_TOGGLE;
-                else
-                    sbn->sbn_Flags &= ~SBNF_TOGGLE;
-                break;
-
-            case SBNA_Selected:
-                sbn->sbn_Selected = (LONG)tag->ti_Data;
-                if (tag->ti_Data)
-                    sbn->sbn_Flags |= SBNF_SELECTED;
-                else
-                    sbn->sbn_Flags &= ~SBNF_SELECTED;
-                break;
-        }
-    }
+    speedbar_node_set(sbn, tags);
 
     AROS_LIBFUNC_EXIT
 }
@@ -248,17 +236,29 @@ struct SpeedButtonNode
             case SBNA_Image:
                 *(Object **)tag->ti_Data = sbn->sbn_Image;
                 break;
-
+            case SBNA_SelImage:
+                *(Object **)tag->ti_Data = sbn->sbn_SelImage;
+                break;
+            case SBNA_Help:
+                *(STRPTR *)tag->ti_Data = sbn->sbn_Help;
+                break;
+            case SBNA_UserData:
+                *(APTR *)tag->ti_Data = sbn->sbn_UserData;
+                break;
+            case SBNA_MXGroup:
+                *(ULONG *)tag->ti_Data = sbn->sbn_MXGroup;
+                break;
+            case SBNA_Enabled:
+                *(LONG *)tag->ti_Data = (sbn->sbn_Flags & SBNF_DISABLED) ? FALSE : TRUE;
+                break;
             case SBNA_Disabled:
-                *(LONG *)tag->ti_Data = sbn->sbn_Disabled;
+                *(LONG *)tag->ti_Data = (sbn->sbn_Flags & SBNF_DISABLED) ? TRUE : FALSE;
                 break;
-
             case SBNA_Toggle:
-                *(LONG *)tag->ti_Data = sbn->sbn_Toggle;
+                *(LONG *)tag->ti_Data = (sbn->sbn_Flags & SBNF_TOGGLE) ? TRUE : FALSE;
                 break;
-
             case SBNA_Selected:
-                *(LONG *)tag->ti_Data = sbn->sbn_Selected;
+                *(LONG *)tag->ti_Data = (sbn->sbn_Flags & SBNF_SELECTED) ? TRUE : FALSE;
                 break;
         }
     }
