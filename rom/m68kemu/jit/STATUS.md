@@ -289,6 +289,9 @@ these fixed coordinates; translating drawing alone would break hit testing.
 This is handed to the compatibility owner in TRIG-1622, with aligned code-hunk
 offsets and binary provenance in `amines-alignment-analysis.txt`. No alignment
 fix is claimed by this JIT branch.
+An interpreter-only comparison with `M68KEMU_CLASSICBORDERS=1` and `0` confirms
+that disabling the option contracts the frame while leaving grid coordinates
+unchanged. It does not fix alignment (`alignment-interpreter` evidence set).
 
 The corrected 2fbda536 visual pair is complete: all eight ReAction checkpoints,
 all eight ClassAct pages, and the post-Quit screen are pixel-identical. The AMines
