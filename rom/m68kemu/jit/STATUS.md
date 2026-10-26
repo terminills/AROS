@@ -194,3 +194,40 @@ comparison is retained under `corpus-jit`; the corrected run is separately named
 `corpus-jit-trace-only`. The corrected adapter source is identical to `cded3edd`,
 so this rerun uses the retained first integration ISO/library. This correction
 does not change CPU lowering; it must still be visually requalified.
+
+## Iteration 2 completed comparisons and next dispatch revision
+
+The corrected original integration image completed the paired GUI checks:
+
+- Nine corpus checkpoints captured in each mode. Six full screenshots match
+  exactly; AMines matches within its application window. Eyes/Ameko differences
+  are restricted to debug timestamps. The expected Wordle trap is unchanged.
+  Eight existing CLI launcher failures remain excluded from executed coverage.
+- All eight ReAction screenshots match pixel-for-pixel.
+- ClassAct reached the final page after seven Forward clicks in each mode.
+  First seven full screenshots match; final-page content matches, with focus
+  border and command-window timing differences retained. Explicit post-navigation
+  crash-directory checks both report object not found.
+- xSysInfo completed both reports. Single-sample Dhrystones were 94,664 with
+  interpreter and 84,250 with JIT. This observed slowdown is retained; clock and
+  memory timings also vary, and DisplayFlags differ. No speedup is claimed.
+
+A separate compatibility commit widens the four CPU word-bounds predicates so
+`0xffffffff + 1` cannot wrap to zero. Native word read/write through that address
+returns D0=0 in both modes. The traced integrated loop again records 65,537
+compiled MOVEQs. The patch and reproducer were sent to Claude (TRIG-1614/1615).
+
+The next dispatch revision rejects unsupported opcodes before range/cache work
+and inlines CPUID-gated MOVBE assembly instead of calling a target-specific
+helper. Host differential and endian tests pass. Disassembly confirms direct
+MOVBE inside the guarded read16 path. Native tests with `CPU=host` and
+`CPU=host,-movbe` both pass 65,536 payload cases, 262,144 endian cases, the bounds
+reproducer and integrated loop. Guest detection reports MOVBE=1 and 0 respectively.
+These revision tests still use the cdb4d33d compatibility checkpoint.
+
+The independent branch subsequently rebased cleanly onto Claude's committed
+`1db3773ced315cb2076d7b9ee4e6d503ac3ac3c9` Chip/Fast RAM checkpoint. A full rebuild,
+including all context consumers, succeeds with the same explicit diagnostic SDK
+overlays. Library SHA-256:
+`9bb5965d62f7d51b079fcef4b70ddd58905aa7b02f8d981c2f23e46b4fc86015`.
+Native rebased checks and alternating benchmark samples are recorded separately.
