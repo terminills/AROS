@@ -186,3 +186,11 @@ and writes commands, logs, tool provenance and a link map into a new private dir
 
 Paired GUI corpus runs use the same counters-enabled library binary and change
 only M68KEMU_JIT. Results remain pending while this section is first recorded.
+
+The first paired GUI run exposed a diagnostic regression: unconditional `bug()`
+counter output on Wordle exit repaints the guest debug display, changing later
+screenshots. Commit `c66bd28d` restores trace-only counters. The failed visual
+comparison is retained under `corpus-jit`; the corrected run is separately named
+`corpus-jit-trace-only`. The corrected adapter source is identical to `cded3edd`,
+so this rerun uses the retained first integration ISO/library. This correction
+does not change CPU lowering; it must still be visually requalified.

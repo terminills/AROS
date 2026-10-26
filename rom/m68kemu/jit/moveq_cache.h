@@ -1,5 +1,5 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved.
- * Experimental host-only MOVEQ lowering. Not wired into m68kemu.library.
+ * Experimental MOVEQ lowering. Native library integration is opt-in.
  */
 #pragma once
 #include "Moira/MoiraTypes.h"

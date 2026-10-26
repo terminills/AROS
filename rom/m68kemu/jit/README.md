@@ -4,8 +4,8 @@ This directory contains a Linux x86-64 differential harness and an experimental
 native AROS backend. The independent library integration is **off by default**;
 `SetEnv M68KEMU_JIT 1` opts subsequent executions in. Moira itself is unchanged.
 
-`MoveqCache` lazily generates native MOVEQ register/CCR payloads, one immutable
-RX mapping per opcode, with a separate cache per owner. Unsupported opcodes,
+`MoveqCache` lazily generates native MOVEQ register/CCR payloads, one cached
+payload per opcode, with a separate cache per owner. Unsupported opcodes,
 disabled caches, unsupported hosts, allocation failures and protection failures
 return null for interpreter fallback. Linux mappings are created RW and changed
 to RX, with no RWX interval. The explicit `M68KJIT_NATIVE_EXECMEM` AROS build
