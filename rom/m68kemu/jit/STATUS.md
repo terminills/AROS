@@ -120,10 +120,27 @@ using the local GCC cross compiler and its libgcc. The link trace identifies
 every library; no C++ header overlay was used. The first compile's KernelBase
 declaration mismatch and the corrected successful build are both retained.
 
-Runtime has not yet been attempted: prelaunch inspection found Claude's active
-xSysInfo v121 VM, so the corpus slot was released and handover requested in
-TRIG-1609. The probe CD and exact binary/ISO hashes are retained under
-`evidence/native-probe`. Successful code execution would still not prove W^X:
-KrnSetProtection returns void, and this x86-64 implementation does not explicitly
-apply execute-disable permissions. Production code-memory qualification remains
-open, as do the separate C++ SDK packaging and matched JIT application gates.
+After Claude's xSysInfo VM exited, the runtime scope was reclaimed and the probe
+ran on untouched published nightly ISO SHA-256
+`38b5689f4d5c23b0765a3fbc266c67928d841d81c754675a107dd8bc0b50d6e3`.
+Both standard VGA and VMware SVGA runs returned
+`NATIVE-PROBE FALLBACK allocation iteration=0`: KrnAllocPages returned NULL.
+No generated code executed. The first script stopped at exit 20 without its
+completion marker; the second script deliberately uses FailAt 21 to display and
+record that fallback, then prints the harness completion marker. It is not a pass.
+
+Standard VGA rendered a vertically striped desktop. An intermediate EFI
+VESA=800x600x32 attempt failed before kernel serial output (371 firmware bytes),
+also retained. VMware SVGA rendered normally and yielded the readable screenshot
+`evidence/native-probe/runtime-vmware/batch-native_probe_result.png`. The probe CD,
+commands, logs and exact binary/ISO hashes are under `evidence/native-probe`.
+The private VM is stopped and runtime scope released. This does not diagnose
+whether a screenmode commit was omitted from nightly.
+
+The host regression rerun passed all previous differential and fallback checks;
+its concurrent unpinned timing is not an additional benchmark claim. Production
+code-memory qualification remains open: this page allocator is unavailable in
+the tested nightly. Even a successful code call would not establish W^X, since
+KrnSetProtection returns void and this x86-64 implementation does not explicitly
+apply execute-disable permissions. Separate C++ SDK packaging, adapter agreement,
+and matched JIT application gates remain open.
