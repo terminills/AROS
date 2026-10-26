@@ -231,3 +231,15 @@ including all context consumers, succeeds with the same explicit diagnostic SDK
 overlays. Library SHA-256:
 `9bb5965d62f7d51b079fcef4b70ddd58905aa7b02f8d981c2f23e46b4fc86015`.
 Native rebased checks and alternating benchmark samples are recorded separately.
+
+The attempted six-sample rebased benchmark was stopped after native debugger
+entry. A fresh interpreter-only launch reproduced it, as did an unmodified
+1db3773c CPU adapter with the JIT object removed from the link. Trace confirms
+normal emulated exit (D0=0); a complete xSysInfo report is still produced.
+Diagnostic cleanup markers show all context frees complete before SAD entry.
+This is an unresolved native return-boundary failure, not established JIT
+execution failure or usable performance evidence. Failed attempts are retained
+as `rebased-checks`, `rebased-xsys-fresh-interpreter`, `baseline-xsys`,
+`baseline-xsys-trace`, and `cleanup-debug`. The independent source subsequently
+rebased cleanly onto layout checkpoint `2fbda5364311365e9b507cea306afc07f87d5120`;
+qualification of that revision remains separate.
