@@ -1,14 +1,17 @@
-# Experimental MC68K JIT: first lowering
+# Experimental MC68K JIT: guarded MOVEQ lowering
 
-This directory is an independently testable **Linux x86-64 host prototype**.
-It is not enabled in m68kemu.library. `m68kemu_moira.cpp` and Moira are unchanged.
+This directory contains a Linux x86-64 differential harness and an experimental
+native AROS backend. The independent library integration is **off by default**;
+`SetEnv M68KEMU_JIT 1` opts subsequent executions in. Moira itself is unchanged.
 
 `MoveqCache` lazily generates native MOVEQ register/CCR payloads, one immutable
 RX mapping per opcode, with a separate cache per owner. Unsupported opcodes,
 disabled caches, unsupported hosts, allocation failures and protection failures
-return null for interpreter fallback. Mappings are created RW and changed to RX;
-there is no RWX interval. The SysV calling convention and native layout offsets
-are used only under the Linux/x86-64 guard. The caller must keep the cache alive
+return null for interpreter fallback. Linux mappings are created RW and changed
+to RX, with no RWX interval. The explicit `M68KJIT_NATIVE_EXECMEM` AROS build
+uses 64-byte executable heap allocations instead: this backend does **not**
+provide W^X and never changes permissions on shared heap pages. The native ABI
+and layout were checked by the standalone payload test. Keep the cache alive
 until its generated calls finish. Each cache is task-local, not concurrently shared.
 
 The cache key is the instruction word. It never embeds guest addresses or keys
@@ -20,9 +23,12 @@ Run `run-host.sh /absolute/private/build-directory` with GCC supporting C++20.
 The harness compares every MOVEQ encoding and all 32 initial CCR combinations
 against Moira, checks every unsupported word, isolation, same-PC mutation, and
 fallback for NOP, A-line, RTE, F-line, tracing, interrupt, model and disabled paths.
-Its bounded host adapter also compares the PC, prefetch queue, function code,
-read buffer, cycle count and internal flags. That adapter is only valid for its
-nonthrowing ordinary-RAM callbacks. It is **not** an AROS memory/fault adapter.
+The host harness tests both 68040 and 68LC040. Its shared step also compares the PC, prefetch queue, function code,
+read buffer, cycle count and internal flags. The shared step is only valid for
+nonthrowing ordinary-RAM callbacks. The AROS integration additionally guards the
+next prefetch against bounds, the sentinel, custom-chip reads, odd PCs, CPU
+model, instruction hooks and nonzero state flags. All rejected cases execute
+Moira. The outer instruction loop retains VBL polling, watchdog and PC history.
 
 Timing reports separate runtime code generation, warmup, payload-only cost and a
 matched synthetic MOVEQ/BRA loop including fallback. Payload cost and whole CPU
@@ -79,3 +85,27 @@ CLI entries; those are also present in Claude's v103 reference. Report them as
 baseline limitations, not successful CLI tests. `rdemoc` prints `cp done` before
 its delayed crash check and has no SHOT markers: keep that VM, capture its page
 screens explicitly, and wait for `==CRASHEND` before interpreting the run.
+
+## Endian accesses and native build
+
+`endian_access.h` provides ordinary-RAM 16/32-bit big-endian accessors. The
+portable path uses memcpy plus byte-swap on little-endian targets. CPUID gates
+MOVBE once per execution; it is never queried per access. The adapter only
+uses MOVBE after special-read callbacks and bounds checks. It does not replace
+CIA/custom callbacks or planar writes. Compile `endian_test.cpp` with C++20,
+`-O2 -mno-movbe`, and run both normally and with `--fallback`. Timings include
+matched indirect calls and are microbenchmarks, not application speedups.
+
+`build-native.py --help` describes the independent full-library build. It
+requires a new private build directory, published SDK/contrib paths, a cross
+compiler, and an explicit genmodule executable. `--cxx-overlay` and
+`--source-dos-headers` are diagnostic opt-ins and are recorded in provenance.
+The tested 20261023 SDK lacks bits/version.h and the committed relocation and
+process-marker definitions. A build using those options is integration evidence,
+not pristine SDK acceptance. Every command, compile failure and link map is kept.
+
+`native_probe.c` tests KrnAllocPages by default, or AllocMem executable heap with
+argument `execmem`. The latter passed on the tested nightly; page allocation
+returned NULL. `native_payload_test.cpp` checks emitted MOVEQ register/flag
+results and CPU-gated endian reads/writes directly under AROS. Neither standalone
+test establishes full application compatibility. See STATUS.md for evidence.

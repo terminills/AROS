@@ -34,3 +34,18 @@ Use KrnAllocPages/KrnFreePages for dedicated pages. Do not equate a void
 KrnSetProtection call with verified protection or enable the production JIT on
 that assumption. The prepared probe is compile/link evidence until its serial
 completion is captured in an owned runtime slot.
+
+## Iteration 2 rationale
+
+User explicitly requested continued independent iteration and rebasing onto
+Claude's current committed work. The native page allocator returned NULL, but
+the platform's executable heap passed direct runtime tests. Qualify that backend
+without pretending it enforces W^X or changing permissions of shared heap pages.
+The guarded step is shared with the host differential harness and restricted to
+040/LC040, ordinary nonthrowing prefetch, no state flags and no instruction hooks.
+Keep the complete outer integration loop intact. MOVBE is CPUID-gated; its tests
+compare against memcpy/byte-swap and do not assume the instruction is free.
+
+The published C++/DOS header gaps are explicit prerequisites. Source-header builds
+may qualify the copied integration image but cannot satisfy pristine SDK delivery.
+Use identical binaries for paired interpreter/JIT runs, with runtime opt-in only.

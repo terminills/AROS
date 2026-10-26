@@ -1,8 +1,9 @@
-# JOB-0240 first increment — 2026-10-26
+# JOB-0240 JIT iterations — 2026-10-26
 
-The first host-only MOVEQ JIT increment is implemented and tested. It is not
-installed in m68kemu.library; native compatibility and application speedup remain
-unproven. Claude's integration workspace and Git metadata are not used for writes.
+The initial host-only results below are retained as history. The latest iteration
+adds an opt-in native backend and integration, with details at the end. Full
+application qualification remains in progress; no application speedup is claimed.
+Claude's integration workspace and Git metadata are not used for writes.
 
 ## Source and ownership
 
@@ -144,3 +145,44 @@ the tested nightly. Even a successful code call would not establish W^X, since
 KrnSetProtection returns void and this x86-64 implementation does not explicitly
 apply execute-disable permissions. Separate C++ SDK packaging, adapter agreement,
 and matched JIT application gates remain open.
+
+## Iteration 2: native backend and opt-in integration
+
+The independent branch was rebased onto Claude's committed checkpoint
+`cdb4d33d644e0e469766c1ce812eeed2b59ae56f`. Git skipped the four already-upstream
+compatibility cherry-picks; the previous state is retained on
+`iteration2-before-rebase-424960dc`. No dirty upstream file was imported.
+
+- Native `AllocMem(MEMF_ANY | MEMF_EXECUTABLE)` passed 32 allocate/emit/call/free
+  cycles on untouched nightly. No heap page permissions are changed; no W^X claim.
+- The same MOVEQ emitter passed 65,536 native register/CCR cases. The native
+  endian test passed 262,144 32-bit cases with guest CPUID reporting MOVBE.
+- The host endian test passed 524,288 16/32-bit aligned/unaligned cases and
+  canary checks, including a forced fallback run. A matched indirect-call
+  microbenchmark measured roughly 2.7 ns/store-load pair for both MOVBE and
+  memcpy/byte-swap. This is not an application speedup measurement.
+- The shared guarded instruction step passed 131,072 host differential cases
+  across 68040 and 68LC040, plus existing fallbacks, self modification, and new
+  non-RAM/odd-PC/mismatched-PC state-preservation checks.
+- `M68KEMU_JIT=1` opts subsequent executions into the independent native adapter;
+  the default is off. Each execution owns and frees its cache. The outer VBL,
+  watchdog and PC-history loop is unchanged. Unsupported or flagged instructions,
+  special next-prefetch addresses and failed allocations use Moira. MOVBE is
+  gated once per execution and used only after ordinary-RAM read validation.
+- The complete library compiled/linked and launched SysInfo with JIT off.
+  A paired synthetic 68K loop returned normally in both modes. JIT recorded
+  65,537 compiled MOVEQs and two payloads; the initial flagged instruction used
+  fallback. Total guest MOVEQs are 65,538. Evidence: `iteration2/paired-loop`.
+
+The C++ payload and library builds explicitly use the private same-version
+`bits/version.h` overlay. The full module also requires committed source
+`dos/dostags.h` and `dos/dosextens.h`: the published SDK lacks
+GSLI_68KRELOCS/HunkRelocTable and PR_RETURNADDR_NOPROGRAM. These are source-header
+integration builds, not pristine SDK qualification. The full library runs on
+the copied reference integration image containing relocs4 prerequisites, not
+the untouched nightly used by the standalone probes. All failed published-header
+compiles are retained separately. `build-native.py` makes the overrides explicit
+and writes commands, logs, tool provenance and a link map into a new private dir.
+
+Paired GUI corpus runs use the same counters-enabled library binary and change
+only M68KEMU_JIT. Results remain pending while this section is first recorded.
