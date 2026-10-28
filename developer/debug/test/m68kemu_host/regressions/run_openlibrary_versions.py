@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""
-Compile the production OpenLibrary thunks with a small host fixture.
-
-The selected function bodies are extracted verbatim from m68kemu_thunks.c.
-No AROS SDK, Moira checkout or emulated machine is needed.
-"""
+"""Compile the production OpenLibrary thunks with a host fixture."""
 # Copyright (C) 2026, The AROS Development Team. All rights reserved.
+# Selected function bodies come verbatim from m68kemu_thunks.c. No AROS SDK,
+# Moira checkout or emulated machine is needed.
 
 import argparse
 import os
