@@ -152,8 +152,8 @@ ULONG M68KEmu_OpenLibrary(struct M68KEmuContext *ctx, const char *name)
     return 0;
 }
 
-/* -552: OpenLibrary(A1=name, D0=version) -> D0=library */
-static IPTR thunk_exec_OpenLibrary(struct M68KEmuContext *ctx, void *cpu)
+/* The old exec vector has no version argument; share the lookup with version 0. */
+static IPTR open_library(struct M68KEmuContext *ctx, void *cpu, UWORD version)
 {
     const char *name = (const char *)THUNK_PTR(1); /* A1 */
     if (!name) return 0;
@@ -162,7 +162,7 @@ static IPTR thunk_exec_OpenLibrary(struct M68KEmuContext *ctx, void *cpu)
     if (base) return (IPTR)base;
 
     /* a native BOOPSI class library */
-    base = m68k_open_class_library(ctx, name, THUNK_D(0));
+    base = m68k_open_class_library(ctx, name, version);
     if (base) return (IPTR)base;
 
     /* a 68k library already loaded: its own Open vector opens it again */
@@ -170,10 +170,10 @@ static IPTR thunk_exec_OpenLibrary(struct M68KEmuContext *ctx, void *cpu)
         if (!strcasecmp(ctx->m68klibs[i].name, (const char *)FilePart((STRPTR)name)))
         {
             base = ctx->m68klibs[i].base;
-            if (m68k_read16(ctx, base + M68K_LIB_VERSION) < THUNK_D(0))
+            if (m68k_read16(ctx, base + M68K_LIB_VERSION) < version)
                 return 0;
             ctx->tail_pc = ctx->m68klibs[i].reopen;
-            ctx->tail_d0 = THUNK_D(0);
+            ctx->tail_d0 = version;
             ctx->tail_a0 = 0;
             ctx->tail_a6 = THUNK_A(6);
             return base;
@@ -181,7 +181,7 @@ static IPTR thunk_exec_OpenLibrary(struct M68KEmuContext *ctx, void *cpu)
 
     /* No native library found — try loading m68k .library from LIBS: */
     ctx->tail_a6 = THUNK_A(6);
-    base = M68KEmu_LoadM68KLibrary(ctx, name, THUNK_D(0));
+    base = M68KEmu_LoadM68KLibrary(ctx, name, version);
     if (base) {
         if (ctx->trace_calls) bug("[m68kemu] Loaded m68k library %s at 0x%lx\n", name, (unsigned long)base);
         return (IPTR)base;
@@ -191,10 +191,16 @@ static IPTR thunk_exec_OpenLibrary(struct M68KEmuContext *ctx, void *cpu)
     return 0;
 }
 
+/* -552: OpenLibrary(A1=name, D0.W=version) -> D0=library */
+static IPTR thunk_exec_OpenLibrary(struct M68KEmuContext *ctx, void *cpu)
+{
+    return open_library(ctx, cpu, (UWORD)THUNK_D(0));
+}
+
 /* -408: OldOpenLibrary(A1=name) -> D0=library */
 static IPTR thunk_exec_OldOpenLibrary(struct M68KEmuContext *ctx, void *cpu)
 {
-    return thunk_exec_OpenLibrary(ctx, cpu);
+    return open_library(ctx, cpu, 0);
 }
 
 /* -168: AddIntServer(D0=intNum, A1=interrupt). Only the vertical blank

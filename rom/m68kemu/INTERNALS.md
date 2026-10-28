@@ -171,11 +171,11 @@ before `lib->gen_thunks[]` (generated).
 | -372 | GetMsg | Shadow-resolves port, creates IntuiMessage shadow with IDCMPWindow |
 | -378 | ReplyMsg | Shadow-resolves message, calls native ReplyMsg, destroys shadow |
 | -384 | WaitPort | Shadow-resolves port, calls native WaitPort |
-| -408 | OldOpenLibrary | Delegates to OpenLibrary |
+| -408 | OldOpenLibrary | Uses the OpenLibrary lookup with version 0 |
 | -414 | CloseLibrary | No-op for fake libs |
 | -522 | RawDoFmt | Custom implementation: %s (m68k pointer translation), %d (16-bit), %ld (32-bit) |
 | -534 | TypeOfMem | Returns MEMF_PUBLIC always |
-| -552 | OpenLibrary | Creates fake base + registers thunks; falls back to m68k library loader |
+| -552 | OpenLibrary | Creates fake base + registers thunks; passes D0.W as the version to class and m68k library loaders |
 | -558 | InitSemaphore | No-op |
 | -564 | ObtainSemaphore | No-op |
 | -570 | ReleaseSemaphore | No-op |
