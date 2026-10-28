@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Compile the production OpenLibrary thunks with a small host fixture.
+"""
+Compile the production OpenLibrary thunks with a small host fixture.
 
 The selected function bodies are extracted verbatim from m68kemu_thunks.c.
 No AROS SDK, Moira checkout or emulated machine is needed.
@@ -11,7 +12,7 @@ import os
 from pathlib import Path
 import re
 import shlex
-import subprocess
+import subprocess  # nosec B404 - this developer test must run a compiler
 import tempfile
 
 
@@ -41,7 +42,8 @@ def run(args, output):
              'thunk_exec_OldOpenLibrary')
     functions = []
     for name in names:
-        if name == 'open_library' and not re.search(r'^static IPTR open_library\s*\(', source, re.M):
+        if (name == 'open_library' and
+                not re.search(r'^static IPTR open_library\s*\(', source, re.M)):
             continue  # The unmodified parent has no shared helper.
         functions.append(extract_function(source, name))
     offset_text = (args.source_root / 'rom/m68kemu/m68kemu_offsets.h').read_text()
@@ -61,10 +63,12 @@ def run(args, output):
     ]
     if args.sanitize:
         command += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
-    subprocess.run(command, check=True)
+    # Argument lists avoid a shell; the developer selects the compiler.
+    subprocess.run(command, check=True)  # nosec B603
     env = os.environ.copy()
     env.setdefault('ASAN_OPTIONS', 'detect_leaks=0')
-    subprocess.run([str(output / 'test_openlibrary_versions')], check=True, env=env)
+    # Execute only the test binary built above in the selected build directory.
+    subprocess.run([str(output / 'test_openlibrary_versions')], check=True, env=env)  # nosec B603
 
 
 def main():
