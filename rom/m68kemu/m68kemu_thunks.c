@@ -5472,78 +5472,157 @@ static IPTR thunk_exec_CacheControl_m(struct M68KEmuContext *ctx, void *cpu)
     return old;
 }
 
-/* Allocate() and Deallocate() on a MemHeader the program built in its own
-   memory (C runtimes keep their malloc pools this way): the chunk list is
-   m68k (mc_Next, mc_Bytes) and blocks are 8-byte aligned, as in exec */
+/* Allocate() and Deallocate() on a classic private MemHeader. Its bounds
+   fields need not be initialized: Exec's private-pool example sets only
+   mh_First and mh_Free. Validate the actual chunks in containment instead.
+   A chunk and each rounded allocation are multiples of eight bytes. */
 #define M68K_MEM_BLOCKSIZE 8
+
+static BOOL memheader_range(struct M68KEmuContext *ctx, ULONG addr, ULONG size)
+{
+    return ctx->mem && addr && addr < ctx->mem_size && size <= ctx->mem_size - addr;
+}
+
+/* m68k_write32() may discard low-vector writes. Check its policy before
+   committing a group of metadata writes, so none can be only half applied. */
+static BOOL memheader_write(struct M68KEmuContext *ctx, ULONG addr)
+{
+    return memheader_range(ctx, addr, 4) &&
+        (!ctx->low_guard || addr >= 0x400 || addr == 0x28 || addr == 0x2C ||
+         addr == 0x6C || addr == 0x10 || (addr >= 0x140 && addr < 0x190));
+}
+
+/* Both spans have already passed memheader_range(), so their ends fit. */
+static BOOL memheader_overlap(ULONG a, ULONG asize, ULONG b, ULONG bsize)
+{
+    return a < b + bsize && b < a + asize;
+}
+
+/* Validate the complete list before any write, including its tail after
+   an early fitting chunk. Strict order and full, disjoint chunks preclude
+   cycles. The arena supplies a traversal bound, without a fixed node cap. */
+static BOOL memheader_list(struct M68KEmuContext *ctx, ULONG mh, ULONG *available)
+{
+    ULONG mc, end = 0, sum = 0, left = ctx->mem_size / M68K_MEM_BLOCKSIZE;
+
+    if (!memheader_range(ctx, mh, M68K_SIZEOF_MEMHEADER) ||
+        !memheader_write(ctx, mh + M68K_MH_FIRST) ||
+        !memheader_write(ctx, mh + M68K_MH_FREE))
+        return FALSE;
+    *available = m68k_read32(ctx, mh + M68K_MH_FREE);
+    for (mc = m68k_read32(ctx, mh + M68K_MH_FIRST); mc; mc = m68k_read32(ctx, mc))
+    {
+        ULONG bytes;
+
+        if (!left || (mc & (M68K_MEM_BLOCKSIZE - 1)) || mc < end ||
+            !memheader_range(ctx, mc, M68K_MEM_BLOCKSIZE))
+            return FALSE;
+        --left;
+        bytes = m68k_read32(ctx, mc + 4);
+        if (!bytes || (bytes & (M68K_MEM_BLOCKSIZE - 1)) ||
+            !memheader_range(ctx, mc, bytes) ||
+            memheader_overlap(mc, bytes, mh, M68K_SIZEOF_MEMHEADER) ||
+            !memheader_write(ctx, mc) || !memheader_write(ctx, mc + 4) ||
+            bytes > *available - sum)
+            return FALSE;
+        sum += bytes;
+        end = mc + bytes;
+    }
+    return sum == *available;
+}
 
 /* exec -186: Allocate(A0=memHeader, D0=byteSize) -> D0=block */
 static IPTR thunk_exec_Allocate_m(struct M68KEmuContext *ctx, void *cpu)
 {
-    ULONG mh = THUNK_A(0), size = THUNK_D(0), prev, mc;
-    int guard = 0;
+    ULONG mh = THUNK_A(0), size = THUNK_D(0), available, prev, mc;
 
-    if (!mh || !size)
+    if (!size || size > (ULONG)-1 - (M68K_MEM_BLOCKSIZE - 1) ||
+        !memheader_list(ctx, mh, &available))
         return 0;
-    size = (size + M68K_MEM_BLOCKSIZE - 1) & ~(M68K_MEM_BLOCKSIZE - 1);
-    if (m68k_read32(ctx, mh + M68K_MH_FREE) < size)
+    size = (size + M68K_MEM_BLOCKSIZE - 1) & ~(ULONG)(M68K_MEM_BLOCKSIZE - 1);
+    if (available < size)
         return 0;
     for (prev = mh + M68K_MH_FIRST, mc = m68k_read32(ctx, prev);
-         mc && guard++ < 1000000;
-         prev = mc, mc = m68k_read32(ctx, mc))
+         mc; prev = mc, mc = m68k_read32(ctx, mc))
     {
-        ULONG bytes = m68k_read32(ctx, mc + 4);
+        ULONG bytes = m68k_read32(ctx, mc + 4), next = m68k_read32(ctx, mc);
 
         if (bytes < size)
             continue;
         if (bytes == size)
-            m68k_write32(ctx, prev, m68k_read32(ctx, mc));
+            m68k_write32(ctx, prev, next);
         else
         {
-            m68k_write32(ctx, mc + size, m68k_read32(ctx, mc));
-            m68k_write32(ctx, mc + size + 4, bytes - size);
-            m68k_write32(ctx, prev, mc + size);
+            ULONG tail = mc + size;
+
+            if (!memheader_write(ctx, tail) || !memheader_write(ctx, tail + 4))
+                return 0;
+            m68k_write32(ctx, tail, next);
+            m68k_write32(ctx, tail + 4, bytes - size);
+            m68k_write32(ctx, prev, tail);
         }
-        m68k_write32(ctx, mh + M68K_MH_FREE, m68k_read32(ctx, mh + M68K_MH_FREE) - size);
+        m68k_write32(ctx, mh + M68K_MH_FREE, available - size);
         return mc;
     }
     return 0;
 }
 
-/* exec -192: Deallocate(A0=memHeader, A1=block, D0=byteSize) */
+/* exec -192: Deallocate(A0=memHeader, A1=block, D0=byteSize). As Exec,
+   include the whole caller span when rounding its start down and end up. */
 static IPTR thunk_exec_Deallocate_m(struct M68KEmuContext *ctx, void *cpu)
 {
-    ULONG mh = THUNK_A(0), blk = THUNK_A(1), size = THUNK_D(0), prev, mc, end, freed;
-    int guard = 0;
+    ULONG mh = THUNK_A(0), blk = THUNK_A(1), size = THUNK_D(0), offset;
+    ULONG available, prev, mc, end, freed, insert, next;
 
-    if (!mh || !blk || !size)
+    if (!blk || !size)
         return 0;
-    size = (size + (blk & (M68K_MEM_BLOCKSIZE - 1)) + M68K_MEM_BLOCKSIZE - 1) & ~(M68K_MEM_BLOCKSIZE - 1);
-    blk &= ~(M68K_MEM_BLOCKSIZE - 1);
+    offset = blk & (M68K_MEM_BLOCKSIZE - 1);
+    if (size > (ULONG)-1 - offset - (M68K_MEM_BLOCKSIZE - 1))
+        return 0;
+    size = (size + offset + M68K_MEM_BLOCKSIZE - 1) & ~(ULONG)(M68K_MEM_BLOCKSIZE - 1);
+    blk &= ~(ULONG)(M68K_MEM_BLOCKSIZE - 1);
+    if (!memheader_range(ctx, blk, size) || !memheader_list(ctx, mh, &available) ||
+        memheader_overlap(blk, size, mh, M68K_SIZEOF_MEMHEADER) ||
+        size > (ULONG)-1 - available)
+        return 0;
     end = blk + size;
     freed = size;
-
-    for (prev = mh + M68K_MH_FIRST, mc = m68k_read32(ctx, prev);
-         mc && mc < blk && guard++ < 1000000;
+    prev = 0;
+    for (mc = m68k_read32(ctx, mh + M68K_MH_FIRST); mc && mc < blk;
          prev = mc, mc = m68k_read32(ctx, mc))
         ;
-    /* merge with the following chunk */
+    if ((prev && blk < prev + m68k_read32(ctx, prev + 4)) || (mc && end > mc))
+        return 0;                       /* overlap, including a double free */
+
+    insert = blk;
+    next = mc;
     if (mc && mc == end)
     {
-        size += m68k_read32(ctx, mc + 4);
-        mc = m68k_read32(ctx, mc);
+        ULONG bytes = m68k_read32(ctx, mc + 4);
+
+        if (bytes > (ULONG)-1 - size)
+            return 0;
+        size += bytes;
+        next = m68k_read32(ctx, mc);
     }
-    m68k_write32(ctx, blk, mc);
-    m68k_write32(ctx, blk + 4, size);
-    /* merge with the preceding chunk */
-    if (prev != mh + M68K_MH_FIRST && prev + m68k_read32(ctx, prev + 4) == blk)
+    if (prev && prev + m68k_read32(ctx, prev + 4) == blk)
     {
-        m68k_write32(ctx, prev, mc);
-        m68k_write32(ctx, prev + 4, m68k_read32(ctx, prev + 4) + size);
+        ULONG bytes = m68k_read32(ctx, prev + 4);
+
+        if (bytes > (ULONG)-1 - size)
+            return 0;
+        insert = prev;
+        size += bytes;
     }
-    else
-        m68k_write32(ctx, prev, blk);
-    m68k_write32(ctx, mh + M68K_MH_FREE, m68k_read32(ctx, mh + M68K_MH_FREE) + freed);
+    if (!memheader_write(ctx, insert) || !memheader_write(ctx, insert + 4))
+        return 0;
+
+    /* Every span, link, byte count and write destination is now valid. */
+    m68k_write32(ctx, insert, next);
+    m68k_write32(ctx, insert + 4, size);
+    if (insert != prev)
+        m68k_write32(ctx, prev ? prev : mh + M68K_MH_FIRST, insert);
+    m68k_write32(ctx, mh + M68K_MH_FREE, available + freed);
     return 0;
 }
 
