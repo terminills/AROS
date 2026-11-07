@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 1995-2020, The AROS Development Team. All rights reserved.
+    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
         
     Desc: Iprefs
 */
@@ -369,8 +369,6 @@ int main(void)
     StartNotifications();
     PreparePatches();
 
-    Detach();  // No more console I/O beyond this point.
-
     /* The initial load runs from the startup sequence, where there is
        nobody to answer a requester yet. Suppress them for its duration;
        live preference changes get them back. */
@@ -378,6 +376,8 @@ int main(void)
     myproc->pr_WindowPtr = (APTR)-1;
     HandleNotify();
     myproc->pr_WindowPtr = oldwindowptr;
+
+    Detach();  // No more console I/O beyond this point.
 
     HandleAll();
     Cleanup(NULL);
